@@ -163,3 +163,11 @@ The following settings have been verified for the provided examples. You may nee
     *   Check `Use IRAM memory pool for closures`
 *   **IRAM Pool Size**: `1024`
     *   Set `IRAM memory pool size (bytes)` to `1024`.
+
+    ## 4. Translation
+
+The generated LLVM IR can be translated using the web-based translator:
+
+**[http://espb.runasp.net/](http://espb.runasp.net/)**
+
+For translation, you must use the text file `linked_module.bc`.
