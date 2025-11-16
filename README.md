@@ -164,7 +164,7 @@ The following settings have been verified for the provided examples. You may nee
 *   **IRAM Pool Size**: `1024`
     *   Set `IRAM memory pool size (bytes)` to `1024`.
 
-    ## 4. Translation
+   ### Translation
 
 The generated LLVM IR can be translated using the web-based translator:
 
