@@ -1,0 +1,193 @@
+/*
+ * This file is part of the modified libffi library.
+ *
+ * Original libffi - Copyright (c) 1996-2025 Anthony Green, Red Hat, Inc and others.
+ * See LICENSE-libffi.txt for the original license terms.
+ *
+ * Modifications for espb - Copyright (C) 2025 Smersh.
+ *
+ * This modified program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Affero General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU Affero General Public License for more details.
+ *
+ * You should have received a copy of the GNU Affero General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+#ifndef FFI_COMMON_H
+#define FFI_COMMON_H
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include <fficonfig.h>
+
+/* Do not move this. Some versions of AIX are very picky about where
+   this is positioned. */
+#ifdef __GNUC__
+# if HAVE_ALLOCA_H
+#  include <alloca.h>
+# else
+  /* mingw64 defines this already in malloc.h. */
+#  ifndef alloca
+#    define alloca __builtin_alloca
+#  endif
+# endif
+# define MAYBE_UNUSED __attribute__((__unused__))
+# define NORETURN __attribute__((__noreturn__))
+#else
+# define MAYBE_UNUSED
+# define NORETURN
+# if HAVE_ALLOCA_H
+#  include <alloca.h>
+# else
+#  ifdef _AIX
+#   pragma alloca
+#  else
+#   ifndef alloca /* predefined by HP cc +Olibcalls */
+#    ifdef _MSC_VER
+#     define alloca _alloca
+#    else
+char *alloca ();
+#   endif
+#  endif
+# endif
+# endif
+#endif
+
+/* Check for the existence of memcpy. */
+#if STDC_HEADERS
+# include <string.h>
+#else
+# ifndef HAVE_MEMCPY
+#  define memcpy(d, s, n) bcopy ((s), (d), (n))
+# endif
+#endif
+
+#if defined(FFI_DEBUG)
+#include <stdio.h>
+#endif
+
+#ifndef __SANITIZE_ADDRESS__
+# ifdef __clang__
+#  if __has_feature(address_sanitizer)
+#   define FFI_ASAN
+#  endif
+# endif
+#endif
+#ifdef __SANITIZE_ADDRESS__
+#define FFI_ASAN
+#endif
+
+#ifdef FFI_ASAN
+#define FFI_ASAN_NO_SANITIZE __attribute__((no_sanitize_address))
+#else
+#define FFI_ASAN_NO_SANITIZE
+#endif
+
+#ifdef FFI_DEBUG
+NORETURN void ffi_assert(const char *expr, const char *file, int line);
+void ffi_stop_here(void);
+void ffi_type_test(ffi_type *a, const char *file, int line);
+
+#define FFI_ASSERT(x) ((x) ? (void)0 : ffi_assert(#x, __FILE__,__LINE__))
+#define FFI_ASSERT_AT(x, f, l) ((x) ? 0 : ffi_assert(#x, (f), (l)))
+#define FFI_ASSERT_VALID_TYPE(x) ffi_type_test (x, __FILE__, __LINE__)
+#else
+#define FFI_ASSERT(x)
+#define FFI_ASSERT_AT(x, f, l)
+#define FFI_ASSERT_VALID_TYPE(x)
+#endif
+
+/* v cast to size_t and aligned up to a multiple of a */
+#define FFI_ALIGN(v, a)  (((((size_t) (v))-1) | ((a)-1))+1)
+/* v cast to size_t and aligned down to a multiple of a */
+#define FFI_ALIGN_DOWN(v, a) (((size_t) (v)) & -a)
+
+/* Perform machine dependent cif processing */
+ffi_status ffi_prep_cif_machdep(ffi_cif *cif);
+ffi_status ffi_prep_cif_machdep_var(ffi_cif *cif,
+	 unsigned int nfixedargs, unsigned int ntotalargs);
+
+
+#if HAVE_LONG_DOUBLE_VARIANT
+/* Used to adjust size/alignment of ffi types.  */
+void ffi_prep_types (ffi_abi abi);
+#endif
+
+/* Used internally, but overridden by some architectures */
+ffi_status ffi_prep_cif_core(ffi_cif *cif,
+			     ffi_abi abi,
+			     unsigned int isvariadic,
+			     unsigned int nfixedargs,
+			     unsigned int ntotalargs,
+			     ffi_type *rtype,
+			     ffi_type **atypes);
+
+/* Translate a data pointer to a code pointer.  Needed for closures on
+   some targets.  */
+void *ffi_data_to_code_pointer (void *data) FFI_HIDDEN;
+
+/* The arch code calls this to determine if a given closure has a
+   static trampoline. */
+int ffi_tramp_is_present (void *closure) FFI_HIDDEN;
+
+/* Return a file descriptor of a temporary zero-sized file in a
+   writable and executable filesystem. */
+int open_temp_exec_file(void) FFI_HIDDEN;
+
+/* Extended cif, used in callback from assembly routine */
+typedef struct
+{
+  ffi_cif *cif;
+  void *rvalue;
+  void **avalue;
+} extended_cif;
+
+/* Terse sized type definitions.  */
+#if defined(_MSC_VER) || defined(__sgi) || defined(__SUNPRO_C)
+typedef unsigned char UINT8;
+typedef signed char   SINT8;
+typedef unsigned short UINT16;
+typedef signed short   SINT16;
+typedef unsigned int UINT32;
+typedef signed int   SINT32;
+# ifdef _MSC_VER
+typedef unsigned __int64 UINT64;
+typedef signed __int64   SINT64;
+# else
+# include <inttypes.h>
+typedef uint64_t UINT64;
+typedef int64_t  SINT64;
+# endif
+#else
+typedef unsigned int UINT8  __attribute__((__mode__(__QI__)));
+typedef signed int   SINT8  __attribute__((__mode__(__QI__)));
+typedef unsigned int UINT16 __attribute__((__mode__(__HI__)));
+typedef signed int   SINT16 __attribute__((__mode__(__HI__)));
+typedef unsigned int UINT32 __attribute__((__mode__(__SI__)));
+typedef signed int   SINT32 __attribute__((__mode__(__SI__)));
+typedef unsigned int UINT64 __attribute__((__mode__(__DI__)));
+typedef signed int   SINT64 __attribute__((__mode__(__DI__)));
+#endif
+
+typedef float FLOAT32;
+
+#ifndef __GNUC__
+#define __builtin_expect(x, expected_value) (x)
+#endif
+#define LIKELY(x)    __builtin_expect(!!(x),1)
+#define UNLIKELY(x)  __builtin_expect((x)!=0,0)
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif

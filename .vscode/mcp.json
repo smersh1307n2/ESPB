@@ -1,0 +1,19 @@
+{
+	"servers": {
+		"Wokwi": {
+			"type": "stdio",
+			"command": "wokwi-cli",
+			"args": [
+				"mcp"
+			]
+		}
+	},
+	"inputs": [
+		{
+			"type": "promptString",
+			"id": "wokwi-cli-token",
+			"description": "Wokwi-CI Token",
+			"password": true
+		}
+	]
+}

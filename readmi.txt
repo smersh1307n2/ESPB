@@ -1,0 +1,6 @@
+dotnet build ./llvm_espb
+dotnet llvm_espb\bin\Debug\net9.0\LLVM_ESPB.dll -h llvm_espb\hello_world_main.bc main\test.espb
+
+для некоторых микроконтроллеров например 
+esp32 c3 в SDK Configuration необходимо отключать Enable memory protection
+что бы работали замыкания

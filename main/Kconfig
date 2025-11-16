@@ -1,0 +1,49 @@
+# This is the configuration file for the ESPB interpreter.
+
+menu "ESPB Configuration"
+
+    config ESPB_INTERPRETER_ENABLED
+        bool "Enable ESPB Interpreter"
+        default y
+        help
+            Enable the ESPB interpreter functionality.
+
+    config ESPB_LINEAR_MEMORY_SIZE
+        int "Linear memory size (bytes)"
+        depends on ESPB_INTERPRETER_ENABLED
+        default 65536
+        range 1024 4194304
+        help
+            The size of the linear memory allocated for the ESPB interpreter.
+            This memory is used for the WebAssembly linear memory space.
+            Default is 64KB, which is sufficient for simple applications.
+            For more complex applications, you may need to increase this value.
+            Minimum allowed value is 1KB, maximum is 4MB.
+
+    # --- Interpreter Settings ---
+    menu "Interpreter Settings"
+        depends on ESPB_INTERPRETER_ENABLED
+        
+        config ESPB_SHADOW_STACK_INITIAL_SIZE
+            int "Initial shadow stack size (bytes)"
+            default 4096
+            help
+                The initial size of the shadow stack used by the ESPB interpreter
+                for saving registers during function calls. This stack will grow
+                dynamically if needed, but setting an appropriate initial size
+                can reduce the number of reallocations.
+
+        config ESPB_SHADOW_STACK_INCREMENT
+            int "Shadow stack increment size (bytes)"
+            default 4096
+            range 256 65536
+            help
+                When the shadow stack needs to grow, it will be increased by this fixed amount.
+                Larger values reduce the number of reallocations but may waste memory if not fully used.
+                Smaller values use memory more efficiently but cause more frequent reallocations.
+                For simple scripts with shallow call depth, values of 256-1024 bytes will be optimal.
+                For complex applications with deep function nesting, values of 4-16 KB are recommended.
+                In extreme cases, you can use up to 64 KB.
+    endmenu
+
+endmenu 

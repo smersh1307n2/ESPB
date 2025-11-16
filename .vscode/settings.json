@@ -1,0 +1,40 @@
+{
+  "terminal.integrated.scrollback": 100000,
+  "C_Cpp.intelliSenseEngine": "default",
+  "idf.espIdfPathWin": "c:\\Andrey\\Programs\\Espressif\\frameworks\\esp-idf-v5.4",
+  "idf.pythonInstallPath": "c:\\Andrey\\Programs\\Espressif\\Tools\\tools\\idf-python\\3.11.2\\python.exe",
+  "idf.openOcdConfigs": [
+    "board/esp32c3-builtin.cfg"
+  ],
+  "idf.toolsPathWin": "c:\\Andrey\\Programs\\Espressif\\Tools\\",
+  "idf.customExtraVars": {
+    "IDF_TARGET": "esp32c3"
+  },
+  "files.associations": {
+    "iostream": "cpp",
+    "esp_log.h": "c",
+    "espb_interpreter.h": "c",
+    "ffi.h": "c",
+    "espb_heap_manager.h": "c",
+    "espb_host_symbols.h": "c",
+    "sdkconfig.h": "c",
+    "espb_callback_system.h": "c",
+    "espb_interpreter_reader.h": "c",
+    "espb_interpreter_runtime_oc.h": "c",
+    "espb_interpreter_common_types.h": "c",
+    "compare": "cpp",
+    "cstdint": "cpp",
+    "format": "cpp",
+    "chrono": "c",
+    "text_encoding": "c",
+    "typeinfo": "c"
+  },
+  "idf.portWin": "COM4",
+  "idf.flashType": "UART",
+  "clangd.path": "C:\\Andrey\\Programs\\Espressif\\tools\\esp-clang\\esp-18.1.2_20240912\\esp-clang\\bin\\clangd.exe",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=c:\\Andrey\\Programs\\Espressif\\Tools\\tools\\riscv32-esp-elf\\esp-14.2.0_20241119\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe",
+    "--compile-commands-dir=c:\\Andrey\\Projects\\VS_Code\\ESPB_Test\\build"
+  ]
+}
