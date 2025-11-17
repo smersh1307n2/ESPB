@@ -9,7 +9,7 @@ This component is ideal for applications that require dynamic code loading, safe
 ## Core Features
 
 *   **Sandboxed Execution**: Code runs within a dedicated memory space, with controlled access to system resources.
-*   **Custom Bytecode Format (`.espb`)**: A section-based binary format optimized for low-memory environments, inspired by formats like ELF and WebAssembly.
+*   **Custom Bytecode Format (`.espb`)**: A section-based binary format optimized for low-memory environments, inspired by formats like WebAssembly.
 *   **Rich Type System**: Supports common value types, including integers (8 to 64-bit), floats, doubles, and pointers.
 *   **Advanced FFI**: Seamlessly call native C functions from the bytecode using `libffi`.
 *   **Host Bindings & Callbacks**:
@@ -114,22 +114,6 @@ void run_espb_code() {
 ## Building
 
 The component is configured via `CMakeLists.txt` and is registered as a standard `idf_component`.
-
-### Dependencies
-
-*   **libffi**: Required for the FFI functionality. This must be available as a component in the ESP-IDF project.
-*   **esp_timer**: Used for timing and other system functions.
-*   **driver**: Used for basic ESP-IDF driver functionality if needed by host bindings.
-
-To include this component in your project, simply place it in your project's `components` directory. CMake will automatically discover and build it.
-```cmake
-# From components/espb/CMakeLists.txt
-
-idf_component_register(SRCS ${ESPB_SRCS}
-                      INCLUDE_DIRS "include"
-                      REQUIRES "libffi" "esp_timer" "driver"
-)
-```
 
 ## License
 
