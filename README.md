@@ -121,15 +121,12 @@ Components espb and libffi is licensed under the **GNU Affero General Public Lic
 ## Configuration for RISC-V Targets
 
 When using this component on ESP32 RISC-V targets, special configuration is required for closures (callbacks) to work correctly.
-
-### Memory Protection
-
 You must **disable** memory protection in the SDK Configuration (`menuconfig`). This is required because `libffi` needs to write executable trampoline code to RAM, which is prevented by memory protection.
 
 *   Go to `Component config` -> `ESP System Settings` -> `Memory protection`
 *   Uncheck `Enable memory protection`.
 
-### Stack and IRAM Settings for Examples
+## Stack and IRAM Settings for Examples
 
 The following settings have been verified for the provided examples. You may need to adjust them based on your application's needs.
 
