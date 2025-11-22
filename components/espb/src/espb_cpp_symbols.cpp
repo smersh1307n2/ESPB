@@ -117,7 +117,7 @@ static const EspbSymbol cpp_symbols[] = {
     { "gpio_set_level", (const void*)&gpio_set_level },
     
     { "esp_rom_get_cpu_ticks_per_us", (const void*)&esp_rom_get_cpu_ticks_per_us },
-     { "esp_cpu_get_cycle_count", (const void*)&esp_cpu_get_cycle_count },
+    { "esp_cpu_get_cycle_count", (const void*)&esp_cpu_get_cycle_count },
 
 
 
@@ -126,9 +126,9 @@ static const EspbSymbol cpp_symbols[] = {
 
 
     // Host-like helpers to invoke callbacks (CB, user_data)
-    { "host_invoke_cb", (const void*)&host_invoke_cb },
-    { "host_invoke_cb2", (const void*)&host_invoke_cb2 },
-    { "set_magic_number", (const void*)&native_set_magic_number },
+  //  { "host_invoke_cb", (const void*)&host_invoke_cb },
+   // { "host_invoke_cb2", (const void*)&host_invoke_cb2 },
+  //  { "set_magic_number", (const void*)&native_set_magic_number },
     
     // Атомарные операции для 64-битных значений (обертки для встроенных функций GCC)
     // Пример для C++ I/O (если модуль это использует и оно реализовано)
