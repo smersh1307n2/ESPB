@@ -18,7 +18,6 @@ This component is ideal for applications that require dynamic code loading, safe
     *   Automatic marshalling for pointer arguments (e.g., handling IN/OUT buffers).
 *   **Memory Management**: Includes a custom heap manager (`multi_heap`) to manage memory allocations within the sandbox.
 *   **Thread-Safety**: Designed to be thread-safe using FreeRTOS mutexes for instance-level operations.
-*   **Optimized Execution**: Features an optional direct-threaded code implementation for improved performance over a standard switch-based interpreter loop.
 
 ## Architecture
 
