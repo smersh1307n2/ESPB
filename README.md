@@ -150,4 +150,4 @@ The generated LLVM IR can be translated using the web-based translator:
 
 **[http://espb.runasp.net/](http://espb.runasp.net/)**
 
-For translation, you must use the text file `linked_module.bc`.
+For translation, you must use the binary file `linked_module.bc`.
