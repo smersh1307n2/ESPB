@@ -1,21 +1,3 @@
-/*
- * espb component
- * Copyright (C) 2025 Smersh
- *
- * This program is free software: you can redistribute it and/or modify
- * it under the terms of the GNU Affero General Public License as published by
- * the Free Software Foundation, either version 3 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU Affero General Public License for more details.
- *
- * You should have received a copy of the GNU Affero General Public License
- * along with this program.  If not, see <https://www.gnu.org/licenses/>.
- */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -496,7 +478,51 @@ static EspbResult pop_call_frame(ExecutionContext *ctx, int* return_pc, size_t* 
     return ESPB_OK;
 }
 
-// --- Начало тела функции espb_call_function --- 
+// --- ОПТИМИЗИРОВАННАЯ ФУНКЦИЯ УПРАВЛЕНИЯ ТЕНЕВЫМ СТЕКОМ (V3) ---
+// "Медленный" путь: вызывается только когда места действительно не хватает.
+// Помечена как noinline и cold, чтобы компилятор не встраивал ее в горячий код.
+// Возвращает: 1 если буфер был перемещен, 0 если не перемещен, -1 в случае ошибки.
+__attribute__((noinline, cold))
+static int _espb_grow_shadow_stack(ExecutionContext *ctx, size_t required_size) {
+    size_t new_capacity = ctx->shadow_stack_capacity;
+    while (ctx->sp + required_size > new_capacity) {
+        new_capacity += SHADOW_STACK_INCREMENT;
+    }
+
+#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
+    ESP_LOGD(TAG, "Shadow stack overflow detected. Current capacity: %zu, required: %zu. Attempting to resize to %zu",
+             ctx->shadow_stack_capacity, ctx->sp + required_size, new_capacity);
+#endif
+
+    uint8_t* old_buffer = ctx->shadow_stack_buffer;
+    uint8_t* new_buffer = (uint8_t*)realloc(old_buffer, new_capacity);
+
+    if (!new_buffer) {
+        ESP_LOGE(TAG, "Failed to reallocate shadow stack to %zu bytes", new_capacity);
+        return -1; // Ошибка выделения памяти
+    }
+
+    ctx->shadow_stack_buffer = new_buffer;
+    ctx->shadow_stack_capacity = new_capacity;
+
+    if (new_buffer != old_buffer) {
+#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
+        ESP_LOGD(TAG, "Shadow stack buffer reallocated. Old: %p, New: %p. Relocating pointers...", (void*)old_buffer, (void*)new_buffer);
+#endif
+        // Исправляем указатели на сохраненные кадры в стеке вызовов
+        for (int i = 0; i < ctx->call_stack_top; ++i) {
+            if (ctx->call_stack[i].saved_frame) {
+                uintptr_t offset = (uintptr_t)ctx->call_stack[i].saved_frame - (uintptr_t)old_buffer;
+                ctx->call_stack[i].saved_frame = (Value*)(new_buffer + offset);
+            }
+        }
+        return 1; // Успешно, буфер был перемещен
+    }
+
+    return 0; // Успешно, буфер не был перемещен
+}
+
+// --- Начало тела функции espb_call_function ---
 // ... existing code ... // Это комментарий, представляющий тело функции, которое уже есть в файле
 
 // Универсальный диспетчер: вызывная точка для всех обратных вызовов из ESPB-модуля
@@ -515,7 +541,8 @@ static void espb_callback_dispatch(void *pvParameter) {
     free_execution_context(callback_exec_ctx);
 }
 //__attribute__((noinline, optimize("O0")))
-IRAM_ATTR EspbResult espb_call_function(EspbInstance *instance, ExecutionContext *exec_ctx, uint32_t func_idx, const Value *args, Value *results) {
+IRAM_ATTR 
+EspbResult espb_call_function(EspbInstance *instance, ExecutionContext *exec_ctx, uint32_t func_idx, const Value *args, Value *results) {
     // Проверка входных параметров
     
     if (!instance) {
@@ -605,10 +632,11 @@ IRAM_ATTR EspbResult espb_call_function(EspbInstance *instance, ExecutionContext
         
         // НОВЫЙ КОД: Используем единый виртуальный стек
         size_t frame_size_bytes = num_virtual_regs * sizeof(Value);
-        if (exec_ctx->sp + frame_size_bytes > exec_ctx->shadow_stack_capacity) {
-            ESP_LOGE(TAG, "Stack overflow. Requested %zu, available %zu",
-                     frame_size_bytes, exec_ctx->shadow_stack_capacity - exec_ctx->sp);
-            return ESPB_ERR_STACK_OVERFLOW;
+        // "Быстрый путь" - проверка стека встроена inline
+        if (__builtin_expect(exec_ctx->sp + frame_size_bytes > exec_ctx->shadow_stack_capacity, 0)) {
+            if (_espb_grow_shadow_stack(exec_ctx, frame_size_bytes) < 0) {
+                return ESPB_ERR_OUT_OF_MEMORY;
+            }
         }
         
         // `locals` теперь просто указатель на текущую позицию в `shadow_stack_buffer`
@@ -983,9 +1011,13 @@ IRAM_ATTR EspbResult espb_call_function(EspbInstance *instance, ExecutionContext
                     size_t saved_frame_size = num_virtual_regs * sizeof(Value);
                     size_t callee_frame_size = callee_body->num_virtual_regs * sizeof(Value);
 
-                    // 1. Проверяем, хватит ли места и для сохранения, и для нового кадра
-                    if (exec_ctx->sp + saved_frame_size + callee_frame_size > exec_ctx->shadow_stack_capacity) {
-                        return ESPB_ERR_STACK_OVERFLOW;
+                    // 1. Проверяем, хватит ли места (быстрый путь inline)
+                    if (__builtin_expect(exec_ctx->sp + saved_frame_size + callee_frame_size > exec_ctx->shadow_stack_capacity, 0)) {
+                        int stack_status = _espb_grow_shadow_stack(exec_ctx, saved_frame_size + callee_frame_size);
+                        if (stack_status < 0) { return ESPB_ERR_OUT_OF_MEMORY; }
+                        if (stack_status > 0) { // Буфер перемещен, обновляем указатель на locals
+                            locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->fp);
+                        }
                     }
 
                     // 2. Копируем текущий кадр (locals) в теневой стек
@@ -1104,8 +1136,12 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
         size_t saved_frame_size = num_virtual_regs * sizeof(Value);
         size_t callee_frame_size = callee_body->num_virtual_regs * sizeof(Value);
 
-        if (exec_ctx->sp + saved_frame_size + callee_frame_size > exec_ctx->shadow_stack_capacity) {
-            return ESPB_ERR_STACK_OVERFLOW;
+        if (__builtin_expect(exec_ctx->sp + saved_frame_size + callee_frame_size > exec_ctx->shadow_stack_capacity, 0)) {
+            int stack_status = _espb_grow_shadow_stack(exec_ctx, saved_frame_size + callee_frame_size);
+            if (stack_status < 0) { return ESPB_ERR_OUT_OF_MEMORY; }
+            if (stack_status > 0) { // Буфер перемещен, обновляем указатель на locals
+                locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->fp);
+            }
         }
         Value* saved_frame_location = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->sp);
         memcpy(saved_frame_location, locals, saved_frame_size);
@@ -1519,9 +1555,13 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                     size_t saved_frame_size = num_virtual_regs * sizeof(Value);
                     size_t callee_frame_size = callee_body->num_virtual_regs * sizeof(Value);
 
-                    // 1. Проверяем, хватит ли места и для сохранения, и для нового кадра
-                    if (exec_ctx->sp + saved_frame_size + callee_frame_size > exec_ctx->shadow_stack_capacity) {
-                        return ESPB_ERR_STACK_OVERFLOW;
+                    // 1. Проверяем, хватит ли места (быстрый путь inline)
+                    if (__builtin_expect(exec_ctx->sp + saved_frame_size + callee_frame_size > exec_ctx->shadow_stack_capacity, 0)) {
+                        int stack_status = _espb_grow_shadow_stack(exec_ctx, saved_frame_size + callee_frame_size);
+                        if (stack_status < 0) { return ESPB_ERR_OUT_OF_MEMORY; }
+                        if (stack_status > 0) { // Буфер перемещен, обновляем указатель на locals
+                            locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->fp);
+                        }
                     }
 
                     // 2. Копируем текущий кадр (locals) в теневой стек
@@ -4087,9 +4127,13 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
                    size_t frame_size_bytes = num_virtual_regs * sizeof(Value);
 
                    if (is_blocking_call) {
-                       if (exec_ctx->sp + frame_size_bytes > exec_ctx->shadow_stack_capacity) {
-                           ESP_LOGE(TAG, "Stack overflow before saving frame for blocking call.");
-                           return ESPB_ERR_STACK_OVERFLOW;
+                       // "Быстрый путь" - проверка стека встроена inline
+                       if (__builtin_expect(exec_ctx->sp + frame_size_bytes > exec_ctx->shadow_stack_capacity, 0)) {
+                           int stack_status = _espb_grow_shadow_stack(exec_ctx, frame_size_bytes);
+                           if (stack_status < 0) { return ESPB_ERR_OUT_OF_MEMORY; }
+                           if (stack_status > 0) { // Буфер перемещен, обновляем указатель на locals
+                               locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->fp);
+                           }
                        }
                        memcpy(exec_ctx->shadow_stack_buffer + exec_ctx->sp, locals, frame_size_bytes);
                        exec_ctx->sp += frame_size_bytes; // Protect the saved frame
