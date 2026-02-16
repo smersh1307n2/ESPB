@@ -19,6 +19,7 @@
 #include "espb_callback_system.h"
 #include "espb_interpreter_runtime_oc.h"
 #include "esp_log.h"
+#include "espb_jit_dispatcher.h"
 #include <string.h>
 #include <stdlib.h>
 #include "esp_system.h"
@@ -234,11 +235,11 @@ void espb_universal_callback_handler(ffi_cif *cif, void *ret_value, void **ffi_a
     // Конвертируем аргументы из FFI в ESPB формат
     for (uint32_t i = 0; i < copy_limit; ++i) {
         EspbValueType es_type = info->espb_signature->param_types[i];
-        espb_args[i].type = es_type;
+        SET_TYPE(espb_args[i], es_type);
 
         // Специальная обработка user_data параметра
         if ((int32_t)i == info->user_data_param_index && es_type == ESPB_TYPE_PTR) {
-            espb_args[i].value.ptr = info->original_user_data;
+            V_PTR(espb_args[i]) = info->original_user_data;
            ESP_LOGD(TAG, "Callback arg[%lu] user_data: %p", (unsigned long)i, info->original_user_data);
             continue;
         }
@@ -248,28 +249,28 @@ void espb_universal_callback_handler(ffi_cif *cif, void *ret_value, void **ffi_a
             // ИСПРАВЛЕНИЕ: Передаем TimerHandle_t в ESPB функцию, а не user_data
             // ESPB функция должна сама вызвать pvTimerGetTimerID если нужно
             TimerHandle_t timer_handle = *(TimerHandle_t*)ffi_args[0];
-            espb_args[i].value.ptr = timer_handle;
+            V_PTR(espb_args[i]) = timer_handle;
            ESP_LOGD(TAG, "Callback arg[%lu] FreeRTOS timer: passing TimerHandle_t=%p to ESPB", (unsigned long)i, timer_handle);
             continue;
         }
 
         // Стандартная конвертация типов
         switch (es_type) {
-            case ESPB_TYPE_I8:   espb_args[i].value.i8  = *(int8_t*)ffi_args[i]; break;
-            case ESPB_TYPE_U8:   espb_args[i].value.u8  = *(uint8_t*)ffi_args[i]; break;
-            case ESPB_TYPE_I16:  espb_args[i].value.i16 = *(int16_t*)ffi_args[i]; break;
-            case ESPB_TYPE_U16:  espb_args[i].value.u16 = *(uint16_t*)ffi_args[i]; break;
-            case ESPB_TYPE_I32:  espb_args[i].value.i32 = *(int32_t*)ffi_args[i]; break;
-            case ESPB_TYPE_U32:  espb_args[i].value.u32 = *(uint32_t*)ffi_args[i]; break;
-            case ESPB_TYPE_I64:  espb_args[i].value.i64 = *(int64_t*)ffi_args[i]; break;
-            case ESPB_TYPE_U64:  espb_args[i].value.u64 = *(uint64_t*)ffi_args[i]; break;
-            case ESPB_TYPE_F32:  espb_args[i].value.f32 = *(float*)ffi_args[i]; break;
-            case ESPB_TYPE_F64:  espb_args[i].value.f64 = *(double*)ffi_args[i]; break;
-            case ESPB_TYPE_PTR:  espb_args[i].value.ptr = *(void**)ffi_args[i]; break;
-            case ESPB_TYPE_BOOL: espb_args[i].value.i32 = *(int32_t*)ffi_args[i]; break;
+            case ESPB_TYPE_I8:   V_I32(espb_args[i]) = *(int8_t*)ffi_args[i]; break;
+            case ESPB_TYPE_U8:   V_I32(espb_args[i]) = *(uint8_t*)ffi_args[i]; break;
+            case ESPB_TYPE_I16:  V_I32(espb_args[i]) = *(int16_t*)ffi_args[i]; break;
+            case ESPB_TYPE_U16:  V_I32(espb_args[i]) = *(uint16_t*)ffi_args[i]; break;
+            case ESPB_TYPE_I32:  V_I32(espb_args[i]) = *(int32_t*)ffi_args[i]; break;
+            case ESPB_TYPE_U32:  V_I32(espb_args[i]) = *(uint32_t*)ffi_args[i]; break;
+            case ESPB_TYPE_I64:  V_I64(espb_args[i]) = *(int64_t*)ffi_args[i]; break;
+            case ESPB_TYPE_U64:  V_I64(espb_args[i]) = *(uint64_t*)ffi_args[i]; break;
+            case ESPB_TYPE_F32:  V_F32(espb_args[i]) = *(float*)ffi_args[i]; break;
+            case ESPB_TYPE_F64:  V_F64(espb_args[i]) = *(double*)ffi_args[i]; break;
+            case ESPB_TYPE_PTR:  V_PTR(espb_args[i]) = *(void**)ffi_args[i]; break;
+            case ESPB_TYPE_BOOL: V_I32(espb_args[i]) = *(int32_t*)ffi_args[i]; break;
             default:
-                espb_args[i].value.i32 = *(int32_t*)ffi_args[i];
-                espb_args[i].type = ESPB_TYPE_I32;
+                V_I32(espb_args[i]) = *(int32_t*)ffi_args[i];
+                SET_TYPE(espb_args[i], ESPB_TYPE_I32);
                 break;
         }
 
@@ -287,9 +288,9 @@ void espb_universal_callback_handler(ffi_cif *cif, void *ret_value, void **ffi_a
     
     // Выводим все параметры для отладки
     for (uint32_t i = 0; i < num_params && i < copy_limit; ++i) {
-       ESP_LOGD(TAG, "  Param[%lu]: type=%d, value=0x%08lx", 
-                 (unsigned long)i, espb_args[i].type, 
-                 (unsigned long)espb_args[i].value.u32);
+       ESP_LOGD(TAG, "  Param[%lu]: value=0x%08lx",
+                 (unsigned long)i,
+                 (unsigned long)V_I32(espb_args[i]));
     }
     
   
@@ -300,8 +301,8 @@ void espb_universal_callback_handler(ffi_cif *cif, void *ret_value, void **ffi_a
     // Проверяем, что у нас есть хотя бы один аргумент для передачи
     const Value *args_to_pass = (copy_limit > 0) ? espb_args : NULL;
     
-    EspbResult call_result = espb_call_function(instance, callback_exec_ctx, 
-                                                info->espb_func_idx, args_to_pass, result_ptr);
+    EspbResult call_result = espb_execute_function(instance, callback_exec_ctx,
+                                                 info->espb_func_idx, args_to_pass, result_ptr);
     
    ESP_LOGD(TAG, "*** espb_call_function RETURNED: result=%d ***", call_result);
     
@@ -320,8 +321,8 @@ void espb_universal_callback_handler(ffi_cif *cif, void *ret_value, void **ffi_a
     } else {
        ESP_LOGD(TAG, "Callback ESPB function executed successfully");
         if (result_ptr && info->espb_signature->num_returns > 0) {
-           ESP_LOGD(TAG, "  Return value: type=%d, value=0x%08lx", 
-                     result.type, (unsigned long)result.value.u32);
+           ESP_LOGD(TAG, "  Return value: value=0x%08lx",
+                     (unsigned long)V_I32(result));
         }
         
         // Симуляция больше не нужна - реальная ESPB функция должна работать с разделяемым контекстом
@@ -331,18 +332,18 @@ void espb_universal_callback_handler(ffi_cif *cif, void *ret_value, void **ffi_a
     if (ret_value && result_ptr && info->espb_signature->num_returns > 0) {
         EspbValueType ret_type = info->espb_signature->return_types[0];
         switch (ret_type) {
-            case ESPB_TYPE_I8:   *(int8_t*)ret_value   = result.value.i8; break;
-            case ESPB_TYPE_U8:   *(uint8_t*)ret_value  = result.value.u8; break;
-            case ESPB_TYPE_I16:  *(int16_t*)ret_value  = result.value.i16; break;
-            case ESPB_TYPE_U16:  *(uint16_t*)ret_value = result.value.u16; break;
-            case ESPB_TYPE_I32:  *(int32_t*)ret_value  = result.value.i32; break;
-            case ESPB_TYPE_U32:  *(uint32_t*)ret_value = result.value.u32; break;
-            case ESPB_TYPE_I64:  *(int64_t*)ret_value  = result.value.i64; break;
-            case ESPB_TYPE_U64:  *(uint64_t*)ret_value = result.value.u64; break;
-            case ESPB_TYPE_F32:  *(float*)ret_value    = result.value.f32; break;
-            case ESPB_TYPE_F64:  *(double*)ret_value   = result.value.f64; break;
-            case ESPB_TYPE_PTR:  *(void**)ret_value    = result.value.ptr; break;
-            case ESPB_TYPE_BOOL: *(int32_t*)ret_value  = result.value.i32; break;
+            case ESPB_TYPE_I8:   *(int8_t*)ret_value   = (int8_t)V_I32(result); break;
+            case ESPB_TYPE_U8:   *(uint8_t*)ret_value  = (uint8_t)V_I32(result); break;
+            case ESPB_TYPE_I16:  *(int16_t*)ret_value  = (int16_t)V_I32(result); break;
+            case ESPB_TYPE_U16:  *(uint16_t*)ret_value = (uint16_t)V_I32(result); break;
+            case ESPB_TYPE_I32:  *(int32_t*)ret_value  = V_I32(result); break;
+            case ESPB_TYPE_U32:  *(uint32_t*)ret_value = (uint32_t)V_I32(result); break;
+            case ESPB_TYPE_I64:  *(int64_t*)ret_value  = V_I64(result); break;
+            case ESPB_TYPE_U64:  *(uint64_t*)ret_value = (uint64_t)V_I64(result); break;
+            case ESPB_TYPE_F32:  *(float*)ret_value    = V_F32(result); break;
+            case ESPB_TYPE_F64:  *(double*)ret_value   = V_F64(result); break;
+            case ESPB_TYPE_PTR:  *(void**)ret_value    = V_PTR(result); break;
+            case ESPB_TYPE_BOOL: *(int32_t*)ret_value  = V_I32(result); break;
             default: break;
         }
     }

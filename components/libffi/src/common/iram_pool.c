@@ -1,4 +1,4 @@
-/*
+﻿/*
  * This file is part of the modified libffi library.
  *
  * Original libffi - Copyright (c) 1996-2025 Anthony Green, Red Hat, Inc and others.
@@ -36,7 +36,7 @@ void iram_pool_init(void) {
 
 void* iram_pool_alloc(size_t size) {
    ESP_LOGD(TAG, "Shim: iram_pool_alloc(%d) -> heap_caps_malloc(MALLOC_CAP_EXEC)", size);
-    void* ptr = heap_caps_malloc(size, MALLOC_CAP_EXEC);//| MALLOC_CAP_32BIT);
+    void* ptr = heap_caps_malloc(size, MALLOC_CAP_EXEC);
     if (!ptr) {
         ESP_LOGE(TAG, "heap_caps_malloc failed to allocate %d bytes of executable memory", size);
     } else {

@@ -1,4 +1,4 @@
-/*
+﻿/*
  * espb component
  * Copyright (C) 2025 Smersh
  *
@@ -15,7 +15,6 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-
 #include "espb_heap_manager.h"
 #include "esp_log.h"
 #include <string.h>
@@ -162,7 +161,10 @@ void* espb_heap_malloc_aligned(EspbInstance *instance, size_t size, size_t align
 }
 
 void espb_heap_free(EspbInstance *instance, void* ptr) {
+    ESP_LOGD(TAG, "[HEAP_FREE] instance=%p ptr=%p", (void*)instance, ptr);
     if (!instance->heap_ctx.initialized || ptr == NULL || !instance->heap_ctx.heap_handle) {
+        ESP_LOGD(TAG, "[HEAP_FREE] early return: init=%d ptr=%p handle=%p", 
+                 instance->heap_ctx.initialized, ptr, instance->heap_ctx.heap_handle);
         return;
     }
     

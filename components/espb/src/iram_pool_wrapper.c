@@ -1,4 +1,4 @@
-/*
+﻿/*
  * espb component
  * Copyright (C) 2025 Smersh
  *
@@ -15,7 +15,6 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-
 // Временная обертка для функций IRAM pool
 // Пока не решена проблема с линковкой libffi
 

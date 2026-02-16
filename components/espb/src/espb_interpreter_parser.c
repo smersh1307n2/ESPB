@@ -1,4 +1,4 @@
-/*
+﻿/*
  * espb component
  * Copyright (C) 2025 Smersh
  *
@@ -15,9 +15,9 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-
 #include "espb_interpreter.h"
 #include "espb_interpreter_parser.h"
+#include "espb_host_symbols.h" // import flags (IMPORT_FLAG_*)
 #include "espb_interpreter_reader.h" // Для функций чтения read_u32 и т.д.
 
 #include <stdlib.h> // для malloc, free, calloc
@@ -71,7 +71,6 @@ static void espb_clear_module_sections(EspbModule *module) {
     }
     if (module->imports) {
         for (uint32_t i = 0; i < module->num_imports; ++i) {
-            if (module->imports[i].module_name) free(module->imports[i].module_name);
             if (module->imports[i].entity_name) free(module->imports[i].entity_name);
         }
         free(module->imports);
@@ -633,54 +632,87 @@ EspbResult espb_parse_code_section(EspbModule *module) {
 
     for (uint32_t i = 0; i < module->num_functions; ++i) {
         EspbFunctionBody *body = &module->function_bodies[i];
-        uint32_t body_size; // Общий размер тела функции, включая locals_count и code_size
-        uint16_t num_virtual_regs; // Ранее было locals_count
-        uint32_t code_size_field; // Размер только байткода
+        uint32_t body_size; // Общий размер тела функции (8 байт header + код)
 
-        // Читаем общий размер тела функции (включая num_virtual_regs и сам код)
+        // Читаем общий размер тела функции (включая 8-байтный header и код)
         if (!read_u32(&ptr, end_ptr, &body_size)) {
-            // ESP_LOGE(TAG, "Failed to read body_size for function body %u", i);
             fprintf(stderr, "Failed to read body_size for function body %" PRIu32 "\n", i);
             goto error_cleanup_code;
         }
 
         const uint8_t *body_start_ptr = ptr; // Запоминаем начало данных тела функции
 
-        if (body_size < sizeof(uint16_t)) { // Минимальный размер для num_virtual_regs
-            // ESP_LOGE(TAG, "Body size %u too small for function body %u", body_size, i);
-            fprintf(stderr, "Body size %" PRIu32 " too small for function body %" PRIu32 "\n", body_size, i);
+        if (body_size < 8) { // Минимальный размер для EspbFuncHeader (8 байт)
+            fprintf(stderr, "Body size %" PRIu32 " too small for function body %" PRIu32 " (must be >= 8)\n", body_size, i);
             goto error_cleanup_code;
         }
 
-        if (!read_u16(&ptr, end_ptr, &num_virtual_regs)) {
-            // ESP_LOGE(TAG, "Failed to read num_virtual_regs for function body %u", i);
-            fprintf(stderr, "Failed to read num_virtual_regs for function body %" PRIu32 "\n", i);
+        // ✅ Читаем JIT-заголовок (8 байт)
+        if (!read_u8(&ptr, end_ptr, &body->header.flags) ||
+            !read_u8(&ptr, end_ptr, &body->header.max_reg_used) ||
+            !read_u16(&ptr, end_ptr, &body->header.frame_size) ||
+            !read_u16(&ptr, end_ptr, &body->header.num_virtual_regs) ||
+            !read_u16(&ptr, end_ptr, &body->header.reserved)) {
+            fprintf(stderr, "Failed to read EspbFuncHeader for function body %" PRIu32 "\n", i);
             goto error_cleanup_code;
         }
-        body->num_virtual_regs = num_virtual_regs;
         
-        // Размер кода это общий размер тела минус размер поля num_virtual_regs
-        if (body_size < sizeof(uint16_t)) { // Еще раз на всякий случай, если body_size был очень мал
-            fprintf(stderr, "Body size %" PRIu32 " invalid after reading num_virtual_regs for func %" PRIu32 "\n", body_size, i);
-            goto error_cleanup_code;
-        }
-        code_size_field = body_size - sizeof(uint16_t);
+        // Размер кода = общий размер тела минус размер заголовка (8 байт)
+        uint32_t code_size_field = body_size - 8;
         body->code_size = code_size_field;
 
         if (ptr + body->code_size > end_ptr || ptr + body->code_size < ptr) { // Проверка на переполнение и выход за границы
-            // ESP_LOGE(TAG, "Not enough data for code of function body %u (expected %u, available %zu)", i, body->code_size, (size_t)(end_ptr - ptr));
             fprintf(stderr, "Not enough data for code of function body %" PRIu32 " (expected %" PRIu32 ", available %zu)\n", i, body->code_size, (size_t)(end_ptr - ptr));
             goto error_cleanup_code;
         }
         body->code = ptr;
         ptr += body->code_size;
         
-        // Проверка, что мы не вышли за пределы body_size, прочитав все компоненты тела
+        // Инициализация JIT полей
+        body->jit_code = NULL;
+        body->jit_code_size = 0;
+        body->is_jit_compiled = false;
+        
+        // ВАЛИДАЦИЯ: Проверяем согласованность метаданных
+        // Это единственная валидация при загрузке - runtime проверки отключены в релизе
+        if (body->code_size > 0 && body->header.num_virtual_regs == 0) {
+            fprintf(stderr, "ERROR: Func[%" PRIu32 "] validation failed: code_size=%" PRIu32 " but num_virtual_regs=0\n",
+                    i, body->code_size);
+            goto error_cleanup_code;
+        }
+
+        if (body->header.num_virtual_regs > 0 && body->header.max_reg_used >= body->header.num_virtual_regs) {
+            fprintf(stderr, "ERROR: Func[%" PRIu32 "] validation failed: max_reg_used=%u >= num_virtual_regs=%u\n",
+                    i, body->header.max_reg_used, body->header.num_virtual_regs);
+            fprintf(stderr, "       This bytecode was generated by an incompatible translator.\n");
+            fprintf(stderr, "       Expected: max_reg_used < num_virtual_regs (max_reg is 0-based index)\n");
+            goto error_cleanup_code;
+        }
+        
+        // Проверка разумности количества регистров
+        if (body->header.num_virtual_regs > 255) {
+            fprintf(stderr, "ERROR: Func[%" PRIu32 "] has too many virtual registers: %u (max 255)\n",
+                    i, body->header.num_virtual_regs);
+            goto error_cleanup_code;
+        }
+
+        // Если функция использует R7 (stack pointer register), то num_virtual_regs должен быть >= 8
+        // (иначе интерпретатор не может корректно инициализировать locals[7])
+        if (body->header.max_reg_used >= 7 && body->header.num_virtual_regs < 8) {
+            fprintf(stderr, "ERROR: Func[%" PRIu32 "] validation failed: max_reg_used=%u implies R7 usage but num_virtual_regs=%u < 8\n",
+                    i, body->header.max_reg_used, body->header.num_virtual_regs);
+            goto error_cleanup_code;
+        }
+        
+        // Проверка, что мы не вышли за пределы body_size
         if ((size_t)(ptr - body_start_ptr) != body_size) {
-            // ESP_LOGE(TAG, "Mismatch in parsed body size for func %u: expected %u, got %zu", i, body_size, (size_t)(ptr - body_start_ptr));
             fprintf(stderr, "Mismatch in parsed body size for func %" PRIu32 ": expected %" PRIu32 ", got %zu\n", i, body_size, (size_t)(ptr - body_start_ptr));
             goto error_cleanup_code;
         }
+        
+        fprintf(stderr, "DEBUG: Func[%" PRIu32 "]: flags=0x%02X, max_reg=%u, frame_size=%u, num_vregs=%u, code_size=%" PRIu32 " [VALIDATED]\n",
+                i, body->header.flags, body->header.max_reg_used, body->header.frame_size, 
+                body->header.num_virtual_regs, body->code_size);
     }
 
     if (ptr != end_ptr) {
@@ -1224,24 +1256,16 @@ EspbResult espb_parse_imports_section(EspbModule *module) {
 
     for (uint32_t i = 0; i < module->num_imports; ++i) {
         EspbImportDesc *imp = &module->imports[i];
-        imp->module_name = read_string(&ptr, end_ptr);
-        if (!imp->module_name) {
-            // ESP_LOGE(TAG, "Failed to read module_name for import %u", i);
-            fprintf(stderr, "Failed to read module_name for import %" PRIu32 "\n", i);
-            goto error_cleanup_imports;
-        }
 
-        imp->entity_name = read_string(&ptr, end_ptr);
-        if (!imp->entity_name) {
-            // ESP_LOGE(TAG, "Failed to read entity_name for import %u ('%s')", i, imp->module_name);
-            fprintf(stderr, "Failed to read entity_name for import %" PRIu32 " ('%s')\n", i, imp->module_name);
+        // module_num (u8) replaces module_name string
+        if (!read_u8(&ptr, end_ptr, &imp->module_num)) {
+            fprintf(stderr, "Failed to read module_num for import %" PRIu32 "\n", i);
             goto error_cleanup_imports;
         }
 
         uint8_t kind_val;
         if (!read_u8(&ptr, end_ptr, &kind_val)) {
-            // ESP_LOGE(TAG, "Failed to read kind for import %u (%s::%s)", i, imp->module_name, imp->entity_name);
-            fprintf(stderr, "Failed to read kind for import %" PRIu32 " (%s::%s)\n", i, imp->module_name, imp->entity_name);
+            fprintf(stderr, "Failed to read kind for import %" PRIu32 "\n", i);
             goto error_cleanup_imports;
         }
         imp->kind = (EspbImportKind)kind_val;
@@ -1250,17 +1274,28 @@ EspbResult espb_parse_imports_section(EspbModule *module) {
             case ESPB_IMPORT_KIND_FUNC:
                 if (!read_u16(&ptr, end_ptr, &imp->desc.func.type_idx) ||
                     !read_u8(&ptr, end_ptr, &imp->desc.func.import_flags)) {
-                    // ESP_LOGE(TAG, "Failed to read func import data for %s::%s", imp->module_name, imp->entity_name);
-                    fprintf(stderr, "Failed to read func import data for %s::%s\n", imp->module_name, imp->entity_name);
+                    fprintf(stderr, "Failed to read func import header for import %" PRIu32 "\n", i);
                     goto error_cleanup_imports;
                 }
+
+                if ((imp->desc.func.import_flags & IMPORT_FLAG_INDEXED) != 0) {
+                    if (!read_u16(&ptr, end_ptr, &imp->desc.func.symbol_index)) {
+                        fprintf(stderr, "Failed to read symbol_index for import %" PRIu32 "\n", i);
+                        goto error_cleanup_imports;
+                    }
+                    imp->entity_name = NULL;
+                } else {
+                    imp->desc.func.symbol_index = 0;
+                    imp->entity_name = read_string(&ptr, end_ptr);
+                    if (!imp->entity_name) {
+                        fprintf(stderr, "Failed to read entity_name for import %" PRIu32 "\n", i);
+                        goto error_cleanup_imports;
+                    }
+                }
+
                 if (imp->desc.func.type_idx >= module->num_signatures) {
-                    // ESP_LOGE(TAG, "Invalid type_idx %u for func import %s::%s (num_signatures %u)", 
-                    //          imp->desc.func.type_idx, imp->module_name, imp->entity_name, module->num_signatures);
-                    fprintf(stderr, "Invalid type_idx %u for func import %s::%s (num_signatures %u)\n",
+                    fprintf(stderr, "Invalid type_idx %u for func import (num_signatures %u)\n",
                             (unsigned int)imp->desc.func.type_idx,
-                            imp->module_name,
-                            imp->entity_name,
                             (unsigned int)module->num_signatures);
                     goto error_cleanup_imports;
                 }
@@ -1269,36 +1304,31 @@ EspbResult espb_parse_imports_section(EspbModule *module) {
                 if (!read_u8(&ptr, end_ptr, &imp->desc.table.element_type) ||
                     !read_u8(&ptr, end_ptr, &imp->desc.table.limits.flags) ||
                     !read_u32(&ptr, end_ptr, &imp->desc.table.limits.initial_size)) {
-                    // ESP_LOGE(TAG, "Failed to read table import data for %s::%s (part 1)", imp->module_name, imp->entity_name);
-                    fprintf(stderr, "Failed to read table import data for %s::%s (part 1)\n", imp->module_name, imp->entity_name);
+                    fprintf(stderr, "Failed to read table import data for import %" PRIu32 " (part 1)\n", i);
                     goto error_cleanup_imports;
                 }
                 if (imp->desc.table.limits.flags & 0x01) { // has_max
                     if (!read_u32(&ptr, end_ptr, &imp->desc.table.limits.max_size)) {
-                        // ESP_LOGE(TAG, "Failed to read table.limits.max_size for %s::%s", imp->module_name, imp->entity_name);
-                        fprintf(stderr, "Failed to read table.limits.max_size for %s::%s\n", imp->module_name, imp->entity_name);
+                        fprintf(stderr, "Failed to read table.limits.max_size for import %" PRIu32 "\n", i);
                         goto error_cleanup_imports;
                     }
                 } else {
                     imp->desc.table.limits.max_size = 0; // Или другое значение по умолчанию
                 }
                 if (imp->desc.table.element_type != ESPB_REF_TYPE_FUNCREF) { // В v1.7 только FUNCREF
-                     // ESP_LOGE(TAG, "Invalid table element_type %u for %s::%s", imp->desc.table.element_type, imp->module_name, imp->entity_name);
-                    fprintf(stderr, "Invalid table element_type %" PRIu8 " for %s::%s\n", imp->desc.table.element_type, imp->module_name, imp->entity_name);
+                    fprintf(stderr, "Invalid table element_type %" PRIu8 " for import %" PRIu32 "\n", imp->desc.table.element_type, i);
                     goto error_cleanup_imports;
                 }
                 break;
             case ESPB_IMPORT_KIND_MEMORY:
                 if (!read_u8(&ptr, end_ptr, &imp->desc.memory.flags) ||
                     !read_u32(&ptr, end_ptr, &imp->desc.memory.initial_size)) {
-                    // ESP_LOGE(TAG, "Failed to read memory import data for %s::%s (part 1)", imp->module_name, imp->entity_name);
-                    fprintf(stderr, "Failed to read memory import data for %s::%s (part 1)\n", imp->module_name, imp->entity_name);
+                    fprintf(stderr, "Failed to read memory import data for import %" PRIu32 " (part 1)\n", i);
                     goto error_cleanup_imports;
                 }
                 if (imp->desc.memory.flags & 0x01) { // has_max
                     if (!read_u32(&ptr, end_ptr, &imp->desc.memory.max_size)) {
-                         // ESP_LOGE(TAG, "Failed to read memory.max_size for %s::%s", imp->module_name, imp->entity_name);
-                        fprintf(stderr, "Failed to read memory.max_size for %s::%s\n", imp->module_name, imp->entity_name);
+                        fprintf(stderr, "Failed to read memory.max_size for import %" PRIu32 "\n", i);
                         goto error_cleanup_imports;
                     }
                 } else {
@@ -1310,8 +1340,7 @@ EspbResult espb_parse_imports_section(EspbModule *module) {
                 if (!read_u8(&ptr, end_ptr, &type_val) ||
                     !read_u8(&ptr, end_ptr, &mut_val) ||
                     !read_u8(&ptr, end_ptr, &shared_val)) {
-                    // ESP_LOGE(TAG, "Failed to read global import data for %s::%s", imp->module_name, imp->entity_name);
-                    fprintf(stderr, "Failed to read global import data for %s::%s\n", imp->module_name, imp->entity_name);
+                    fprintf(stderr, "Failed to read global import data for import %" PRIu32 "\n", i);
                     goto error_cleanup_imports;
                 }
                 imp->desc.global.type = (EspbValueType)type_val;
@@ -1323,8 +1352,7 @@ EspbResult espb_parse_imports_section(EspbModule *module) {
                 if (imp->desc.global.shared_flag > 1 || (imp->desc.global.shared_flag == 1 && imp->desc.global.mutability == 0)) goto error_cleanup_imports_msg;
                 break;
             default:
-                // ESP_LOGE(TAG, "Invalid import kind %u for %s::%s", imp->kind, imp->module_name, imp->entity_name);
-                fprintf(stderr, "Invalid import kind %" PRIu8 " for %s::%s\n", imp->kind, imp->module_name, imp->entity_name);
+                fprintf(stderr, "Invalid import kind %" PRIu8 " for import %" PRIu32 "\n", imp->kind, i);
                 goto error_cleanup_imports;
         }
     }
@@ -1345,7 +1373,7 @@ EspbResult espb_parse_imports_section(EspbModule *module) {
     return ESPB_OK;
 
 error_cleanup_imports_msg:
-    // ESP_LOGE(TAG, "Invalid field value in import descriptor for %s::%s", module->imports[i].module_name, module->imports[i].entity_name);
+    // ESP_LOGE(TAG, "Invalid field value in import descriptor");
     fprintf(stderr, "Invalid field value in import descriptor\n");
 error_cleanup_imports:
     // espb_free_module позаботится об очистке строк и массива
@@ -1971,6 +1999,8 @@ EspbResult espb_parse_func_ptr_map_section(EspbModule *module) {
         fprintf(stderr, "Info: Function Pointer Map section (ID=18) not found.\n");
         module->num_func_ptr_map_entries = 0;
         module->func_ptr_map = NULL;
+        module->func_ptr_map_by_index = NULL;
+        module->func_ptr_map_by_index_size = 0;
         return ESPB_OK;
     }
 
@@ -2022,6 +2052,25 @@ EspbResult espb_parse_func_ptr_map_section(EspbModule *module) {
         fprintf(stderr, "DEBUG: Function Pointer Map sorted by data_offset.\n");
     }
 
+    // Build O(1) lookup table: function_index -> data_offset
+    if (module->num_functions > 0) {
+        module->func_ptr_map_by_index_size = module->num_functions;
+        module->func_ptr_map_by_index = (uint32_t *)SAFE_MALLOC(sizeof(uint32_t) * module->func_ptr_map_by_index_size);
+        if (!module->func_ptr_map_by_index) {
+            fprintf(stderr, "Failed to allocate func_ptr_map_by_index\n");
+            return ESPB_ERR_MEMORY_ALLOC;
+        }
+        for (uint32_t i = 0; i < module->func_ptr_map_by_index_size; i++) {
+            module->func_ptr_map_by_index[i] = UINT32_MAX;
+        }
+        for (uint32_t i = 0; i < num_entries; i++) {
+            uint16_t func_idx = module->func_ptr_map[i].function_index;
+            if (func_idx < module->func_ptr_map_by_index_size) {
+                module->func_ptr_map_by_index[func_idx] = module->func_ptr_map[i].data_offset;
+            }
+        }
+    }
+
     for(uint32_t i=0; i < num_entries; ++i) {
         fprintf(stderr, "DEBUG: Map Entry %u: offset=0x%x -> func_idx=%u\n", i, module->func_ptr_map[i].data_offset, module->func_ptr_map[i].function_index);
     }
@@ -2038,6 +2087,12 @@ void espb_free_module(EspbModule *module) {
     }
     // Вызываем вспомогательную функцию для очистки всех полей, связанных с секциями
     espb_clear_module_sections(module);
+
+    if (module->func_ptr_map_by_index) {
+        free(module->func_ptr_map_by_index);
+        module->func_ptr_map_by_index = NULL;
+        module->func_ptr_map_by_index_size = 0;
+    }
 
     // Освобождаем саму структуру модуля
     free(module);

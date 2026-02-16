@@ -36,5 +36,6 @@
     "--background-index",
     "--query-driver=c:\\Andrey\\Programs\\Espressif\\Tools\\tools\\riscv32-esp-elf\\esp-14.2.0_20241119\\riscv32-esp-elf\\bin\\riscv32-esp-elf-gcc.exe",
     "--compile-commands-dir=c:\\Andrey\\Projects\\VS_Code\\ESPB_Test\\build"
-  ]
+  ],
+  "idf.currentSetup": "c:\\Andrey\\Programs\\Espressif\\frameworks\\esp-idf-v5.4"
 }

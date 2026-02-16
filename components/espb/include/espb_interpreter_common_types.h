@@ -1,4 +1,4 @@
-/*
+﻿/*
  * espb component
  * Copyright (C) 2025 Smersh
  *
@@ -15,7 +15,6 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-
 #ifndef ESPB_INTERPRETER_COMMON_TYPES_H
 #define ESPB_INTERPRETER_COMMON_TYPES_H
 
@@ -35,7 +34,23 @@
 extern "C" {
 #endif
 
+// Forward declarations для избежания циклических зависимостей
+typedef struct EspbJitCache EspbJitCache;
+
 // Определяем макрос MIN, если он еще не определен
+// Флаги функций (JIT-заголовок, поле flags)
+// ============================================================================
+
+#define ESPB_FUNC_FLAG_IS_LEAF      0x01  // Функция не вызывает другие функции (leaf)
+#define ESPB_FUNC_FLAG_USE_FPU      0x02  // Использует операции с плавающей точкой
+#define ESPB_FUNC_FLAG_NO_SPILL     0x04  // Все виртуальные регистры в физических (нет spill)
+#define ESPB_FUNC_FLAG_HAS_CALLS    0x08  // Содержит инструкции CALL или CALL_INDIRECT
+#define ESPB_FUNC_FLAG_HAS_MEMORY   0x10  // Использует инструкции LOAD или STORE
+#define ESPB_FUNC_FLAG_SIMPLE_CF    0x20  // Простой граф потока управления (<= 5 BB)
+#define ESPB_FUNC_FLAG_HOT          0x40  // "Горячая" функция для приоритетной JIT-компиляции
+// Бит 7 (0x80) зарезервирован
+
+// ============================================================================
 #ifndef MIN
 #define MIN(a, b) (((a) < (b)) ? (a) : (b))
 #endif
@@ -97,6 +112,8 @@ typedef enum {
     ESPB_ERR_INVALID_STATE = -53,
     ESPB_ERR_INVALID_FUNC_PTR_MAP_SECTION = -54,
     ESPB_ERR_UNSUPPORTED_SIGNATURE = -56,
+    ESPB_ERR_JIT_UNSUPPORTED_OPCODE = -57, // Новый код ошибки для JIT
+    ESPB_ERR_UNSUPPORTED = -58,
     ESPB_OK = 0
 } EspbResult;
 
@@ -120,6 +137,10 @@ typedef enum EspbValueType {
     ESPB_TYPE_VOID    = 0x0F  // Используется для обозначения отсутствия возвращаемого значения в сигнатурах
 } EspbValueType;
 
+
+// Карта размеров для каждого EspbValueType, используется для memcpy и др.
+// Определена в espb_interpreter_runtime_oc.c
+extern const uint8_t value_size_map[];
 // Forward declarations and basic types needed early
 #include "multi_heap.h"
 
@@ -170,9 +191,28 @@ typedef struct {
     uint32_t section_size;
 } __attribute__((packed)) SectionHeaderEntry;
 
+// JIT-ready заголовок функции (8 байт)
+typedef struct {
+    uint8_t flags;              // Флаги функции (IS_LEAF, USE_FPU, NO_SPILL, etc.)
+    uint8_t max_reg_used;       // Максимальный использованный регистр (0-255)
+    uint16_t frame_size;        // Размер stack frame в байтах
+    uint16_t num_virtual_regs;  // Количество виртуальных регистров
+    uint16_t reserved;          // Резерв для будущего расширения
+} EspbFuncHeader;
+
+// Флаги функций для JIT оптимизаций
+#define ESPB_FUNC_FLAG_IS_LEAF      0x01  // Функция не вызывает другие функции
+#define ESPB_FUNC_FLAG_USE_FPU      0x02  // Использует операции с плавающей точкой
+#define ESPB_FUNC_FLAG_NO_SPILL     0x04  // Все регистры помещаются в физические
+#define ESPB_FUNC_FLAG_HAS_CALLS    0x08  // Содержит CALL/CALL_INDIRECT
+#define ESPB_FUNC_FLAG_HAS_MEMORY   0x10  // Использует LOAD/STORE
+#define ESPB_FUNC_FLAG_SIMPLE_CF    0x20  // Простой control flow (нет циклов)
+#define ESPB_FUNC_FLAG_HOT          0x40  // Горячая функция (приоритет JIT)
+// 0x80 - резерв
+
 // Структура для хранения информации о теле функции из секции Code
 typedef struct {
-    uint16_t num_virtual_regs;
+    EspbFuncHeader header;      // ✅ JIT-ready заголовок с метаданными
     uint32_t code_size;
     const uint8_t *code;
 
@@ -181,6 +221,12 @@ typedef struct {
     size_t threaded_code_size_bytes; // Размер буфера в байтах
     bool is_threaded;                  // Флаг, показывающий, что трансляция выполнена
     // ---------------------------------------------
+    
+    // --- НОВЫЕ ПОЛЯ ДЛЯ JIT ---
+    void *jit_code;             // Указатель на скомпилированный нативный код
+    size_t jit_code_size;       // Размер JIT кода в байтах
+    bool is_jit_compiled;       // Флаг JIT компиляции
+    // --------------------------
 } EspbFunctionBody;
 
 // Лимиты для памяти или таблиц
@@ -236,13 +282,15 @@ typedef enum {
 
 // Описание импортируемой сущности из секции Imports
 typedef struct {
-    char *module_name;
-    char *entity_name;
+    uint8_t module_num;      // 0 = default/global. Other values reserved for future/special cases.
+    char *entity_name;       // Used for named imports and for non-function imports.
     EspbImportKind kind;
     union {
         struct {
             uint16_t type_idx;
             uint8_t import_flags;
+            // If (import_flags & IMPORT_FLAG_INDEXED) != 0, then symbol_index is used and entity_name may be NULL.
+            uint16_t symbol_index;
         } func;
         struct {
              uint8_t element_type;
@@ -416,6 +464,8 @@ typedef struct {
     // --- Function Pointer Map ---
     uint32_t num_func_ptr_map_entries;
     EspbFuncPtrMapEntry *func_ptr_map;
+    uint32_t *func_ptr_map_by_index; // O(1) lookup: function_index -> data_offset (UINT32_MAX if not present)
+    uint32_t func_ptr_map_by_index_size;
     
     // --- Cached values for performance ---
     uint32_t num_imported_funcs;  // Кэшированное количество импортированных функций
@@ -471,32 +521,81 @@ typedef struct EspbInstance {
     // --- ДОБАВИТЬ ЭТИ ПОЛЯ ---
     EspbHeapContext heap_ctx;
     uint32_t static_data_end_offset;
+    bool *import_is_blocking; // ОПТИМИЗАЦИЯ: Кэшированные флаги для блокирующих импортов
+    uint8_t *import_is_readonly; // ОПТИМИЗАЦИЯ: readonly-imports (memcmp/strcmp) для async out-params
     // --- КОНЕЦ ДОБАВЛЕНИЯ ---
+
+    // --- JIT Cache ---
+    EspbJitCache *jit_cache;          // Кеш скомпилированных JIT-функций
+    uint32_t jit_hot_function_count;  // Сколько функций помечено HOT в модуле (если 0 — JIT не нужен вообще, можно обходить весь диспетчер)
+    // -----------------
 } EspbInstance;
 
 // Представление значения на стеке операндов
-typedef struct {
-    EspbValueType type;
-    union __attribute__((aligned(8))) {
-        int8_t   i8;
-        uint8_t  u8;
-        int16_t  i16;
-        uint16_t u16;
+typedef union __attribute__((aligned(8))) {
+    uint64_t raw;   // Для быстрого копирования (MOV)
+    int64_t  i64;
+    uint64_t u64;
+    double   f64;
+    
+    // Младшие 32 бита (для 32-битных архитектур)
+    struct {
         int32_t  i32;
+        int32_t  _pad; // мусор в старших битах
+    };
+    struct {
         uint32_t u32;
-        int64_t  i64;
-        uint64_t u64;
+        uint32_t _pad_u;
+    };
+    struct {
         float    f32;
-        double   f64;
-        void*    ptr;
-    } value;
+        uint32_t _pad_f;
+    };
+    struct {
+        void*    ptr; // на 32-бит arch занимает 4 байта
+        uint32_t _pad_p;
+    };
 } Value;
+
+// Макросы для прямого доступа к полям Value
+#define V_I32(val) ((val).i32)
+#define V_I64(val) ((val).i64)
+#define V_F32(val) ((val).f32)
+#define V_F64(val) ((val).f64)
+#define V_PTR(val) ((val).ptr)
+#define V_RAW(val) ((val).raw)
+
+// Заглушки для старого кода (чтобы не ломать логику, если она осталась)
+#define SET_TYPE(val, t) do { } while(0)
+#define CHECK_TYPE(val, t) (true)
 
 // Представление кадра вызова функции в стеке вызовов
 // РЕФАКТОРИНГ: Упрощенная структура для единого виртуального стека
 typedef struct RuntimeFrame {
     int ReturnPC;
     size_t SavedFP; // Указатель на кадр вызывающей функции
+
+// Макросы для упрощенного создания Value аргументов
+#define ESPB_I8(v)     ((Value){.i32 = (int8_t)(v)})
+#define ESPB_U8(v)     ((Value){.u32 = (uint8_t)(v)})
+#define ESPB_I16(v)    ((Value){.i32 = (int16_t)(v)})
+#define ESPB_U16(v)    ((Value){.u32 = (uint16_t)(v)})
+#define ESPB_I32(v)    ((Value){.i32 = (int32_t)(v)})
+#define ESPB_U32(v)    ((Value){.u32 = (uint32_t)(v)})
+#define ESPB_I64(v)    ((Value){.i64 = (int64_t)(v)})
+#define ESPB_U64(v)    ((Value){.u64 = (uint64_t)(v)})
+#define ESPB_F32(v)    ((Value){.f32 = (float)(v)})
+#define ESPB_F64(v)    ((Value){.f64 = (double)(v)})
+#define ESPB_PTR(v)    ((Value){.ptr = (void*)(v)})
+#define ESPB_BOOL(v)   ((Value){.i32 = (v) ? 1 : 0})
+#define ESPB_V128(v)   ((Value){.raw = 0}) // Placeholder for V128
+#define ESPB_FUNC(idx) ((Value){.u32 = (idx)})
+#define ESPB_VOID()    ((Value){.raw = 0})
+
+// Макросы для передачи массивов (массивы передаются как указатели)
+// Эти макросы просто для наглядности - они эквивалентны ESPB_PTR
+#define ESPB_ARRAY(arr)     ESPB_PTR(arr)
+#define ESPB_STRING(str)    ESPB_PTR(str)
     uint32_t caller_local_func_idx; // Индекс вызывающей функции для восстановления контекста
 
     // --- ИСПРАВЛЕНИЕ для CALL_INDIRECT: Сохранение полного кадра ---
@@ -505,7 +604,7 @@ typedef struct RuntimeFrame {
     // -----------------------------------------------------------
 
     // Система отслеживания ALLOCA выделений
-    void *alloca_ptrs[16];     // Массив ALLOCA указателей
+    void *alloca_ptrs[32];     // Массив ALLOCA указателей (увеличен с 16)
     uint8_t alloca_count;      // Количество выделений
     bool has_custom_aligned;   // Флаг custom alignment
 } RuntimeFrame;

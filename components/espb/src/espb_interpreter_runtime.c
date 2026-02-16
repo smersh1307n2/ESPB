@@ -1,4 +1,4 @@
-/*
+﻿/*
  * espb component
  * Copyright (C) 2025 Smersh
  *
@@ -15,8 +15,21 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-
 #include "espb_heap_manager.h" // Убедитесь, что инклюд есть
+
+#ifndef ESPB_JIT_DEBUG
+#define ESPB_JIT_DEBUG 0
+#endif
+
+#if ESPB_JIT_DEBUG
+#define JIT_LOGI ESP_LOGI
+#define JIT_LOGD ESP_LOGD
+#define JIT_LOGW ESP_LOGW
+#else
+#define JIT_LOGI(tag, fmt, ...) ((void)0)
+#define JIT_LOGD(tag, fmt, ...) ((void)0)
+#define JIT_LOGW(tag, fmt, ...) ((void)0)
+#endif
 #include "espb_interpreter_runtime.h"
 #include "safe_memory.h"
 #include "esp_log.h"
@@ -24,6 +37,9 @@
 #include "espb_host_symbols.h"
 #include "sdkconfig.h"
 #include "espb_interpreter.h"
+#include "espb_jit_dispatcher.h"
+#include "espb_jit.h"
+#include "espb_jit_precompile.h"
 // espb_interpreter.h должен включать espb_interpreter_common_types.h
 
 // ВКЛЮЧАЕМ ЗАГОЛОВОК ДЛЯ ПЕРЕНЕСЕННОЙ ФУНКЦИИ
@@ -37,6 +53,17 @@
 #include <stdbool.h>
 #include <inttypes.h>
 #include "espb_interpreter_reader.h"  // Для функций read_u* и макросов PRIu*
+
+// Runtime logging is very expensive on embedded targets (and especially in QEMU).
+// Keep it disabled for benchmarks unless explicitly enabled.
+#ifndef ESPB_RUNTIME_LOG_ENABLED
+#define ESPB_RUNTIME_LOG_ENABLED 0
+#endif
+#if ESPB_RUNTIME_LOG_ENABLED
+#define ESPB_RLOG(...) printf(__VA_ARGS__)
+#else
+#define ESPB_RLOG(...) do { } while (0)
+#endif
 
 // Если CONFIG_ESPB_LINEAR_MEMORY_SIZE не определен, используем значение по умолчанию
 #ifndef CONFIG_ESPB_LINEAR_MEMORY_SIZE
@@ -56,14 +83,12 @@ static const char *TAG __attribute__((unused)) = "espb_runtime";
 // Вспомогательная функция для поиска символов хоста.
 // Эта функция должна быть предоставлена средой, в которой исполняется интерпретатор.
 // Пример объявления:
-// extern const void *espb_lookup_host_symbol(const char *module_name, const char *entity_name);
-// Если она уже объявлена в одном из заголовочных файлов, это объявление можно удалить.
-extern const void *espb_lookup_host_symbol(const char *module_name, const char *entity_name);
+// espb_lookup_host_symbol is declared in espb_host_symbols.h
 
 
 static EspbResult allocate_linear_memory(EspbInstance *instance) {
     // ESP_LOGI(TAG, "Allocating linear memory..."); 
-    printf("Runtime: Allocating linear memory...\\n");
+    ESPB_RLOG("Runtime: Allocating linear memory...\n");
     const EspbModule *module = instance->module;
     
     uint32_t initial_pages = 0;
@@ -80,8 +105,8 @@ static EspbResult allocate_linear_memory(EspbInstance *instance) {
     for (uint32_t i = 0; i < module->num_imports; i++) {
         if (module->imports[i].kind == ESPB_IMPORT_KIND_MEMORY) {
             // Prioritize "env.memory" if multiple memory imports exist (though typically only one is primary)
-            if (strcmp(module->imports[i].module_name, "env") == 0 && 
-                strcmp(module->imports[i].entity_name, "memory") == 0) {
+            if (module->imports[i].module_num == 0 &&
+                module->imports[i].entity_name && strcmp(module->imports[i].entity_name, "memory") == 0) {
                 imported_mem_desc = &module->imports[i];
                 break; 
             }
@@ -93,8 +118,8 @@ static EspbResult allocate_linear_memory(EspbInstance *instance) {
     }
 
     if (imported_mem_desc) {
-        printf("Runtime: Found imported memory '%s::%s'. Prioritizing it.\\n", 
-               imported_mem_desc->module_name, imported_mem_desc->entity_name);
+        ESPB_RLOG("Runtime: Found imported memory module_num=%u name=%s. Prioritizing it.\n",
+               (unsigned)imported_mem_desc->module_num, imported_mem_desc->entity_name);
         initial_pages = imported_mem_desc->desc.memory.initial_size;
         if (imported_mem_desc->desc.memory.flags & 0x01) { // has_max
             max_pages = imported_mem_desc->desc.memory.max_size;
@@ -104,14 +129,14 @@ static EspbResult allocate_linear_memory(EspbInstance *instance) {
         // ESPB Page Size is 1024 bytes
         uint64_t initial_bytes = (uint64_t)initial_pages * 65536ULL; 
         if (initial_bytes > UINT32_MAX) { // Check against Wasm32 limit for memory size
-             fprintf(stderr, "Error: Initial memory size (%" PRIu64 ") bytes for import '%s::%s' exceeds Wasm32 addressable space (UINT32_MAX).\n", 
-                     initial_bytes, imported_mem_desc->module_name, imported_mem_desc->entity_name);
+             fprintf(stderr, "Error: Initial memory size (%" PRIu64 ") bytes for import module_num=%u name=%s exceeds Wasm32 addressable space (UINT32_MAX).\n",
+                     initial_bytes, (unsigned)imported_mem_desc->module_num, imported_mem_desc->entity_name);
              return ESPB_ERR_MEMORY_ALLOC;
         }
         // Используем значение из конфигурации, если оно больше запрошенного размера
         uint32_t configured_size = CONFIG_ESPB_LINEAR_MEMORY_SIZE;
         // Всегда используем значение из конфигурации
-        printf("Runtime: Using configured linear memory size (%" PRIu32 " bytes) instead of declared size (%" PRIu64 " bytes).\n", 
+        ESPB_RLOG("Runtime: Using configured linear memory size (%" PRIu32 " bytes) instead of declared size (%" PRIu64 " bytes).\n",
                configured_size, initial_bytes);
         instance->memory_size_bytes = configured_size;
 
@@ -124,21 +149,21 @@ static EspbResult allocate_linear_memory(EspbInstance *instance) {
         }
 
         if (instance->memory_size_bytes > 0) {
-            void* host_mem_ptr = (void*)espb_lookup_host_symbol(imported_mem_desc->module_name, imported_mem_desc->entity_name);
+            void* host_mem_ptr = (void*)espb_lookup_host_symbol(imported_mem_desc->module_num, imported_mem_desc->entity_name);
             if (!host_mem_ptr) {
-                fprintf(stderr, "Error: Imported memory '%s::%s' (%" PRIu32 " pages) resolved to NULL by host, but size > 0.\\n", 
-                        imported_mem_desc->module_name, imported_mem_desc->entity_name, initial_pages);
+                fprintf(stderr, "Error: Imported memory module_num=%u name=%s (%" PRIu32 " pages) resolved to NULL by host, but size > 0.\\n",
+                        (unsigned)imported_mem_desc->module_num, imported_mem_desc->entity_name, initial_pages);
                 return ESPB_ERR_IMPORT_RESOLUTION_FAILED;
             }
             instance->memory_data = (uint8_t*)host_mem_ptr;
             // Ensure host memory is at least the initial size.
             // This check might be better done by the host or via a specific host API for memory size.
-            printf("Runtime: Using host-provided memory at %p for '%s::%s' (%" PRIu32 " bytes initial, max %" PRIu32 " bytes).\\n",
-                   instance->memory_data, imported_mem_desc->module_name, imported_mem_desc->entity_name, 
+            ESPB_RLOG("Runtime: Using host-provided memory at %p for module_num=%u name=%s (%" PRIu32 " bytes initial, max %" PRIu32 " bytes).\n",
+                   instance->memory_data, (unsigned)imported_mem_desc->module_num, imported_mem_desc->entity_name,
                    instance->memory_size_bytes, instance->memory_max_size_bytes);
         } else {
-            printf("Runtime: Imported memory '%s::%s' initial size is 0 pages.\\n", 
-                   imported_mem_desc->module_name, imported_mem_desc->entity_name);
+            ESPB_RLOG("Runtime: Imported memory module_num=%u name=%s initial size is 0 pages.\n",
+                   (unsigned)imported_mem_desc->module_num, imported_mem_desc->entity_name);
             instance->memory_data = NULL; // memory_size_bytes is already 0
         }
 
@@ -149,14 +174,14 @@ static EspbResult allocate_linear_memory(EspbInstance *instance) {
             return ESPB_ERR_INSTANTIATION_FAILED; // Or ESPB_ERR_FEATURE_NOT_SUPPORTED
         }
         const EspbMemoryDesc *mem_desc = &module->memories[0]; // Use declared memory at index 0
-        printf("Runtime: No 'env.memory' import found. Using module's declared memory (index 0).\\n");
+        ESPB_RLOG("Runtime: No 'env.memory' import found. Using module's declared memory (index 0).\n");
         
         initial_pages = mem_desc->limits.initial_size;
         if (mem_desc->limits.flags & 0x01) { // has_max
             max_pages = mem_desc->limits.max_size;
             has_max = true;
         }
-        printf("Runtime: Declared memory details: initial_pages=%" PRIu32 ", max_pages=%" PRIu32 ", has_max=%d\n", 
+        ESPB_RLOG("Runtime: Declared memory details: initial_pages=%" PRIu32 ", max_pages=%" PRIu32 ", has_max=%d\n",
                initial_pages, max_pages, has_max);
 
         uint64_t initial_bytes = (uint64_t)initial_pages * 65536ULL; // ESPB Page Size
@@ -168,7 +193,7 @@ static EspbResult allocate_linear_memory(EspbInstance *instance) {
         // Используем значение из конфигурации, если оно больше запрошенного размера
         uint32_t configured_size = CONFIG_ESPB_LINEAR_MEMORY_SIZE;
         // Всегда используем значение из конфигурации
-        printf("Runtime: Using configured linear memory size (%" PRIu32 " bytes) instead of declared size (%" PRIu64 " bytes).\n", 
+        ESPB_RLOG("Runtime: Using configured linear memory size (%" PRIu32 " bytes) instead of declared size (%" PRIu64 " bytes).\n",
                configured_size, initial_bytes);
         instance->memory_size_bytes = configured_size;
 
@@ -185,14 +210,14 @@ static EspbResult allocate_linear_memory(EspbInstance *instance) {
                  fprintf(stderr, "Error: Failed to allocate %" PRIu32 " bytes for declared linear memory.\\n", instance->memory_size_bytes);
                  return ESPB_ERR_MEMORY_ALLOC;
              }
-             printf("Runtime: Allocated %" PRIu32 " bytes for declared linear memory (max: %" PRIu32 " bytes).\\n",
+             ESPB_RLOG("Runtime: Allocated %" PRIu32 " bytes for declared linear memory (max: %" PRIu32 " bytes).\n",
                     instance->memory_size_bytes, instance->memory_max_size_bytes);
         } else {
-             printf("Runtime: Declared linear memory initial size is 0 pages.\\n");
+             ESPB_RLOG("Runtime: Declared linear memory initial size is 0 pages.\n");
              instance->memory_data = NULL; // memory_size_bytes is already 0
         }
     } else {
-        printf("Runtime: No memory defined (neither imported 'env.memory' nor declared in module).\n");
+        ESPB_RLOG("Runtime: No memory defined (neither imported 'env.memory' nor declared in module).\n");
         // Если есть пассивные сегменты данных, автоматически выделяем память для них
         instance->memory_data = NULL; // временно NULL
         if (module->num_data_segments > 0) {
@@ -214,7 +239,7 @@ static EspbResult allocate_linear_memory(EspbInstance *instance) {
                 uint32_t alloc_size = pages * page_size;
                 uint32_t configured_size = CONFIG_ESPB_LINEAR_MEMORY_SIZE;
                 // Всегда используем значение из конфигурации
-                printf("Runtime: Using configured linear memory size (%" PRIu32 " bytes) instead of calculated size (%" PRIu32 " bytes).\n", 
+                ESPB_RLOG("Runtime: Using configured linear memory size (%" PRIu32 " bytes) instead of calculated size (%" PRIu32 " bytes).\n",
                        configured_size, alloc_size);
                 alloc_size = configured_size;
                 
@@ -225,7 +250,7 @@ static EspbResult allocate_linear_memory(EspbInstance *instance) {
                     fprintf(stderr, "Error: Auto-allocation of %" PRIu32 " bytes for passive data failed.\n", alloc_size);
                     return ESPB_ERR_MEMORY_ALLOC;
                 }
-                printf("Runtime: Auto-allocated %" PRIu32 " bytes (%" PRIu32 " pages) for passive data segments.\n", alloc_size, pages);
+                ESPB_RLOG("Runtime: Auto-allocated %" PRIu32 " bytes (%" PRIu32 " pages) for passive data segments.\n", alloc_size, pages);
             } else {
                 // Если нет пассивных сегментов данных, но нужна память, выделяем минимальный размер из конфигурации
                 uint32_t configured_size = CONFIG_ESPB_LINEAR_MEMORY_SIZE;
@@ -237,7 +262,7 @@ static EspbResult allocate_linear_memory(EspbInstance *instance) {
                         fprintf(stderr, "Error: Auto-allocation of %" PRIu32 " bytes for linear memory failed.\n", configured_size);
                         return ESPB_ERR_MEMORY_ALLOC;
                     }
-                    printf("Runtime: Auto-allocated %" PRIu32 " bytes for linear memory from configuration.\n", configured_size);
+                    ESPB_RLOG("Runtime: Auto-allocated %" PRIu32 " bytes for linear memory from configuration.\n", configured_size);
                 }
             }
         } else {
@@ -251,7 +276,7 @@ static EspbResult allocate_linear_memory(EspbInstance *instance) {
                     fprintf(stderr, "Error: Auto-allocation of %" PRIu32 " bytes for linear memory failed.\n", configured_size);
                     return ESPB_ERR_MEMORY_ALLOC;
                 }
-                printf("Runtime: Auto-allocated %" PRIu32 " bytes for linear memory from configuration.\n", configured_size);
+                ESPB_RLOG("Runtime: Auto-allocated %" PRIu32 " bytes for linear memory from configuration.\n", configured_size);
             } else {
                 instance->memory_data = NULL;
             }
@@ -263,7 +288,7 @@ static EspbResult allocate_linear_memory(EspbInstance *instance) {
 
 static EspbResult allocate_globals(EspbInstance *instance) {
     // ESP_LOGI(TAG, "Allocating globals...");
-    printf("Runtime: Allocating globals...\n");
+    ESPB_RLOG("Runtime: Allocating globals...\n");
     instance->globals_data = NULL;
     instance->globals_data_size = 0;
     instance->global_offsets = NULL;
@@ -271,7 +296,7 @@ static EspbResult allocate_globals(EspbInstance *instance) {
 
     if (module->num_globals == 0) {
         // ESP_LOGI(TAG, "  No globals defined.");
-        printf("Runtime: No globals defined.\n");
+        ESPB_RLOG("Runtime: No globals defined.\n");
         return ESPB_OK;
     }
 
@@ -311,7 +336,7 @@ static EspbResult allocate_globals(EspbInstance *instance) {
 
     instance->globals_data_size = current_offset;
     // ESP_LOGI(TAG, "  Total size needed for %u globals: %zu bytes (max align: %zu).", module->num_globals, instance->globals_data_size, max_align);
-    printf("Runtime: Total size for %lu globals: %zu bytes (max align: %zu).\n", (unsigned long)module->num_globals, instance->globals_data_size, max_align);
+    ESPB_RLOG("Runtime: Total size for %lu globals: %zu bytes (max align: %zu).\n", (unsigned long)module->num_globals, instance->globals_data_size, max_align);
 
     if (instance->globals_data_size > 0) {
         instance->globals_data = (uint8_t*)calloc(instance->globals_data_size, 1); // calloc initializes to zero
@@ -324,18 +349,15 @@ static EspbResult allocate_globals(EspbInstance *instance) {
             return ESPB_ERR_MEMORY_ALLOC;
         }
         // ESP_LOGI(TAG, "  Allocated %zu bytes for globals.", instance->globals_data_size);
-        printf("Runtime: Allocated %zu bytes for globals.\n", instance->globals_data_size);
+        ESPB_RLOG("Runtime: Allocated %zu bytes for globals.\n", instance->globals_data_size);
          
-        // Values from ESPB_INIT_KIND_CONST or ESPB_INIT_KIND_DATA_OFFSET 
-        // will be set by espb_apply_relocations or direct initialization later.
-        // calloc already zeroed memory for ESPB_INIT_KIND_ZERO.
     }
     return ESPB_OK;
 }
 
 static EspbResult allocate_tables(EspbInstance *instance) {
     // ESP_LOGI(TAG, "Allocating tables...");
-    printf("Runtime: Allocating tables...\n");
+    ESPB_RLOG("Runtime: Allocating tables...\n");
     const EspbModule *module = instance->module;
 
     instance->table_data = NULL;
@@ -362,7 +384,7 @@ static EspbResult allocate_tables(EspbInstance *instance) {
             // В WebAssembly отсутствие max означает, что таблица может расти до impl-defined предела
             // Для ESPB используем 65536 как разумный максимум (можно изменить при необходимости)
             instance->table_max_size = 65536; // Разумный максимум для динамического роста
-            printf("Runtime: Table %d has no max limit, using default max_size=%u for growth\n", 
+            ESPB_RLOG("Runtime: Table %d has no max limit, using default max_size=%u for growth\n",
                    0, instance->table_max_size);
          }
 
@@ -375,21 +397,21 @@ static EspbResult allocate_tables(EspbInstance *instance) {
                   return ESPB_ERR_MEMORY_ALLOC;
              }
             // ESP_LOGI(TAG, "  Allocated table for %u funcref entries (max: %u).", instance->table_size, instance->table_max_size);
-            printf("Runtime: Allocated table for %lu funcref entries (max: %lu).\n", (unsigned long)instance->table_size, (unsigned long)instance->table_max_size);
+            ESPB_RLOG("Runtime: Allocated table for %lu funcref entries (max: %lu).\n", (unsigned long)instance->table_size, (unsigned long)instance->table_max_size);
          } else {
             // ESP_LOGI(TAG, "  Table initial size is 0.");
-            printf("Runtime: Table initial size is 0.\n");
+            ESPB_RLOG("Runtime: Table initial size is 0.\n");
          }
     } else {
         // ESP_LOGI(TAG, "  No tables defined.");
-        printf("Runtime: No tables defined.\n");
+        ESPB_RLOG("Runtime: No tables defined.\n");
     }
     return ESPB_OK;
 }
 
 static EspbResult resolve_imports(EspbInstance *instance) {
     // ESP_LOGI(TAG, "Resolving imports...");
-    printf("Runtime: Resolving imports...\n");
+    ESPB_RLOG("Runtime: Resolving imports...\n");
     const EspbModule *module = instance->module;
     uint32_t num_imports = module->num_imports;
 
@@ -398,7 +420,7 @@ static EspbResult resolve_imports(EspbInstance *instance) {
 
     if (num_imports == 0) {
         // ESP_LOGI(TAG, "  No imports to resolve.");
-        printf("Runtime: No imports to resolve.\n");
+        ESPB_RLOG("Runtime: No imports to resolve.\n");
         return ESPB_OK;
     }
 
@@ -406,25 +428,65 @@ static EspbResult resolve_imports(EspbInstance *instance) {
     // These arrays are indexed by the import index.
     instance->resolved_import_funcs = (void**)calloc(num_imports, sizeof(void*)); 
     instance->resolved_import_globals = (void**)calloc(num_imports, sizeof(void*));
+    // Bitset: 1 bit per import
+    uint32_t readonly_bytes = (num_imports + 7u) / 8u;
+    instance->import_is_readonly = (uint8_t*)calloc(readonly_bytes, 1);
 
-    if (!instance->resolved_import_funcs || !instance->resolved_import_globals) {
+    if (!instance->resolved_import_funcs || !instance->resolved_import_globals || !instance->import_is_readonly) {
         // ESP_LOGE(TAG, "Failed to allocate memory for resolved import pointers.");
         fprintf(stderr, "Error: Failed to allocate memory for resolved import pointers.\n");
         free(instance->resolved_import_funcs); // free(NULL) is safe
         free(instance->resolved_import_globals);
+        free(instance->import_is_readonly);
         instance->resolved_import_funcs = NULL;
         instance->resolved_import_globals = NULL;
+        instance->import_is_readonly = NULL;
         return ESPB_ERR_MEMORY_ALLOC;
     }
 
+    // Resolve-time cache of fast tables (avoid per-import scans)
+    const EspbSymbolFast *idf_tbl = NULL;
+    uint32_t idf_cnt = 0;
+    const EspbSymbolFast *custom_tbl = NULL;
+    uint32_t custom_cnt = 0;
+    espb_get_fast_tables(&idf_tbl, &idf_cnt, &custom_tbl, &custom_cnt);
+
     // ESP_LOGI(TAG, "  Resolving %u imports...", num_imports);
-    printf("Runtime: Resolving %lu imports...\n", (unsigned long)num_imports);
+    ESPB_RLOG("Runtime: Resolving %lu imports...\n", (unsigned long)num_imports);
     for (uint32_t i = 0; i < num_imports; ++i) {
         const EspbImportDesc *imp = &module->imports[i];
-        // ESP_LOGD(TAG, "    Import %u: %s.%s (kind: %d)", i, imp->module_name, imp->entity_name, imp->kind);
-        printf("  Import %lu: %s.%s (kind: %d)\n", (unsigned long)i, imp->module_name, imp->entity_name, imp->kind);
-        
-        const void *symbol_addr = espb_lookup_host_symbol(imp->module_name, imp->entity_name);
+        // ESP_LOGD(TAG, "    Import %u: module_num=%u name=%s (kind: %d)", i, (unsigned)imp->module_num, imp->entity_name, imp->kind);
+        ESPB_RLOG("  Import %lu: module_num=%u name=%s (kind: %d)\n", (unsigned long)i, (unsigned)imp->module_num, imp->entity_name ? imp->entity_name : "<indexed>", imp->kind);
+
+        const void *symbol_addr = NULL;
+        if (imp->kind == ESPB_IMPORT_KIND_FUNC && (imp->desc.func.import_flags & IMPORT_FLAG_INDEXED) != 0) {
+            // fast indexed import (O(1))
+            uint8_t flags = imp->desc.func.import_flags;
+            uint16_t si = imp->desc.func.symbol_index;
+
+            uint8_t fast_bits = (uint8_t)(flags & (IMPORT_FLAG_FAST_IDF | IMPORT_FLAG_FAST_CUSTOM));
+            if (fast_bits == 0 || fast_bits == (IMPORT_FLAG_FAST_IDF | IMPORT_FLAG_FAST_CUSTOM)) {
+                fprintf(stderr, "Error: Invalid indexed import flags=0x%02X (import #%lu)\n", (unsigned)flags, (unsigned long)i);
+                return ESPB_ERR_IMPORT_RESOLUTION_FAILED;
+            }
+
+            if (fast_bits == IMPORT_FLAG_FAST_IDF) {
+                if (!idf_tbl || si >= idf_cnt) {
+                    fprintf(stderr, "Error: idf_fast symbol_index out of range (%u/%u) for import #%lu\n", (unsigned)si, (unsigned)idf_cnt, (unsigned long)i);
+                    return ESPB_ERR_IMPORT_RESOLUTION_FAILED;
+                }
+                symbol_addr = idf_tbl[si].address;
+            } else { // IMPORT_FLAG_FAST_CUSTOM
+                if (!custom_tbl || si >= custom_cnt) {
+                    fprintf(stderr, "Error: custom_fast symbol_index out of range (%u/%u) for import #%lu\n", (unsigned)si, (unsigned)custom_cnt, (unsigned long)i);
+                    return ESPB_ERR_IMPORT_RESOLUTION_FAILED;
+                }
+                symbol_addr = custom_tbl[si].address;
+            }
+        } else {
+            // named import
+            symbol_addr = espb_lookup_host_symbol(imp->module_num, imp->entity_name);
+        }
         
         switch (imp->kind) {
             case ESPB_IMPORT_KIND_FUNC:
@@ -432,8 +494,7 @@ static EspbResult resolve_imports(EspbInstance *instance) {
                     instance->resolved_import_funcs[i] = (void*)symbol_addr;
                     // ESP_LOGD(TAG, "      Successfully resolved function import to %p", symbol_addr);
                 } else {
-                    // ESP_LOGE(TAG, "      Failed to resolve function import: %s::%s", imp->module_name, imp->entity_name);
-                    fprintf(stderr, "Error: Failed to resolve function import: %s::%s\n", imp->module_name, imp->entity_name);
+                                        fprintf(stderr, "Error: Failed to resolve function import: module_num=%u name=%s\n", (unsigned)imp->module_num, imp->entity_name ? imp->entity_name : "<indexed>");
                     // Note: Consider freeing allocated resolved_import_funcs/globals before returning.
                     return ESPB_ERR_IMPORT_RESOLUTION_FAILED;
                 }
@@ -447,36 +508,32 @@ static EspbResult resolve_imports(EspbInstance *instance) {
                     instance->resolved_import_globals[i] = (void*)symbol_addr;
                     // ESP_LOGD(TAG, "      Successfully resolved global import to %p", symbol_addr);
                 } else {
-                    // ESP_LOGE(TAG, "      Failed to resolve global import: %s::%s", imp->module_name, imp->entity_name);
-                    fprintf(stderr, "Error: Failed to resolve global import: %s::%s\n", imp->module_name, imp->entity_name);
+                                        fprintf(stderr, "Error: Failed to resolve global import: module_num=%u name=%s\n", (unsigned)imp->module_num, imp->entity_name ? imp->entity_name : "<none>");
                     return ESPB_ERR_IMPORT_RESOLUTION_FAILED;
                 }
                 break;
             case ESPB_IMPORT_KIND_MEMORY:
-                // ESP_LOGD(TAG, "      Memory import '%s::%s' is handled by allocate_linear_memory.", imp->module_name, imp->entity_name);
-                // If a host-provided memory is used, allocate_linear_memory should deal with it.
+                                // If a host-provided memory is used, allocate_linear_memory should deal with it.
                 // If espb_lookup_host_symbol were to return a MemoryInstance*, logic would go here.
                 // For now, assume memory is created or its descriptor used by allocate_linear_memory.
                 // If symbol_addr is not NULL here, it means the host provided something; decide how to use it.
                 // Currently, allocate_linear_memory creates memory based on the *first* memory definition (declared or imported).
                 break;
             case ESPB_IMPORT_KIND_TABLE:
-                // ESP_LOGE(TAG, "      Table import '%s::%s' not yet supported.", imp->module_name, imp->entity_name);
-                 fprintf(stderr, "Error: Table import '%s::%s' not yet supported.\n", imp->module_name, imp->entity_name);
+                                 fprintf(stderr, "Error: Table import module_num=%u name=%s not yet supported.\\n", (unsigned)imp->module_num, imp->entity_name ? imp->entity_name : "<none>");
                 return ESPB_ERR_FEATURE_NOT_SUPPORTED;
             default:
-                // ESP_LOGE(TAG, "      Unknown import kind: %d for %s::%s", imp->kind, imp->module_name, imp->entity_name);
-                fprintf(stderr, "Error: Unknown import kind: %d for %s::%s\n", imp->kind, imp->module_name, imp->entity_name);
+                                fprintf(stderr, "Error: Unknown import kind: %d for module_num=%u name=%s\\n", imp->kind, (unsigned)imp->module_num, imp->entity_name ? imp->entity_name : "<none>");
                 return ESPB_ERR_FEATURE_NOT_SUPPORTED; 
         }
     }
     // ESP_LOGI(TAG, "Imports resolved successfully.");
-    printf("Runtime: Imports resolved successfully.\n");
+    ESPB_RLOG("Runtime: Imports resolved successfully.\n");
     return ESPB_OK;
 }
 
 EspbResult espb_instantiate(EspbInstance **out_instance, const EspbModule *module) {
-    printf("Runtime: Instantiating module...\n");
+    ESPB_RLOG("Runtime: Instantiating module...\n");
     EspbResult res;
 
     if (!module) {
@@ -515,6 +572,24 @@ EspbResult espb_instantiate(EspbInstance **out_instance, const EspbModule *modul
     res = resolve_imports(instance);
     if (res != ESPB_OK) goto instantiate_error;
 
+    // ОПТИМИЗАЦИЯ: Кэшируем флаги для блокирующих вызовов
+    if (module->num_imports > 0) {
+        instance->import_is_blocking = (bool*)calloc(module->num_imports, sizeof(bool));
+        if (!instance->import_is_blocking) {
+            ESP_LOGE(TAG, "Failed to allocate import_is_blocking flags");
+            res = ESPB_ERR_MEMORY_ALLOC;
+            goto instantiate_error;
+        }
+        for (uint32_t i = 0; i < module->num_imports; ++i) {
+            if (module->imports[i].kind == ESPB_IMPORT_KIND_FUNC) {
+                const char* name = module->imports[i].entity_name;
+                if (name && (strcmp(name, "vTaskDelay") == 0 || strcmp(name, "xTimerGenericCommand") == 0)) {
+                    instance->import_is_blocking[i] = true;
+                }
+            }
+        }
+    }
+
     res = espb_apply_relocations(instance);
     if (res != ESPB_OK) goto instantiate_error;
 
@@ -528,6 +603,63 @@ EspbResult espb_instantiate(EspbInstance **out_instance, const EspbModule *modul
         goto instantiate_error;
     }
     // --- КОНЕЦ ДОБАВЛЕНИЯ ---
+
+#if CONFIG_ESPB_JIT_ENABLED
+    // Инициализируем JIT cache
+    instance->jit_hot_function_count = 0;
+    instance->jit_cache = (EspbJitCache*)SAFE_CALLOC(1, sizeof(EspbJitCache));
+    if (!instance->jit_cache) {
+        fprintf(stderr, "Runtime: Failed to allocate JIT cache.\n");
+        res = ESPB_ERR_MEMORY_ALLOC;
+        goto instantiate_error;
+    }
+    
+    // Подсчитываем количество HOT функций (если 0 — JIT не нужен вообще)
+    uint32_t hot_function_count = 0;
+    for (uint32_t i = 0; i < module->num_functions; i++) {
+        if (module->function_bodies[i].header.flags & ESPB_FUNC_FLAG_HOT) {
+            hot_function_count++;
+        }
+    }
+    
+    // Сохраняем для fast-path в диспетчере/интерпретаторе
+    instance->jit_hot_function_count = hot_function_count;
+
+    // Инициализируем cache с размером = количество HOT функций (минимум 1, максимум 64)
+    size_t cache_capacity = hot_function_count > 0 ? hot_function_count : 1;
+    if (cache_capacity > 64) cache_capacity = 64; // Ограничиваем максимум
+    
+    res = espb_jit_cache_init(instance->jit_cache, cache_capacity);
+    if (res != ESPB_OK) {
+        fprintf(stderr, "Runtime: Failed to initialize JIT cache.\n");
+        goto instantiate_error;
+    }
+    ESP_LOGI(TAG, "JIT cache initialized with capacity=%zu for %u HOT functions", 
+             cache_capacity, hot_function_count);
+    
+    // Предварительная компиляция HOT функций
+    if (hot_function_count > 0) {
+        ESP_LOGI(TAG, "Starting precompilation of %u HOT functions...", hot_function_count);
+        res = espb_jit_precompile_hot_functions(instance, NULL);
+        if (res != ESPB_OK) {
+            ESP_LOGW(TAG, "Some HOT functions failed to precompile (error %d), continuing...", res);
+            // Не прерываем загрузку модуля, даже если некоторые функции не скомпилировались
+        } else {
+            ESP_LOGI(TAG, "All HOT functions precompiled successfully");
+        }
+        
+        // Выводим статистику
+        uint32_t total, hot, compiled;
+        size_t jit_size;
+        if (espb_jit_get_stats(instance, &total, &hot, &compiled, &jit_size) == ESPB_OK) {
+            ESP_LOGI(TAG, "JIT Stats: %u/%u HOT functions compiled, total size: %zu bytes", 
+                     compiled, hot, jit_size);
+        }
+    }
+#else
+    instance->jit_cache = NULL;
+    instance->jit_hot_function_count = 0;
+#endif
 
     // Initialize next_alloc_offset for the bump allocator (ALLOCA)
     // to start after any data placed at offset 0 by passive segments.
@@ -548,7 +680,7 @@ EspbResult espb_instantiate(EspbInstance **out_instance, const EspbModule *modul
         goto instantiate_error;
     }
 
-    printf("Runtime: Module instantiated successfully.\n");
+    ESPB_RLOG("Runtime: Module instantiated successfully.\n");
     *out_instance = instance;
     free_execution_context(exec_ctx);
     return ESPB_OK;
@@ -563,7 +695,16 @@ instantiate_error:
 void espb_free_instance(EspbInstance *instance) {
     if (instance) {
         espb_heap_deinit(instance); // <-- ДОБАВИТЬ ВЫЗОВ
-        printf("Runtime: Freeing instance...\n");
+        ESPB_RLOG("Runtime: Freeing instance...\n");
+
+#if CONFIG_ESPB_JIT_ENABLED
+        // Освобождаем JIT cache
+        if (instance->jit_cache) {
+            espb_jit_cache_free(instance->jit_cache);
+            free(instance->jit_cache);
+            ESP_LOGI(TAG, "JIT cache freed");
+        }
+#endif
 
         // === CLEANUP ASYNC WRAPPER SYSTEM ===
         if (instance->async_wrappers) {
@@ -625,6 +766,14 @@ void espb_free_instance(EspbInstance *instance) {
             free(instance->resolved_import_globals);
             instance->resolved_import_globals = NULL;
         }
+        if (instance->import_is_readonly) {
+            free(instance->import_is_readonly);
+            instance->import_is_readonly = NULL;
+        }
+        if (instance->import_is_blocking) {
+            free(instance->import_is_blocking);
+            instance->import_is_blocking = NULL;
+        }
         free(instance);
     }
 }
@@ -653,8 +802,8 @@ static EspbResult espb_evaluate_init_expr(const EspbInstance *instance, const ui
                     fprintf(stderr, "Error: InitExpr: Evaluation stack overflow for I32_CONST.\n");
                     return ESPB_ERR_STACK_OVERFLOW; 
                 }
-                eval_sp->type = ESPB_TYPE_I32;
-                if (!read_i32(&ptr, end_expr_ptr, &eval_sp->value.i32)) { 
+                SET_TYPE(*eval_sp, ESPB_TYPE_I32);
+                if (!read_i32(&ptr, end_expr_ptr, &eval_sp->i32)) {
                     fprintf(stderr, "Error: InitExpr: Failed to read i32.const value.\n");
                     return ESPB_ERR_INVALID_INIT_EXPR; 
                 }
@@ -706,8 +855,8 @@ static EspbResult espb_evaluate_init_expr(const EspbInstance *instance, const ui
                         fprintf(stderr, "Error: InitExpr: Evaluation stack overflow for GET_GLOBAL.\n");
                         return ESPB_ERR_STACK_OVERFLOW; 
                     }
-                    eval_sp->type = ESPB_TYPE_I32; // Result of offset expr is an i32/u32 address
-                    memcpy(&eval_sp->value.u32, (uint32_t*)((uint8_t*)instance->globals_data + offset), sizeof(uint32_t));
+                    SET_TYPE(*eval_sp, ESPB_TYPE_I32); // Result of offset expr is an i32/u32 address
+                    memcpy(&eval_sp->u32, (uint32_t*)((uint8_t*)instance->globals_data + offset), sizeof(uint32_t));
                     eval_sp++;
                 }
                 break;
@@ -732,25 +881,22 @@ expr_end_label: // Renamed from expr_end to avoid conflict if an opcode 0x0F is 
         return ESPB_ERR_INVALID_INIT_EXPR;
     }
     // The result of an offset expression is always an i32/u32.
-    if (eval_sp[-1].type != ESPB_TYPE_I32 && eval_sp[-1].type != ESPB_TYPE_U32 && eval_sp[-1].type != ESPB_TYPE_PTR) {
-        fprintf(stderr, "Error: InitExpr: Final stack value type is %d, expected I32/U32/PTR for offset.\n", eval_sp[-1].type);
-        return ESPB_ERR_TYPE_MISMATCH;
-    }
+    // With the new Value type, this check is no longer valid. We assume the type is correct.
 
-    *out_value = eval_sp[-1].value.u32; 
+    *out_value = eval_sp[-1].u32;
     return ESPB_OK;
 }
 
 EspbResult espb_apply_relocations(EspbInstance *instance) {
-    printf("Runtime: Applying relocations...\n");
+    ESPB_RLOG("Runtime: Applying relocations...\n");
     const EspbModule *module = instance->module;
     uint32_t num_relocs = module->num_relocations;
 
     if (num_relocs == 0) {
-        printf("Runtime: No relocations to apply.\n");
+        ESPB_RLOG("Runtime: No relocations to apply.\n");
         return ESPB_OK;
     }
-    printf("Runtime: Processing %lu relocations:\n", (unsigned long)num_relocs);
+    ESPB_RLOG("Runtime: Processing %lu relocations:\n", (unsigned long)num_relocs);
 
     uint32_t num_imported_funcs = 0;
     uint32_t num_imported_globals = 0;
@@ -835,8 +981,21 @@ EspbResult espb_apply_relocations(EspbInstance *instance) {
                         fprintf(stderr, "Error: Reloc[%lu]: Invalid local global index %lu or global_offsets not init.\n", i, local_global_idx);
                         return ESPB_ERR_INVALID_GLOBAL_INDEX;
                     }
-                    if (reloc->type == ESPB_RELOC_ABS32_GLOBAL) { // Value is offset in globals_data
-                         symbol_val = instance->global_offsets[local_global_idx];
+                    if (reloc->type == ESPB_RELOC_ABS32_GLOBAL) {
+                        const EspbGlobalDesc *g = &module->globals[local_global_idx];
+                        if (g->init_kind == ESPB_INIT_KIND_DATA_OFFSET) {
+                            if (!instance->memory_data) {
+                                fprintf(stderr, "Error: Reloc[%lu]: memory_data is NULL for ABS32_GLOBAL DATA_OFFSET.\n", i);
+                                return ESPB_ERR_INSTANTIATION_FAILED;
+                            }
+                            symbol_val = (uint32_t)(uintptr_t)(instance->memory_data + g->initializer.data_section_offset);
+                        } else {
+                            if (!instance->globals_data) {
+                                fprintf(stderr, "Error: Reloc[%lu]: globals_data is NULL for ABS32_GLOBAL.\n", i);
+                                return ESPB_ERR_INSTANTIATION_FAILED;
+                            }
+                            symbol_val = (uint32_t)(uintptr_t)(instance->globals_data + instance->global_offsets[local_global_idx]);
+                        }
                     } else { // ESPB_RELOC_GLOBAL_INDEX - the value *is* the (local) index itself.
                          symbol_val = local_global_idx;
                     }
@@ -869,12 +1028,12 @@ EspbResult espb_apply_relocations(EspbInstance *instance) {
         memcpy(target_location_ptr, &value_to_write, write_size);
         // ESP_LOGD(TAG, "Reloc[%u] applied: Type=%d, TargetLoc=%p, Value=0x%x", i, reloc->type, target_location_ptr, value_to_write);
     }
-    printf("Runtime: Relocations applied.\n");
+    ESPB_RLOG("Runtime: Relocations applied.\n");
     return ESPB_OK;
 }
 
 EspbResult espb_initialize_data_segments(EspbInstance *instance) {
-    printf("Runtime: Initializing data segments...\n");
+    ESPB_RLOG("Runtime: Initializing data segments...\n");
     const EspbModule *module = instance->module;
     uint32_t num_segments = module->num_data_segments;
     EspbResult res;
@@ -882,7 +1041,7 @@ EspbResult espb_initialize_data_segments(EspbInstance *instance) {
     uint32_t max_offset_end = 0; // Локальная переменная
 
     if (num_segments == 0) {
-        printf("Runtime: No data segments to initialize.\n");
+        ESPB_RLOG("Runtime: No data segments to initialize.\n");
         instance->static_data_end_offset = 0;
         return ESPB_OK;
     }
@@ -927,7 +1086,7 @@ EspbResult espb_initialize_data_segments(EspbInstance *instance) {
                     return ESPB_ERR_INSTANTIATION_FAILED;
                 }
                 memcpy(instance->memory_data + offset, seg->data, seg->data_size);
-                printf("Runtime: Copied %lu bytes from ACTIVE data segment %lu to memory offset %lu\n",
+                ESPB_RLOG("Runtime: Copied %lu bytes from ACTIVE data segment %lu to memory offset %lu\n",
                        (unsigned long)seg->data_size, (unsigned long)i, (unsigned long)offset);
             }
         } else if (seg->segment_type == 1 && !first_passive_segment_processed) {
@@ -941,17 +1100,17 @@ EspbResult espb_initialize_data_segments(EspbInstance *instance) {
                 memcpy(instance->memory_data + target_passive_offset, seg->data, seg->data_size);
                 first_passive_segment_processed = true;
                 instance->passive_data_at_offset_zero_size = seg->data_size;
-                printf("Runtime: Copied %lu bytes from FIRST PASSIVE data segment %lu to memory offset %lu (for DATA_OFFSET global)\n",
+                ESPB_RLOG("Runtime: Copied %lu bytes from FIRST PASSIVE data segment %lu to memory offset %lu (for DATA_OFFSET global)\n",
                        (unsigned long)seg->data_size, (unsigned long)i, (unsigned long)target_passive_offset);
 
                 if (instance->memory_data && seg->data_size > 0) {
-                    printf("Runtime DBG: Content at instance->memory_data[0] after memcpy (first 20 chars): START>>%.20s<<END\n", (char*)instance->memory_data);
-                    printf("Runtime DBG: Hex at instance->memory_data[0] after memcpy (first 12 bytes): ");
+                    ESPB_RLOG("Runtime DBG: Content at instance->memory_data[0] after memcpy (first 20 chars): START>>%.20s<<END\n", (char*)instance->memory_data);
+                    ESPB_RLOG("Runtime DBG: Hex at instance->memory_data[0] after memcpy (first 12 bytes): ");
                     for (uint32_t k=0; k < seg->data_size && k < 12; ++k) {
-                        printf("%02X ", ((unsigned char*)instance->memory_data)[k]);
+                        ESPB_RLOG("%02X ", ((unsigned char*)instance->memory_data)[k]);
                     }
-                    printf("\n");
-                    fflush(stdout);
+                    ESPB_RLOG("\n");
+                    // no flush in benchmark mode
                 }
             } else {
                  fprintf(stderr, "Error: Cannot copy first passive data segment %lu to offset 0 (mem_size: %lu, data_size: %lu).\n",
@@ -964,18 +1123,18 @@ EspbResult espb_initialize_data_segments(EspbInstance *instance) {
     }
     
     instance->static_data_end_offset = max_offset_end; // Сохраняем в инстанс
-    printf("Runtime: Data segments initialized. Static data ends at offset: %u\n", max_offset_end);
+    ESPB_RLOG("Runtime: Data segments initialized. Static data ends at offset: %u\n", max_offset_end);
     return ESPB_OK;
 }
 
 EspbResult espb_initialize_element_segments(EspbInstance *instance) {
-    printf("Runtime: Initializing element segments...\n");
+    ESPB_RLOG("Runtime: Initializing element segments...\n");
     const EspbModule *module = instance->module;
     uint32_t num_segments = module->num_element_segments;
     EspbResult res;
 
     if (num_segments == 0) {
-        printf("Runtime: No element segments to initialize.\n");
+        ESPB_RLOG("Runtime: No element segments to initialize.\n");
         return ESPB_OK;
     }
 
@@ -1043,12 +1202,12 @@ EspbResult espb_initialize_element_segments(EspbInstance *instance) {
                 // ESP_LOGD(TAG, "  Table[%u] = FuncIndex %u from ElemSeg %u", table_idx_to_write, func_idx_from_segment, i);
             }
             if(seg->num_elements > 0) {
-                printf("Runtime: Initialized %lu elements in table 0 from segment %lu at offset %lu.\n", 
+                ESPB_RLOG("Runtime: Initialized %lu elements in table 0 from segment %lu at offset %lu.\n",
                         (unsigned long)seg->num_elements, (unsigned long)i, (unsigned long)offset);
             }
         } 
     }
-    printf("Runtime: Element segments initialized.\n");
+    ESPB_RLOG("Runtime: Element segments initialized.\n");
     return ESPB_OK;
 }
 
@@ -1056,7 +1215,7 @@ EspbResult espb_run_start_function(EspbInstance *instance, ExecutionContext *exe
     const EspbModule *module = instance->module;
     if (module->has_start_function) {
         uint32_t start_func_idx = module->start_function_index;
-        printf("Runtime: Running start function (index %lu)...\n", (unsigned long)start_func_idx);
+        ESPB_RLOG("Runtime: Running start function (index %lu)...\n", (unsigned long)start_func_idx);
 
         uint32_t num_imported_funcs = 0;
         for(uint32_t imp_idx = 0; imp_idx < module->num_imports; ++imp_idx) {
@@ -1075,7 +1234,7 @@ EspbResult espb_run_start_function(EspbInstance *instance, ExecutionContext *exe
             ESP_LOGW(TAG, "ESPB START FUNCTION: start_func_idx=%lu", (unsigned long)start_func_idx);
         }
 
-        EspbResult call_res = espb_call_function(instance, exec_ctx, start_func_idx, NULL, NULL);
+        EspbResult call_res = espb_execute_function(instance, exec_ctx, start_func_idx, NULL, NULL);
 
         if (call_res != ESPB_OK) {
              ESP_LOGE(TAG, "ESPB START FUNCTION: *** START FUNCTION FAILED - THIS WILL DESTROY ALL CLOSURES! ***");
@@ -1085,9 +1244,9 @@ EspbResult espb_run_start_function(EspbInstance *instance, ExecutionContext *exe
         }
         
         ESP_LOGI(TAG, "ESPB START FUNCTION: Start function completed successfully - closures preserved");
-        printf("Runtime: Start function executed successfully.\n");
+        ESPB_RLOG("Runtime: Start function executed successfully.\n");
     } else {
-        printf("Runtime: No start function defined.\n");
+        ESPB_RLOG("Runtime: No start function defined.\n");
     }
     return ESPB_OK;
 }

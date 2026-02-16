@@ -1,4 +1,4 @@
-/*
+﻿/*
  * espb component
  * Copyright (C) 2025 Smersh
  *
@@ -15,7 +15,6 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
-
 #ifndef ESPB_API_H
 #define ESPB_API_H
 
@@ -30,27 +29,7 @@ typedef struct espb_module_handle_t* espb_handle_t;
 extern "C" {
 #endif
 
-// Макросы для упрощенного создания Value аргументов
-#define ESPB_I8(v)     ((Value){.type = ESPB_TYPE_I8, .value = {.i32 = (int8_t)(v)}})
-#define ESPB_U8(v)     ((Value){.type = ESPB_TYPE_U8, .value = {.i32 = (uint8_t)(v)}})
-#define ESPB_I16(v)    ((Value){.type = ESPB_TYPE_I16, .value = {.i32 = (int16_t)(v)}})
-#define ESPB_U16(v)    ((Value){.type = ESPB_TYPE_U16, .value = {.i32 = (uint16_t)(v)}})
-#define ESPB_I32(v)    ((Value){.type = ESPB_TYPE_I32, .value = {.i32 = (int32_t)(v)}})
-#define ESPB_U32(v)    ((Value){.type = ESPB_TYPE_U32, .value = {.u32 = (uint32_t)(v)}})
-#define ESPB_I64(v)    ((Value){.type = ESPB_TYPE_I64, .value = {.i64 = (int64_t)(v)}})
-#define ESPB_U64(v)    ((Value){.type = ESPB_TYPE_U64, .value = {.u64 = (uint64_t)(v)}})
-#define ESPB_F32(v)    ((Value){.type = ESPB_TYPE_F32, .value = {.f32 = (float)(v)}})
-#define ESPB_F64(v)    ((Value){.type = ESPB_TYPE_F64, .value = {.f64 = (double)(v)}})
-#define ESPB_PTR(v)    ((Value){.type = ESPB_TYPE_PTR, .value = {.ptr = (void*)(v)}})
-#define ESPB_BOOL(v)   ((Value){.type = ESPB_TYPE_BOOL, .value = {.i32 = (v) ? 1 : 0}})
-#define ESPB_V128(v)   ((Value){.type = ESPB_TYPE_V128, .value = {.v128 = (v)}})
-#define ESPB_FUNC(idx) ((Value){.type = ESPB_TYPE_INTERNAL_FUNC_IDX, .value = {.func_idx = (idx)}})
-#define ESPB_VOID()    ((Value){.type = ESPB_TYPE_VOID, .value = {.i32 = 0}})
-
-// Макросы для передачи массивов (массивы передаются как указатели)
-// Эти макросы просто для наглядности - они эквивалентны ESPB_PTR
-#define ESPB_ARRAY(arr)     ESPB_PTR(arr)
-#define ESPB_STRING(str)    ESPB_PTR(str)
+// Макросы для создания Value-аргументов перенесены в espb_interpreter_common_types.h
 
 /**
  * @brief Загружает и инстанцирует модуль ESPB.

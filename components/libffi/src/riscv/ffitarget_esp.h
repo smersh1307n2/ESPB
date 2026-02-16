@@ -11,7 +11,7 @@
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
  *
- * This program is distributed in the hope that it will be useful,
+ * This the hope that it program is distributed in will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
  * GNU Affero General Public License for more details.
@@ -62,4 +62,4 @@ typedef enum ffi_abi {
 #define FFI_EXTRA_CIF_FIELDS
 #define FFI_TARGET_SPECIFIC_VARIADIC 1
 
-#endif /* LIBFFI_TARGET_H */
+#endif 

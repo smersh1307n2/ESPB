@@ -1,4 +1,4 @@
-/*
+﻿/*
  * This file is part of the modified libffi library.
  *
  * Original libffi - Copyright (c) 1996-2025 Anthony Green, Red Hat, Inc and others.
@@ -19,9 +19,37 @@
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <https://www.gnu.org/licenses/>.
  */
+/* -----------------------------------------------------------------------
+   closures.c - Copyright (c) 2019, 2022 Anthony Green
+                Copyright (c) 2007, 2009, 2010 Red Hat, Inc.
+                Copyright (C) 2007, 2009, 2010 Free Software Foundation, Inc
+                Copyright (c) 2011 Plausible Labs Cooperative, Inc.
+
+   Code to allocate and deallocate memory for closures.
+
+   Permission is hereby granted, free of charge, to any person obtaining
+   a copy of this software and associated documentation files (the
+   ``Software''), to deal in the Software without restriction, including
+   without limitation the rights to use, copy, modify, merge, publish,
+   distribute, sublicense, and/or sell copies of the Software, and to
+   permit persons to whom the Software is furnished to do so, subject to
+   the following conditions:
+
+   The above copyright notice and this permission notice shall be included
+   in all copies or substantial portions of the Software.
+
+   THE SOFTWARE IS PROVIDED ``AS IS'', WITHOUT WARRANTY OF ANY KIND,
+   EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+   MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+   NONINFRINGEMENT.  IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
+   HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+   WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+   DEALINGS IN THE SOFTWARE.
+   ----------------------------------------------------------------------- */
 
 #ifndef FFI_CLOSURES
-#define FFI_CLOSURES 1
+#define FFI_CLOSURES
 
 #if (defined __linux__ || defined __CYGWIN__) && !defined _GNU_SOURCE
 #define _GNU_SOURCE 1

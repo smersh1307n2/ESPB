@@ -17,6 +17,8 @@
  */
 
 #include "espb_host_symbols.h"
+#include "espb_fast_symbols.h"
+
 #include <stdio.h>
 #include <iostream>
 #include "freertos/FreeRTOS.h"
@@ -81,11 +83,32 @@ extern "C" std::ostream& _ZSt4endlIcSt11char_traitsIcEERSt13basic_ostreamIT_T0_E
     return std::endl(os);
 }
 */
-// Таблица символов C++ функций
+// --- Fast table: ESP-IDF/libc/FreeRTOS symbols (no names) ---
+// Included via macros from components/espb/symbols/idf_fast.sym
+ //#define ESPB_SYM(_name, _expr)          { (const void*)(_expr) },
+//#define ESPB_SYM_OPT(_cfg, _name, _expr) { (_cfg) ? (const void*)(_expr) : (const void*)0 },
+// __attribute__((section(".espb_symtab_rodata"))) 
+//__attribute__((aligned(64)))
+static const EspbSymbolFast idf_fast_symbols[] = {
+#include "idf_fast.sym"
+};
+//#undef ESPB_SYM
+//#undef ESPB_SYM_OPT
+
+static const uint32_t idf_fast_count = (uint32_t)(sizeof(idf_fast_symbols) / sizeof(idf_fast_symbols[0]));
+
+// Экспорт глобального объекта std::cout
+extern "C" void* _ZSt4cout_ptr() {
+    return &std::cout;
+}
+// Named table (legacy) used by existing string-based resolver
 // Имена точно такие, как они будут в импортах ESPb модуля
-static const EspbSymbol cpp_symbols[] = {
+ //__attribute__((section(".espb_symtab_rodata")))
+//__attribute__((aligned(64)))  
+ static const EspbSymbol cpp_symbols[] = {
     // Пример для printf (если модуль импортирует "env::printf")
     // { "printf", (const void*)&espb_simple_puts }, // Старая версия с оберткой
+    /*
     { "printf", (const void*)&printf },          // Новая версия, напрямую системный printf
     { "puts", (const void*)&puts },
     { "vTaskDelay", (const void*)&vTaskDelay },
@@ -112,45 +135,43 @@ static const EspbSymbol cpp_symbols[] = {
     
     { "esp_log_write", (const void*)&esp_log_write },
     { "esp_log_timestamp", (const void*)&esp_log_timestamp },
+#if CONFIG_ESPB_IDF_GPIO
     { "gpio_config", (const void*)&gpio_config },
-    { "esp_err_to_name", (const void*)&esp_err_to_name },
     { "gpio_set_level", (const void*)&gpio_set_level },
+#endif
+    { "esp_err_to_name", (const void*)&esp_err_to_name },
     
     { "esp_rom_get_cpu_ticks_per_us", (const void*)&esp_rom_get_cpu_ticks_per_us },
-    { "esp_cpu_get_cycle_count", (const void*)&esp_cpu_get_cycle_count },
+     { "esp_cpu_get_cycle_count", (const void*)&esp_cpu_get_cycle_count },
 
-
+{ "_ZSt4cout", (const void*)&_ZSt4cout_ptr },
 
   //  { "xTimerDelete", (const void*)&xTimerDelete },
 
+//*/
 
-
-    // Host-like helpers to invoke callbacks (CB, user_data)
-  //  { "host_invoke_cb", (const void*)&host_invoke_cb },
-   // { "host_invoke_cb2", (const void*)&host_invoke_cb2 },
-  //  { "set_magic_number", (const void*)&native_set_magic_number },
     
     // Атомарные операции для 64-битных значений (обертки для встроенных функций GCC)
     // Пример для C++ I/O (если модуль это использует и оно реализовано)
 // ... existing code ...
 
+
+
     ESP_ELFSYM_END
 };
 
-// Экспорт глобального объекта std::cout
-extern "C" void* _ZSt4cout_ptr() {
-    return &std::cout;
-}
 
-// Таблица глобальных переменных C++
-static const EspbSymbol cpp_globals[] = {
-    { "_ZSt4cout", (const void*)&_ZSt4cout_ptr },
-    ESP_ELFSYM_END
-};
+
 
 // Функция инициализации символов, вызывать в начале main
 extern "C" void init_cpp_symbols(void) {
-    // Регистрируем таблицы символов
-    espb_register_symbol_table("env", cpp_symbols);
-    espb_register_symbol_table("cpp_globals", cpp_globals);
+  
+    // Register fast table for ESP-IDF (index-based, no names) - автоматически
+    espb_register_idf_fast_table(idf_fast_symbols, idf_fast_count);
+
+        // Регистрируем таблицы символов
+    // module_num=0 is the default/global named namespace
+  //  espb_register_symbol_table(0, cpp_symbols);
+
+    // NOTE: custom_fast таблица регистрируется пользователем в main.cpp
 } 

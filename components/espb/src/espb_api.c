@@ -20,6 +20,7 @@
 #include "espb_interpreter.h"
 #include "espb_host_symbols.h"
 #include "espb_callback_system.h"
+#include "espb_jit_dispatcher.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -39,7 +40,6 @@ EspbResult espb_load_module(const uint8_t *espb_data, size_t espb_size, espb_han
 
     iram_pool_init_wrapper();
     if (espb_callback_system_init() != ESPB_OK) return ESPB_ERR_INVALID_STATE;
-    init_c_symbols();
     init_cpp_symbols();
 
     EspbModule *module = NULL;
@@ -105,7 +105,7 @@ EspbResult espb_call_function_sync(espb_handle_t handle, const char* function_na
         return ESPB_ERR_MEMORY_ALLOC;
     }
 
-    EspbResult result = espb_call_function(handle->instance, exec_ctx, func_idx_to_call, args, results);
+    EspbResult result = espb_execute_function(handle->instance, exec_ctx, func_idx_to_call, args, results);
 
     free_execution_context(exec_ctx);
 

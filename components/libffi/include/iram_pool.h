@@ -1,4 +1,4 @@
-/*
+﻿/*
  * This file is part of the modified libffi library.
  *
  * Original libffi - Copyright (c) 1996-2025 Anthony Green, Red Hat, Inc and others.

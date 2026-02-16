@@ -1856,6 +1856,19 @@ CONFIG_ESPB_SHADOW_STACK_INCREMENT=4096
 # end of ESPB Configuration
 
 #
+# ESPB Configuration
+#
+CONFIG_ESPB_JIT_ENABLED=y
+CONFIG_ESPB_IDF_GPIO=y
+
+#
+# Interpreter Settings
+#
+# CONFIG_ESPB_DEBUG_CHECKS is not set
+# end of Interpreter Settings
+# end of ESPB Configuration
+
+#
 # libffi Configuration
 #
 CONFIG_LIBFFI_USE_IRAM_POOL=y

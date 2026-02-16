@@ -1,4 +1,4 @@
-/*
+﻿/*
  * This file is part of the modified libffi library.
  *
  * Original libffi - Copyright (c) 1996-2025 Anthony Green, Red Hat, Inc and others.
@@ -247,6 +247,19 @@ ffi_prep_closure_loc (ffi_closure* closure,
   /* copye trampoline to stack and patch 'ffi_closure_SYSV' pointer */
   memcpy(closure->tramp, ffi_trampoline, FFI_TRAMPOLINE_SIZE);
   *(unsigned int*)(&closure->tramp[8]) = (unsigned int)ffi_closure_SYSV;
+
+  // Patch L32R in trampoline to always load from local literal at offset 8.
+  // L32R is 24-bit: opcode (0x000001) | (aT << 4) | (offset_words << 8)
+  // Note: IRAM requires 32-bit aligned access, so we read/write via aligned pointer
+  const size_t l32r_offset = 12;
+  volatile uint32_t *word_ptr = (volatile uint32_t *)((uintptr_t)closure->tramp + l32r_offset);
+  uint32_t word = *word_ptr;
+  uint32_t instr = word & 0x00FFFFFF; // L32R is 3 bytes (24 bits)
+  uint8_t aT = (instr >> 4) & 0x0F;
+  int16_t offset_words = (int16_t)-1; // literal is 4 bytes before l32r
+  uint32_t patched = 0x000001 | ((uint32_t)aT << 4) | ((uint32_t)(offset_words & 0xFFFF) << 8);
+  // Preserve the 4th byte of the word, replace first 3 bytes
+  *word_ptr = (word & 0xFF000000) | (patched & 0x00FFFFFF);
 
   // Do we have this function?
   // __builtin___clear_cache(closer->tramp, closer->tramp + FFI_TRAMPOLINE_SIZE)
