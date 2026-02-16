@@ -19,7 +19,29 @@ This component is ideal for applications that require dynamic code loading, safe
 *   **Memory Management**: Includes a custom heap manager (`multi_heap`) to manage memory allocations within the sandbox.
 *   **Thread-Safety**: Designed to be thread-safe using FreeRTOS mutexes for instance-level operations.
 
+## JIT Compilation
+
+ESPB now includes a Just-In-Time (JIT) compiler for improved execution performance. The JIT engine translates ESPB bytecode to native machine code at runtime, providing significant speedups compared to interpreted execution.
+
+### Supported Architectures
+
+* **Xtensa** (ESP32 series)
+* **RISC-V** (ESP32-C series)
+
+> **Note**: Currently, JIT compilation has been tested only on ESP32 and ESP32-C3. Other targets are supported but may require additional validation.
+
+### How It Works
+
+The JIT compiler translates each ESPB bytecode instruction into corresponding native instructions for the target architecture. This allows the virtual machine to execute native code directly, eliminating the interpretation overhead.
+
+### JIT_HOT Functions
+
+Only functions marked with the `JIT_HOT` attribute are compiled to native code via JIT and executed as native machine code. All other functions continue to run in the standard interpreted mode. This selective compilation approach allows you to optimize performance-critical functions while maintaining the flexibility and safety of interpretation for the rest of your code.
+
+To mark a function for JIT compilation, add the `JIT_HOT` attribute to the function in your LLVM IR source before compiling to ESPB bytecode. For detailed instructions and examples, please refer to the companion project: [ESP32_PRJ_TO_LLVM](https://github.com/smersh1307n2/ESP32_PRJ_TO_LLVM).
+
 ## Architecture
+
 
 The ESPB component consists of several key modules:
 
