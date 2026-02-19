@@ -2448,9 +2448,11 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
         return ESPB_ERR_MEMORY_ALLOC;
     }
     
-    // Проверка что память executable (используем ESP-IDF API)
-    if (!esp_ptr_executable(exec_buffer) || esp_ptr_in_dram(exec_buffer)) {
-        printf("JIT: Failed to allocate executable memory (got %p)\n", exec_buffer);
+    // Проверяем, что память действительно в IRAM/ROM.
+    // На ESP32-C6 esp_ptr_in_dram() может возвращать true даже для IRAM-адресов,
+    // поэтому запрещаем только если адрес НЕ в IRAM и НЕ в ROM.
+    if (!esp_ptr_in_iram(exec_buffer) && !esp_ptr_in_rom(exec_buffer)) {
+        printf("JIT: exec_buffer not in IRAM/ROM: %p\n", exec_buffer);
         heap_caps_free(exec_buffer);
         return ESPB_ERR_MEMORY_ALLOC;
     }

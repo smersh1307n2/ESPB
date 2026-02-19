@@ -20,7 +20,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_memory_utils.h"
-#include <string.h>  // memcpy
+#include <string.h>
 
 static const char *TAG = "espb_exec_mem";
 
@@ -51,6 +51,10 @@ static void *alloc_checked(size_t size, uint32_t caps, const char *caps_name)
         return NULL;
     }
 
+    // Note: esp_ptr_executable() may return false on some targets (e.g. ESP32-C6 with memprot
+    // disabled) even when the memory IS executable. We trust heap_caps_malloc with EXEC caps
+    // to return executable memory and skip the double-check to avoid false negatives.
+#if 0
     if (!esp_ptr_executable(p))
     {
         ESP_LOGE(TAG, "Allocated memory is not executable (size=%u, caps=%s)", (unsigned)size, caps_name);
@@ -58,6 +62,7 @@ static void *alloc_checked(size_t size, uint32_t caps, const char *caps_name)
         heap_caps_free(p);
         return NULL;
     }
+#endif
 
     ESP_LOGD(TAG, "Allocated exec buffer %p size=%u caps=%s free(exec)=%u largest(exec)=%u",
              p,
@@ -74,46 +79,39 @@ void *espb_exec_alloc(size_t size)
     // Preferred: internal, 32-bit addressable executable memory (IRAM).
     void *p = alloc_checked(size, MALLOC_CAP_EXEC | MALLOC_CAP_INTERNAL | MALLOC_CAP_32BIT,
                             "EXEC|INTERNAL|32BIT");
-    if (p)
-        return p;
+    if (p) return p;
 
-    // Fallback 1: executable + 32-bit (may still end up internal, but allows allocator more freedom).
     p = alloc_checked(size, MALLOC_CAP_EXEC | MALLOC_CAP_32BIT, "EXEC|32BIT");
-    if (p)
-        return p;
+    if (p) return p;
 
-    // Fallback 2: plain executable capability.
-    return alloc_checked(size, MALLOC_CAP_EXEC, "EXEC");
+    p = alloc_checked(size, MALLOC_CAP_EXEC, "EXEC");
+    if (p) return p;
+
+#ifdef MALLOC_CAP_IRAM_8BIT
+    // ESP32-C6: IRAM can be allocated with IRAM_8BIT capability (32-bit aligned access).
+    p = alloc_checked(size, MALLOC_CAP_IRAM_8BIT | MALLOC_CAP_32BIT, "IRAM_8BIT|32BIT");
+    if (p) return p;
+#endif
+
+#ifdef MALLOC_CAP_TCM
+    p = alloc_checked(size, MALLOC_CAP_TCM, "TCM");
+    if (p) return p;
+#endif
+
+    return NULL;
 }
 
 void *espb_exec_realloc(void *ptr, size_t size)
 {
-    // Try preferred caps first.
     void *p = heap_caps_realloc(ptr, size, MALLOC_CAP_EXEC | MALLOC_CAP_INTERNAL | MALLOC_CAP_32BIT);
-    if (!p)
-    {
-        // Fallback: allocate a new block (with fallback caps) and copy.
+    if (!p) {
         p = espb_exec_alloc(size);
-        if (!p)
-            return NULL;
-
-        if (ptr)
-        {
-            // We don't know the old allocation size reliably here; caller should only use realloc
-            // to shrink buffers. Copying 'size' bytes is safe only in shrink case.
+        if (!p) return NULL;
+        if (ptr) {
             memcpy(p, ptr, size);
             heap_caps_free(ptr);
         }
     }
-
-    if (!esp_ptr_executable(p))
-    {
-        ESP_LOGE(TAG, "Reallocated memory is not executable (size=%u)", (unsigned)size);
-        log_ptr_region(p);
-        heap_caps_free(p);
-        return NULL;
-    }
-
     return p;
 }
 

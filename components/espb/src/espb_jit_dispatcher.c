@@ -170,14 +170,11 @@ EspbResult execute_jit_code(EspbInstance *instance, void *jit_code, const Value 
         return ESPB_ERR_INVALID_OPERAND;
     }
     
-    // Валидация JIT кода перед выполнением
-    if (!esp_ptr_executable(jit_code)) {
-        printf("[JIT ERROR] JIT code at %p is NOT in executable memory!\n", jit_code);
-        return ESPB_ERR_INVALID_OPERAND;
-    }
-    
-    if (esp_ptr_in_dram(jit_code)) {
-        printf("[JIT ERROR] JIT code at %p is in DRAM - cannot execute from DRAM!\n", jit_code);
+    // Валидация JIT кода перед выполнением.
+    // На ESP32-C6 esp_ptr_in_dram() может ошибочно срабатывать на IRAM-адресах,
+    // поэтому допускаем IRAM/ROM и запрещаем всё остальное.
+    if (!esp_ptr_in_iram(jit_code) && !esp_ptr_in_rom(jit_code)) {
+        printf("[JIT ERROR] JIT code at %p is not in IRAM/ROM!\n", jit_code);
         return ESPB_ERR_INVALID_OPERAND;
     }
     

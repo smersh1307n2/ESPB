@@ -15,6 +15,18 @@ menu "ESPB Configuration"
         help
             Enable Just-In-Time (JIT) compilation for ESPB functions.
             This can significantly improve performance for frequently called functions.
+
+    config ESPB_JIT_IRAM_POOL_SIZE
+        int "JIT IRAM pool size (bytes)"
+        depends on ESPB_JIT_ENABLED
+        default 65536
+        range 8192 524288
+        help
+            Size of the static IRAM buffer reserved for JIT-compiled code.
+            On chips like ESP32-C6 where MALLOC_CAP_EXEC heap is not available by default,
+            JIT code is allocated from this static IRAM buffer.
+            Default is 64KB which is enough for ~8-10 medium HOT functions.
+            Increase if you have many HOT functions or large functions.
     config ESPB_IDF_GPIO
         bool "Enable GPIO symbols in idf_fast table"
         depends on ESPB_INTERPRETER_ENABLED
