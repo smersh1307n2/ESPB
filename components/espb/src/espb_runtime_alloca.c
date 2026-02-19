@@ -49,16 +49,8 @@ EspbResult espb_runtime_alloca(EspbInstance *instance,
 
     memset(allocated_ptr, 0, size_to_alloc);
 
-    // Safety: ensure pointer is within linear memory range
-    if (instance->memory_data && instance->memory_size_bytes) {
-        uintptr_t ptr_addr = (uintptr_t)allocated_ptr;
-        uintptr_t mem_base = (uintptr_t)instance->memory_data;
-        uintptr_t mem_end  = mem_base + (uintptr_t)instance->memory_size_bytes;
-        if (ptr_addr < mem_base || ptr_addr >= mem_end) {
-            espb_heap_free(instance, allocated_ptr);
-            return ESPB_ERR_OUT_OF_MEMORY;
-        }
-    }
+    // NOTE: ALLOCA allocates from heap, NOT from linear memory (memory_data).
+    // Heap pointers are always outside memory_data range — do not check against it.
 
     // Track allocation for frame cleanup (interpreter path)
     if (exec_ctx && exec_ctx->call_stack && exec_ctx->call_stack_top > 0) {

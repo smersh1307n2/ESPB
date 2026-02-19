@@ -7247,9 +7247,13 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_l32i(&ctx, 8, 1, 8);
                 emit_mov_n(&ctx, 12, 8);
 
-                // a13 = num_vregs
-                if (num_vregs <= 15) emit_movi_n(&ctx, 13, (int8_t)num_vregs);
-                else { emit_load_u32_to_a8(&ctx, &litpool, num_vregs); emit_mov_n(&ctx, 13, 8); }
+                // a13 = effective_vregs = max(num_vregs, rd+1, rs_size+1)
+                // Необходимо т.к. LLVM может генерировать регистры выше num_virtual_regs из заголовка.
+                uint16_t effective_vregs = num_vregs;
+                if ((uint16_t)(rd + 1) > effective_vregs) effective_vregs = (uint16_t)(rd + 1);
+                if ((uint16_t)(rs_size + 1) > effective_vregs) effective_vregs = (uint16_t)(rs_size + 1);
+                if (effective_vregs <= 15) emit_movi_n(&ctx, 13, (int8_t)effective_vregs);
+                else { emit_load_u32_to_a8(&ctx, &litpool, effective_vregs); emit_mov_n(&ctx, 13, 8); }
 
                 // a14 = rd
                 if (rd <= 15) emit_movi_n(&ctx, 14, (int8_t)rd);

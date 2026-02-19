@@ -2602,8 +2602,12 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
         saved_regs_size += 32;
     }
     
-    // Для функций с вызовами нужно больше места (для сохранения caller-saved регистров)
-    uint16_t temp_space = (flags & ESPB_FUNC_FLAG_HAS_CALLS) ? 64 : 0;
+    // Для функций с вызовами нужно больше места (для сохранения caller-saved регистров).
+    // ВАЖНО: ALLOCA тоже вызывает хелперы и сохраняет t0-t6+ra (8 рег * 4 = 32 байта).
+    // Минимум 48 байт (с выравниванием до 16) резервируем всегда, чтобы ALLOCA
+    // мог безопасно сохранять регистры в JIT-фрейм (s0+offset), а не ниже sp,
+    // где располагается массив v_regs вызывающей функции.
+    uint16_t temp_space = (flags & ESPB_FUNC_FLAG_HAS_CALLS) ? 64 : 48;
     
     uint16_t total_frame_size = saved_regs_size + frame_size + temp_space;
     
@@ -4460,18 +4464,26 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 //        (long)(pc - bytecode - 3), rd, rs, align_param);
                 
                 // Генерируем вызов helper: void espb_jit_alloca_ex(EspbInstance*, Value* v_regs, u16 num_regs_allocated, u8 rd, u8 rs, u8 align)
-                // Сохраняем caller-saved
-                emit_addi_phys(&ctx, 2, 2, -32);
-                for (int i = 0; i < 7; ++i) emit_sw_phys(&ctx, 5 + i, i * 4, 2);
-                emit_sw_phys(&ctx, 18, 28, 2);
-                
-                // a0 = instance (s1)
+                // Сохраняем caller-saved регистры t0-t6 и ra в pre-allocated temp area (s0+0..s0+31).
+                // КРИТИЧНО: нельзя делать sp-=32 — это перекроет v_regs на стеке вызывающей функции.
+                // Используем 48-байтный temp_space в нижней части JIT-фрейма (s0 = fp = sp в прологе).
+                // t0-t6 в RISC-V = x5,x6,x7,x28,x29,x30,x31 (НЕ x5..x11!).
+                static const uint8_t t_regs[7] = {5, 6, 7, 28, 29, 30, 31}; // t0-t6
+                for (int i = 0; i < 7; ++i) emit_sw_phys(&ctx, t_regs[i], i * 4, 8); // sw tX, i*4(s0)
+                emit_sw_phys(&ctx, 1, 28, 8); // sw ra, 28(s0) — jalr в emit_call_helper затирает ra
+
+                // a0 = instance (s1), a1 = v_regs (s2) — оба callee-saved, не трогаются хелпером
                 emit_addi_phys(&ctx, 10, 9, 0);
-                // a1 = v_regs (s2)
                 emit_addi_phys(&ctx, 11, 18, 0);
 
-                // a2 = num_regs_allocated (max_reg_used + 1)
-                uint16_t num_regs_allocated = (uint16_t)max_reg_used + 1;
+                // a2 = num_regs_allocated
+                // ВАЖНО: нельзя использовать просто (max_reg_used+1) — bytecode может ссылаться
+                // на регистры с большими индексами (например R16). Если значение слишком маленькое,
+                // espb_jit_alloca_ex не найдёт слот для rd и оставит его нулевым → store по адресу 0.
+                uint16_t num_regs_allocated = num_virtual_regs;
+                if (num_regs_allocated < (uint16_t)(rs + 1)) num_regs_allocated = (uint16_t)(rs + 1);
+                if (num_regs_allocated < (uint16_t)(rd + 1)) num_regs_allocated = (uint16_t)(rd + 1);
+                if (num_regs_allocated < 256) num_regs_allocated = 256;
                 if (num_regs_allocated < 2048) {
                     emit_addi_phys(&ctx, 12, 0, (int16_t)num_regs_allocated);
                 } else {
@@ -4489,11 +4501,11 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 emit_addi_phys(&ctx, 15, 0, align_param);
                 
                 emit_call_helper(&ctx, (uintptr_t)&espb_jit_alloca_ex);
-                
-                // Restore
-                for (int i = 0; i < 7; ++i) emit_lw_phys(&ctx, 5 + i, i * 4, 2);
-                emit_lw_phys(&ctx, 18, 28, 2);
-                emit_addi_phys(&ctx, 2, 2, 32);
+
+                // Восстанавливаем t0-t6 и ra из temp area (s0+0..s0+31)
+                for (int i = 0; i < 7; ++i) emit_lw_phys(&ctx, t_regs[i], i * 4, 8); // lw tX, i*4(s0)
+                emit_lw_phys(&ctx, 1, 28, 8); // lw ra, 28(s0)
+                // s1(x9) и s2(x18) callee-saved — хелпер их сохранил сам, восстанавливать не нужно
                 
                 break;
             }
