@@ -28,7 +28,7 @@ ESPB now includes a Just-In-Time (JIT) compiler for improved execution performan
 * **Xtensa** (ESP32 series)
 * **RISC-V** (ESP32-C series)
 
-> **Note**: Currently, JIT compilation has been tested only on ESP32 and ESP32-C3. Other targets are supported but may require additional validation.
+> **Note**: Currently, JIT compilation has been tested only on ESP32, ESP32-C3, ESP32-C6. Other targets are supported but may require additional validation.
 
 ### How It Works
 
