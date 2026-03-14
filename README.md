@@ -10,6 +10,9 @@ Due to regional restrictions in Russia, direct GitHub Sponsors / Open Collective
 Please support via:
 - **Boosty** (main channel — RU + international cards, subscriptions, one-time):  
   https://boosty.to/espb
+  
+  https://boosty.to/espb/purchase/3843441?ssource=DIRECT&share=subscription_link
+  https://boosty.to/espb/purchase/3843676?ssource=DIRECT&share=subscription_link
 
 
 Funds go directly to:
