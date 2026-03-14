@@ -1,5 +1,27 @@
 # ESPB Interpreter Component
 
+
+## Support ESPB ❤️
+
+ESPB is a solo-maintained open-source project. Your support helps accelerate development!
+
+Due to regional restrictions in Russia, direct GitHub Sponsors / Open Collective payouts are not available.
+
+Please support via:
+- **Boosty** (main channel — RU + international cards, subscriptions, one-time):  
+  https://boosty.to/espb
+
+
+Funds go directly to:
+- On-device AOT compilation
+- Offline/local converter
+- JIT optimizations
+- Cross-platform toolchain
+- Tests, docs & examples
+
+Thank you — even $3–5 makes a real difference! 🚀
+
+
 ## Overview
 
 **ESPB** is a lightweight, embeddable bytecode interpreter designed for the ESP-IDF framework. It enables the loading and execution of pre-compiled code modules in a sandboxed environment on ESP32 microcontrollers. The interpreter is written in C and integrates tightly with FreeRTOS and `libffi` to provide a powerful Foreign Function Interface (FFI) for calling native C/C++ functions from the interpreted code.
