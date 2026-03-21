@@ -138,6 +138,15 @@ static bool espb_try_call_jit_for_call_indirect(
 #endif
 
 // ============================================================================
+// DEBUG LOGGING: Opcode logging macros
+// ============================================================================
+#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
+    #define ESPB_OP_LOG(fmt, ...) ESP_LOGD(TAG, fmt, ##__VA_ARGS__)
+#else
+    #define ESPB_OP_LOG(fmt, ...) ((void)0)
+#endif
+
+// ============================================================================
 // DEBUG CHECKS: Runtime validation macros
 // ============================================================================
 // Эти проверки убивают производительность и раздувают код.
@@ -168,11 +177,207 @@ static bool espb_try_call_jit_for_call_indirect(
                 return ESPB_ERR_INVALID_REGISTER_INDEX; \
             } \
         } while(0)
+    // CHECK_TYPE уже определен в espb_interpreter_common_types.h
 #else
     #define DEBUG_CHECK_REG(reg, max_reg, msg) ((void)0)
     #define DEBUG_CHECK_REGS_2(r1, r2, max_reg, msg) ((void)0)
     #define DEBUG_CHECK_REGS_3(r1, r2, r3, max_reg, msg) ((void)0)
+    // CHECK_TYPE уже определен в espb_interpreter_common_types.h
 #endif
+
+// ============================================================================
+// HOT OPCODE SPECIALIZATION MACROS
+// ============================================================================
+// Специализированные макросы для часто используемых операций (как в WAMR Fast)
+// ============================================================================
+
+// I32 бинарные операции: rd = r1 op r2
+#define ESPB_OP_I32_BINARY(op) \
+    do { \
+        uint8_t rd = *pc++; \
+        uint8_t r1 = *pc++; \
+        uint8_t r2 = *pc++; \
+        V_I32(locals[rd]) = V_I32(locals[r1]) op V_I32(locals[r2]); \
+        DISPATCH(); \
+    } while(0)
+
+// I32 бинарные операции с проверкой деления на ноль
+#define ESPB_OP_I32_DIV(op, check_overflow) \
+    do { \
+        uint8_t rd = *pc++; \
+        uint8_t r1 = *pc++; \
+        uint8_t r2 = *pc++; \
+        int32_t dividend = V_I32(locals[r1]); \
+        int32_t divisor = V_I32(locals[r2]); \
+        if (__builtin_expect(divisor == 0, 0)) { \
+            return ESPB_ERR_RUNTIME_TRAP_DIV_BY_ZERO; \
+        } \
+        if (check_overflow && __builtin_expect(dividend == INT32_MIN && divisor == -1, 0)) { \
+            return ESPB_ERR_RUNTIME_TRAP_INTEGER_OVERFLOW; \
+        } \
+        V_I32(locals[rd]) = dividend op divisor; \
+        DISPATCH(); \
+    } while(0)
+
+// I32 битовые операции
+#define ESPB_OP_I32_BITOP(op) \
+    do { \
+        uint8_t rd = *pc++; \
+        uint8_t r1 = *pc++; \
+        uint8_t r2 = *pc++; \
+        V_I32(locals[rd]) = V_I32(locals[r1]) op V_I32(locals[r2]); \
+        DISPATCH(); \
+    } while(0)
+
+// I32 сдвиги
+#define ESPB_OP_I32_SHIFT(op) \
+    do { \
+        uint8_t rd = *pc++; \
+        uint8_t r1 = *pc++; \
+        uint8_t r2 = *pc++; \
+        V_I32(locals[rd]) = V_I32(locals[r1]) op (V_I32(locals[r2]) & 31); \
+        DISPATCH(); \
+    } while(0)
+
+// I64 бинарные операции
+#define ESPB_OP_I64_BINARY(op) \
+    do { \
+        uint8_t rd = *pc++; \
+        uint8_t r1 = *pc++; \
+        uint8_t r2 = *pc++; \
+        V_I64(locals[rd]) = V_I64(locals[r1]) op V_I64(locals[r2]); \
+        DISPATCH(); \
+    } while(0)
+
+// I64 операции с проверкой деления на ноль
+#define ESPB_OP_I64_DIV(op, check_overflow) \
+    do { \
+        uint8_t rd = *pc++; \
+        uint8_t r1 = *pc++; \
+        uint8_t r2 = *pc++; \
+        int64_t dividend = V_I64(locals[r1]); \
+        int64_t divisor = V_I64(locals[r2]); \
+        if (__builtin_expect(divisor == 0, 0)) { \
+            return ESPB_ERR_RUNTIME_TRAP_DIV_BY_ZERO; \
+        } \
+        if (check_overflow && __builtin_expect(dividend == INT64_MIN && divisor == -1LL, 0)) { \
+            return ESPB_ERR_RUNTIME_TRAP_INTEGER_OVERFLOW; \
+        } \
+        V_I64(locals[rd]) = dividend op divisor; \
+        DISPATCH(); \
+    } while(0)
+
+// I64 сдвиги
+#define ESPB_OP_I64_SHIFT(op) \
+    do { \
+        uint8_t rd = *pc++; \
+        uint8_t r1 = *pc++; \
+        uint8_t r2 = *pc++; \
+        V_I64(locals[rd]) = V_I64(locals[r1]) op (V_I32(locals[r2]) & 63); \
+        DISPATCH(); \
+    } while(0)
+
+// F32 бинарные операции
+#define ESPB_OP_F32_BINARY(op) \
+    do { \
+        uint8_t rd = *pc++; \
+        uint8_t r1 = *pc++; \
+        uint8_t r2 = *pc++; \
+        V_F32(locals[rd]) = V_F32(locals[r1]) op V_F32(locals[r2]); \
+        DISPATCH(); \
+    } while(0)
+
+// F64 бинарные операции
+#define ESPB_OP_F64_BINARY(op) \
+    do { \
+        uint8_t rd = *pc++; \
+        uint8_t r1 = *pc++; \
+        uint8_t r2 = *pc++; \
+        V_F64(locals[rd]) = V_F64(locals[r1]) op V_F64(locals[r2]); \
+        DISPATCH(); \
+    } while(0)
+
+// CMP операции для I32
+#define ESPB_OP_CMP_I32(cond) \
+    do { \
+        uint8_t rd = *pc++; \
+        uint8_t r1 = *pc++; \
+        uint8_t r2 = *pc++; \
+        V_I32(locals[rd]) = (V_I32(locals[r1]) cond V_I32(locals[r2])) ? 1 : 0; \
+        DISPATCH(); \
+    } while(0)
+
+// CMP операции для I32 (unsigned)
+#define ESPB_OP_CMP_I32U(cond) \
+    do { \
+        uint8_t rd = *pc++; \
+        uint8_t r1 = *pc++; \
+        uint8_t r2 = *pc++; \
+        V_I32(locals[rd]) = ((uint32_t)V_I32(locals[r1]) cond (uint32_t)V_I32(locals[r2])) ? 1 : 0; \
+        DISPATCH(); \
+    } while(0)
+
+// CMP операции для I64
+#define ESPB_OP_CMP_I64(cond) \
+    do { \
+        uint8_t rd = *pc++; \
+        uint8_t r1 = *pc++; \
+        uint8_t r2 = *pc++; \
+        V_I32(locals[rd]) = (V_I64(locals[r1]) cond V_I64(locals[r2])) ? 1 : 0; \
+        DISPATCH(); \
+    } while(0)
+
+// CMP операции для F32/F64
+#define ESPB_OP_CMP_FLOAT(type, cond) \
+    do { \
+        uint8_t rd = *pc++; \
+        uint8_t r1 = *pc++; \
+        uint8_t r2 = *pc++; \
+        V_I32(locals[rd]) = (V_##type(locals[r1]) cond V_##type(locals[r2])) ? 1 : 0; \
+        DISPATCH(); \
+    } while(0)
+
+// ============================================================================
+// READ_U8 FORMATTED MACROS (для F32/F64 операций)
+// ============================================================================
+
+// F32 бинарные операции с READ_U8 форматом
+#define ESPB_OP_F32_BINARY_RU8(op) \
+    do { \
+        uint8_t rd = READ_U8(); \
+        uint8_t r1 = READ_U8(); \
+        uint8_t r2 = READ_U8(); \
+        V_F32(locals[rd]) = V_F32(locals[r1]) op V_F32(locals[r2]); \
+        DISPATCH(); \
+    } while(0)
+
+// F64 бинарные операции с READ_U8 форматом
+#define ESPB_OP_F64_BINARY_RU8(op) \
+    do { \
+        uint8_t rd = READ_U8(); \
+        uint8_t r1 = READ_U8(); \
+        uint8_t r2 = READ_U8(); \
+        V_F64(locals[rd]) = V_F64(locals[r1]) op V_F64(locals[r2]); \
+        DISPATCH(); \
+    } while(0)
+
+// F32 унарные операции с READ_U8 форматом
+#define ESPB_OP_F32_UNARY_RU8(func) \
+    do { \
+        uint8_t rd = READ_U8(); \
+        uint8_t r1 = READ_U8(); \
+        V_F32(locals[rd]) = func(V_F32(locals[r1])); \
+        DISPATCH(); \
+    } while(0)
+
+// F64 унарные операции с READ_U8 форматом
+#define ESPB_OP_F64_UNARY_RU8(func) \
+    do { \
+        uint8_t rd = READ_U8(); \
+        uint8_t r1 = READ_U8(); \
+        V_F64(locals[rd]) = func(V_F64(locals[r1])); \
+        DISPATCH(); \
+    } while(0)
 
 const uint8_t value_size_map[] = {
     [ESPB_TYPE_UNKNOWN] = 0,
@@ -641,7 +846,7 @@ static EspbResult push_call_frame(ExecutionContext *ctx, int return_pc, size_t s
     // Инициализация ALLOCA трекера для нового кадра
     frame->alloca_count = 0;
     frame->has_custom_aligned = false;
-    memset(frame->alloca_ptrs, 0, sizeof(frame->alloca_ptrs));
+    // memset удален: массив отслеживается через alloca_count, инициализация не нужна
     
     return ESPB_OK;
 }
@@ -813,12 +1018,6 @@ EspbResult espb_call_function(EspbInstance *instance, ExecutionContext *exec_ctx
         }
 #endif
         
-#ifdef CONFIG_ESPB_DEBUG_CHECKS
-        if (num_virtual_regs == 0 && instructions_size > 0) {
-             ESP_LOGW(TAG, "num_virtual_regs is 0, but function has code. func_idx=%" PRIu32, local_func_idx);
-        }
-#endif
-        
         // РЕФАКТОРИНГ: КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ - используем новую систему стека вместо calloc
         // СТАРЫЙ КОД (ВЫЗЫВАЛ DOUBLE FREE):
         // Value *locals = (Value *)calloc(num_virtual_regs > 0 ? num_virtual_regs : 1, sizeof(Value));
@@ -832,16 +1031,11 @@ EspbResult espb_call_function(EspbInstance *instance, ExecutionContext *exec_ctx
             }
         }
         
-        // `locals` теперь просто указатель на текущую позицию в `shadow_stack_buffer`
-        Value *locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->sp);
-        
+// `locals` теперь просто указатель на текущую позицию в `shadow_stack_buffer`
+        register Value *locals asm("s0") = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->sp);
+
         // Обнуляем выделенный кадр
         memset(locals, 0, frame_size_bytes);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-#ifdef CONFIG_ESPB_DEBUG_CHECKS
-        ESP_LOGD(TAG, "Allocated function frame: %u regs at %p", num_virtual_regs, locals);
-#endif
-#endif
         // Массив для хранения контекстов колбэков, индексирован по виртуальным регистрам
         // CallbackCtx **reg_contexts = (CallbackCtx **)calloc(num_virtual_regs > 0 ? num_virtual_regs : 1, sizeof(CallbackCtx*));
         // if (reg_contexts == NULL) {
@@ -860,24 +1054,10 @@ EspbResult espb_call_function(EspbInstance *instance, ExecutionContext *exec_ctx
             }
         }
         
-        // Инициализация R7 (в релизе без логов/ветвлений)
-        // Если функция реально использует R7, то валидатор при загрузке гарантирует num_virtual_regs >= 8.
-#ifdef CONFIG_ESPB_DEBUG_CHECKS
-        if (num_virtual_regs > 7) {
-            SET_TYPE(locals[7], ESPB_TYPE_PTR);
-            V_PTR(locals[7]) = NULL;
-        }
-#endif
-        
-        const uint8_t *pc = instructions_ptr;
-        bool end_reached = false;
-        int return_register = 0; 
-        
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-#ifdef CONFIG_ESPB_DEBUG_CHECKS
-        ESP_LOGD(TAG, "ESPB DEBUG: Opcode analysis (num_virtual_regs: %u)", num_virtual_regs);
-#endif
-#endif
+register const uint8_t *pc asm("s1") = instructions_ptr;
+    bool end_reached = false;
+    int return_register = 0;
+    register uint8_t opcode asm("s2") = 0;
         
       //  uint32_t instruction_count = 0;
       //  TickType_t last_yield_time = xTaskGetTickCount();
@@ -1120,79 +1300,21 @@ EspbResult espb_call_function(EspbInstance *instance, ExecutionContext *exec_ctx
     }
 #endif
 
-        interpreter_loop_start:
-                if (__builtin_expect(!(pc < instructions_end_ptr && !end_reached), 0)) {
-                    goto interpreter_loop_end;
-                }
-            const long pos = (long)(pc - instructions_ptr);
-            uint8_t opcode = *pc++;
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-            #if ESPB_RUNTIME_OC_DEBUG
-            ESP_LOGD(TAG, "ESPB DEBUG: exec pc=%ld opcode=0x%02X", pos, opcode);
-#endif
-#endif
-            /*
-            // ДИАГНОСТИКА: Периодически отдаем управление планировщику
-            instruction_count++;
-            if (instruction_count % 50000 == 0) {
-                TickType_t current_time = xTaskGetTickCount();
-                ESP_LOGD(TAG, "ESPB DEBUG: Executed %u instructions, time elapsed: %u ticks", 
-                        instruction_count, (unsigned)(current_time - last_yield_time));
-                
-                // КРИТИЧЕСКАЯ ДИАГНОСТИКА: Проверяем состояние замыканий
-                // Проверяем только если система колбэков уже была инициализирована
-                static bool timer_callbacks_expected = false;
-                static TickType_t last_timer_check = 0;
-                TickType_t now = xTaskGetTickCount();
-                
-                EspbClosureCtx *active_closures = NULL;
-                if (espb_get_active_closures(&active_closures) == ESPB_OK && active_closures) {
-                    EspbCallbackClosure *closure = (EspbCallbackClosure*)active_closures;
-                    ESP_LOGD(TAG, "ESPB CLOSURE HEALTH: closure_ctx=%p, executable_code=%p, closure_ptr=%p",
-                            closure, closure->executable_code, closure->closure_ptr);
+#define DISPATCH() \
+    do { opcode = *pc++; goto *dispatch_table[opcode]; } while(0)
 
-                    if (closure->callback_info) {
-                        ESP_LOGD(TAG, "ESPB CLOSURE HEALTH: espb_func_idx=%u, original_user_data=%p",
-                                closure->callback_info->espb_func_idx, closure->callback_info->original_user_data);
-                    }
+#define DISPATCH_CHECK() \
+    do { \
+        if (!(pc < instructions_end_ptr)) { \
+            goto interpreter_loop_end; \
+        } \
+        opcode = *pc++; \
+        goto *dispatch_table[opcode]; \
+    } while(0)
 
-                    // ПРОВЕРЯЕМ ВАЛИДНОСТЬ ИСПОЛНЯЕМОЙ ПАМЯТИ
-                    if (closure->executable_code) {
-                        // Пытаемся прочитать первые 4 байта исполняемого кода
-                        uint32_t *exec_ptr = (uint32_t*)closure->executable_code;
-                        uint32_t first_word = *exec_ptr;
-                        ESP_LOGD(TAG, "ESPB CLOSURE HEALTH: executable_code first_word=0x%08x", first_word);
+    DISPATCH_CHECK();
 
-                        // Проверяем, что это не мусор
-                        if (first_word == 0x00000000 || first_word == 0xFFFFFFFF || first_word == 0xDEADBEEF) {
-                            ESP_LOGD(TAG, "ESPB CLOSURE HEALTH: EXECUTABLE CODE LOOKS CORRUPTED!");
-                        }
-                    } else {
-                        ESP_LOGD(TAG, "ESPB CLOSURE HEALTH: EXECUTABLE CODE IS NULL!");
-                    }
-                    
-                    // Отмечаем, что таймерные колбэки ожидаются
-                    timer_callbacks_expected = true;
-                    last_timer_check = now;
-                } else {
-                    // Выводим предупреждение только если:
-                    // 1. Таймерные колбэки уже создавались ранее И
-                    // 2. Прошло достаточно времени с последней проверки (избегаем спама)
-                    if (timer_callbacks_expected && (now - last_timer_check) > pdMS_TO_TICKS(5000)) {
-                        ESP_LOGD(TAG, "ESPB CLOSURE HEALTH: NO ACTIVE CLOSURES - TIMER MAY HAVE STOPPED!");
-                        last_timer_check = now;
-                    }
-                    // В остальных случаях (во время обычных вычислений) не выводим предупреждение
-                }
-                
-                // Отдаем управление планировщику каждые 50 инструкций
-                ESP_LOGD(TAG, "ESPB DEBUG: Yielding to scheduler...");
-                taskYIELD();
-                last_yield_time = current_time;
-            }
-*/
-             goto *dispatch_table[opcode];
-        op_unhandled:;
+op_unhandled:
                 // --- Устаревшие блочные инструкции - теперь не должны генерироваться ---
                 // op_0x06 (BLOCK) and op_0x07 (LOOP) are obsolete and have been removed.
                 op_0x0B: { // CALL_INDIRECT Rfunc(u8), type_idx(u16)
@@ -1274,7 +1396,7 @@ EspbResult espb_call_function(EspbInstance *instance, ExecutionContext *exec_ctx
                         if (espb_try_call_jit_for_call_indirect(instance, exec_ctx, num_imported_funcs,
                                                                num_virtual_regs, local_func_idx_to_call,
                                                                callee_sig_indirect, locals)) {
-                            goto interpreter_loop_start;
+                            DISPATCH();
                         }
                     }
 #endif
@@ -1330,7 +1452,7 @@ EspbResult espb_call_function(EspbInstance *instance, ExecutionContext *exec_ctx
                     locals = callee_locals;
                     num_virtual_regs = callee_body->header.num_virtual_regs;
                     
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
 
                 
@@ -1456,7 +1578,7 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
         locals = callee_locals;
         num_virtual_regs = callee_body->header.num_virtual_regs;
         
-        goto interpreter_loop_start;
+        DISPATCH();
 
     } else if (is_in_data_segment) {
         /************************************************************************
@@ -1476,13 +1598,13 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
         ffi_type* ffi_arg_types[FFI_ARGS_MAX];
         void* ffi_arg_values[FFI_ARGS_MAX];
 
-        if (func_sig->num_params > FFI_ARGS_MAX) {
+        if (__builtin_expect(func_sig->num_params > FFI_ARGS_MAX, 0)) {
             return ESPB_ERR_INVALID_OPERAND;
         }
 
         for (uint32_t i = 0; i < func_sig->num_params; i++) {
             ffi_arg_types[i] = espb_type_to_ffi_type(func_sig->param_types[i]);
-            if (!ffi_arg_types[i]) return ESPB_ERR_TYPE_MISMATCH;
+            if (__builtin_expect(!ffi_arg_types[i], 0)) return ESPB_ERR_TYPE_MISMATCH;
             
             // Аргументы расположены в R0, R1, R2, ...
             // Если func_ptr_reg находится среди аргументов, пропускаем его (сдвигаем индексы)
@@ -1511,7 +1633,7 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
             ffi_ret_type = espb_type_to_ffi_type(func_sig->return_types[0]);
         }
         
-        if (ffi_prep_cif(&cif, FFI_DEFAULT_ABI, func_sig->num_params, ffi_ret_type, ffi_arg_types) != FFI_OK) {
+        if (__builtin_expect(ffi_prep_cif(&cif, FFI_DEFAULT_ABI, func_sig->num_params, ffi_ret_type, ffi_arg_types) != FFI_OK, 0)) {
             return ESPB_ERR_RUNTIME_ERROR;
         }
         
@@ -1531,79 +1653,41 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                 default: break; // Should not happen if ffi_prep_cif succeeded
             }
         }
-        goto interpreter_loop_start;
+        DISPATCH();
     }
 }
 
                 // --- Новые инструкции перехода ---
                 op_0x02: { // BR offset(i16)
-                    int16_t offset = READ_I16();
-                    
-                    ESP_LOGD(TAG, "BR by %d, current_pc_offset=%ld", offset, (long)((pc - 3) - instructions_ptr));
-                    
-                    // ДИАГНОСТИКА: Проверяем на подозрительный offset=0 в цикле
-                    #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    if (offset == 0) {
-                        ESP_LOGD(TAG, "ESPB WARNING: BR with offset=0 detected - this may be a translator bug!");
-                        ESP_LOGD(TAG, "ESPB WARNING: This will create infinite loop on same instruction");
-                        // Пока что выполняем как есть, но логируем проблему
-                    }
-                    #endif
-                    // Смещение отсчитывается от начала текущей инструкции.
-                    // pc был инкрементирован на 1 (opcode) + 2 (offset) = 3 байта.
-                    // Возвращаемся к началу инструкции и прибавляем смещение.
+                    int16_t offset = *(int16_t*)pc;
+                    pc += 2;
                     pc = (pc - 3) + offset;
-                    #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "BR jump to pc_offset=%ld", (long)(pc - instructions_ptr));
-                    #endif
-                    goto interpreter_loop_start; // Начинаем цикл с новым pc
+                    ESPB_OP_LOG("BR offset %d", offset);
+                    DISPATCH();
                 }
-         op_0x03: { // BR_IF reg(u8), offset(i16) - ОПТИМИЗИРОВАННАЯ ВЕРСИЯ
-             uint8_t cond_reg = READ_U8();
-             int16_t offset = READ_I16();
-         
-             // Проверка границ с branch prediction hint (ошибка крайне редка)
-             DEBUG_CHECK_REG(cond_reg, max_reg_used, "BR_IF");
-             if (__builtin_expect(0, 0)) { // Unreachable after debug check
-                 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                 ESP_LOGE(TAG, "BR_IF - cond register R%u out of bounds.", cond_reg);
-                 #endif
-                 return ESPB_ERR_INVALID_REGISTER_INDEX;
+         op_0x03: { // BR_IF reg(u8), offset(i16)
+              uint8_t cond_reg = *pc++;
+              int16_t offset = *(int16_t*)pc;
+              pc += 2;
+              if (V_I32(locals[cond_reg]) != 0) {
+                  pc = (pc - 4) + offset;
+              }
+#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
+              ESP_LOGD(TAG, "BR_IF R%u (%s), offset %d", 
+                       cond_reg, V_I32(locals[cond_reg]) ? "true" : "false", offset);
+#endif
+              DISPATCH();
+         }
+             op_0x18: { // LDC.I32.IMM Rd(u8), imm32
+                 uint8_t rd = *pc++;
+                 int32_t imm = *(int32_t*)pc;
+                 pc += 4;
+                 V_I32(locals[rd]) = imm;
+#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
+                 ESP_LOGD(TAG, "LDC.I32.IMM R%d, %" PRId32, rd, imm);
+#endif
+                 DISPATCH();
              }
-         
-             // ОПТИМИЗАЦИЯ: Прямой доступ к регистру вместо копирования Value
-             Value *reg_ptr = &locals[cond_reg];
-             bool condition_true = (V_I32(*reg_ptr) != 0);
-
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-    ESP_LOGD(TAG, "BR_IF R%u (%s), offset %d", 
-             cond_reg, condition_true ? "true" : "false", offset);
-#endif
-
-    // PC калькуляция (критично для корректности!):
-    // pc сейчас указывает на offset (после opcode и cond_reg)
-    // offset считается от начала инструкции (opcode)
-    if (__builtin_expect(condition_true, 0)) {
-        // BRANCH TAKEN: инструкция занимает 4 байта (1+1+2). pc сейчас на start+4.
-        // Нужно вернуться к началу инструкции и прибавить смещение.
-        pc = (pc - 4) + offset;
-    } else {
-        // BRANCH NOT TAKEN: pc уже указывает на следующую инструкцию. Ничего делать не нужно.
-    }
-    goto interpreter_loop_start;
-}
-                op_0x18: { // LDC.I32.IMM Rd(u8), imm32
-                    uint8_t rd = READ_U8();
-                    int32_t imm = READ_I32();
-                    DEBUG_CHECK_REG(rd, max_reg_used, "LDC.I32.IMM");
-                    
-                    SET_TYPE(locals[rd], ESPB_TYPE_I32);
-                    V_I32(locals[rd]) = imm;
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "LDC.I32.IMM R%d, %" PRId32, rd, imm);
-#endif
-                goto interpreter_loop_start;
-            }
                 
                 op_0x8F: { // ALLOCA Rd(u8), Rs(u8), align(u8) - NEW HEAP-BASED IMPLEMENTATION
                     uint8_t rd_alloc = READ_U8();
@@ -1690,7 +1774,7 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                     ESP_LOGD(TAG, "ALLOCA SUCCESS: R%" PRIu8 "=%p size=%" PRIu32 " align=%u heap_managed",
                              rd_alloc, allocated_ptr, size_to_alloc, align);
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 
                 op_0x04: { // BR_TABLE Ridx(u8), num_targets(u16), [target_offsets(i16)...], default_offset(i16)
@@ -1734,7 +1818,7 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "BR_TABLE: Jumping to PC += %d", target_offset);
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
 
                 op_0x05: { // UNREACHABLE
@@ -1750,13 +1834,24 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                 op_0x0A: { // CALL local_func_idx(u16)
                     uint16_t local_func_idx_to_call = READ_U16();
 
-                    if (local_func_idx_to_call >= module->num_functions) {
-                        return ESPB_ERR_INVALID_FUNC_INDEX;
-                    }
-
+                    // Проверка bounds убрана - валидатор гарантирует корректность
+                    
                     uint32_t sig_idx = module->function_signature_indices[local_func_idx_to_call];
                     EspbFunctionBody* callee_body = &module->function_bodies[local_func_idx_to_call];
                     const EspbFuncSignature* callee_sig = &module->signatures[sig_idx];
+
+                    // ===== TAIL CALL OPTIMIZATION =====
+                    // If calling same function recursively (self-tail-call), reuse frame
+                    if (local_func_idx_to_call == local_func_idx && callee_sig->num_returns == 0) {
+                        // Tail call: just update args and jump to start
+                        uint32_t num_args = callee_sig->num_params;
+                        if (num_args > num_virtual_regs) num_args = num_virtual_regs;
+                        memset(locals, 0, num_virtual_regs * sizeof(Value));
+                        // Args already in locals from current execution - just reuse
+                        pc = instructions_ptr;
+                        DISPATCH();
+                    }
+                    // ===== END TAIL CALL =====
 
 #if CONFIG_ESPB_JIT_ENABLED
                     // Минимальный hot-path: если для вызываемой функции есть скомпилированный JIT-код — выполняем его.
@@ -1765,7 +1860,7 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                         if (espb_try_call_jit_for_call(instance, exec_ctx, num_imported_funcs,
                                                       num_virtual_regs, local_func_idx_to_call,
                                                       callee_sig, locals)) {
-                            goto interpreter_loop_start;
+                            DISPATCH();
                         }
                     }
 #endif
@@ -1775,8 +1870,6 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
 
                     size_t saved_frame_size = num_virtual_regs * sizeof(Value);
                     size_t callee_frame_size = callee_body->header.num_virtual_regs * sizeof(Value);
-                    
-                    // --- Общая логика подготовки аргументов ---
                     Value temp_args[FFI_ARGS_MAX];
                     uint32_t num_args_to_copy = MIN(callee_sig->num_params, FFI_ARGS_MAX);
                     for (uint32_t i = 0; i < num_args_to_copy; i++) {
@@ -1784,58 +1877,69 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                     }
                     
                     int return_pc = (int)(pc - instructions_ptr);
-
+                    
                     if (is_leaf_function) {
                         // ✅ БЫСТРЫЙ ПУТЬ (для листовых функций)
-                        // Проверяем место только для нового кадра
                         if (__builtin_expect(exec_ctx->sp + callee_frame_size > exec_ctx->shadow_stack_capacity, 0)) {
                             if (_espb_grow_shadow_stack(exec_ctx, callee_frame_size) < 0) return ESPB_ERR_OUT_OF_MEMORY;
                         }
 
-                        // 1. Сохраняем только адрес возврата, без регистров
-                        if (push_call_frame(exec_ctx, return_pc, exec_ctx->fp, local_func_idx, NULL, 0) != ESPB_OK) {
+                        // Inline push_call_frame для leaf функций
+                        if (__builtin_expect(exec_ctx->call_stack_top >= 64, 0)) {
                             return ESPB_ERR_STACK_OVERFLOW;
                         }
+                        RuntimeFrame* frame = &exec_ctx->call_stack[exec_ctx->call_stack_top++];
+                        frame->ReturnPC = return_pc;
+                        frame->SavedFP = exec_ctx->fp;
+                        frame->caller_local_func_idx = local_func_idx;
+                        frame->saved_frame = NULL;
+                        frame->saved_num_virtual_regs = 0;
+                        frame->alloca_count = 0;
+                        frame->has_custom_aligned = false;
 
-                        // 2. Новый кадр начинается с текущей позиции fp (на самом деле sp, но они сейчас равны)
                         exec_ctx->fp = exec_ctx->sp;
                         exec_ctx->sp = exec_ctx->fp + callee_frame_size;
                         
                     } else {
-                        // 🐢 МЕДЛЕННЫЙ ПУТЬ (существующая логика)
-                        // 1. Проверяем, хватит ли места для сохранения и для нового кадра
+                        // 🐢 МЕДЛЕННЫЙ ПУТЬ
                         if (__builtin_expect(exec_ctx->sp + saved_frame_size + callee_frame_size > exec_ctx->shadow_stack_capacity, 0)) {
                             int stack_status = _espb_grow_shadow_stack(exec_ctx, saved_frame_size + callee_frame_size);
                             if (stack_status < 0) { return ESPB_ERR_OUT_OF_MEMORY; }
-                            if (stack_status > 0) { // Буфер перемещен, обновляем указатель на locals
+                            if (stack_status > 0) {
                                 locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->fp);
                             }
                         }
 
-                        // 2. Копируем текущий кадр (locals) в теневой стек
                         Value* saved_frame_location = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->sp);
                         memcpy(saved_frame_location, locals, saved_frame_size);
 
-                        // 3. Сохраняем контекст вызывающей стороны
-                        if (push_call_frame(exec_ctx, return_pc, exec_ctx->fp, local_func_idx, saved_frame_location, num_virtual_regs) != ESPB_OK) {
+                        // Inline push_call_frame
+                        if (__builtin_expect(exec_ctx->call_stack_top >= 64, 0)) {
                             return ESPB_ERR_STACK_OVERFLOW;
                         }
+                        RuntimeFrame* frame = &exec_ctx->call_stack[exec_ctx->call_stack_top++];
+                        frame->ReturnPC = return_pc;
+                        frame->SavedFP = exec_ctx->fp;
+                        frame->caller_local_func_idx = local_func_idx;
+                        frame->saved_frame = saved_frame_location;
+                        frame->saved_num_virtual_regs = num_virtual_regs;
+                        frame->alloca_count = 0;
+                        frame->has_custom_aligned = false;
 
-                        // 4. Выделяем новый кадр
                         exec_ctx->fp = exec_ctx->sp + saved_frame_size;
                         exec_ctx->sp = exec_ctx->fp + callee_frame_size;
                     }
                     
                     // --- Общая логика для обоих путей ---
-                    
-                    // Копируем аргументы в новый кадр
                     Value* callee_locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->fp);
-                    memset(callee_locals, 0, callee_frame_size);
+                    
+                    if (num_args_to_copy < callee_body->header.num_virtual_regs) {
+                        memset(callee_locals, 0, callee_frame_size);
+                    }
                     for (uint32_t i = 0; i < num_args_to_copy; i++) {
                         if(i < callee_body->header.num_virtual_regs) callee_locals[i] = temp_args[i];
                     }
 
-                    // Обновляем контекст интерпретатора
                     local_func_idx = local_func_idx_to_call;
                     pc = callee_body->code;
                     instructions_ptr = callee_body->code;
@@ -1843,7 +1947,7 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                     locals = callee_locals;
                     num_virtual_regs = callee_body->header.num_virtual_regs;
                     
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 
            op_0x19: { // LDC.I64.IMM Rd(u8), imm64
@@ -1854,7 +1958,7 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "LDC.I64.IMM R%d, %" PRId64, rd, imm64);
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 
             op_0x1A: { // LDC.F32.IMM Rd(u8), imm32
@@ -1865,7 +1969,7 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                 ESP_LOGD(TAG, "LDC.F32.IMM R%u, %f", rd, immf32);
 #endif
-                goto interpreter_loop_start;
+                DISPATCH();
             }
             op_0x1B: { // LDC.F64.IMM Rd(u8), imm64
                 uint8_t rd = READ_U8();
@@ -1875,7 +1979,7 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                 ESP_LOGD(TAG, "LDC.F64.IMM R%u, %f", rd, immf64);
 #endif
-                goto interpreter_loop_start;
+                DISPATCH();
             }
 
            op_0x1C: { // LDC.PTR.IMM Rd(u8), ptr32
@@ -1906,20 +2010,17 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "LDC.PTR.IMM R%u = %p (offset %" PRId32 ")", rd, (void*)target_addr, imm);
 #endif
-                    goto interpreter_loop_start;
-                }
-                
+                     DISPATCH();
+                  }
+                 
            op_0x12: { // MOV.I32 / MOV (generic)
-                 uint8_t rd = READ_U8();
-                 uint8_t rs = READ_U8();
-
-                    DEBUG_CHECK_REGS_2(rd, rs, max_reg_used, "MOV.I32");
-
-                    V_RAW(locals[rd]) = V_RAW(locals[rs]);
+                 uint8_t rd = *pc++;
+                 uint8_t rs = *pc++;
+                 V_RAW(locals[rd]) = V_RAW(locals[rs]);
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "MOV.I32 R%d, R%d (raw=0x%016" PRIx64 ")", rd, rs, V_RAW(locals[rs]));
+                 ESP_LOGD(TAG, "MOV.I32 R%d, R%d (raw=0x%016" PRIx64 ")", rd, rs, V_RAW(locals[rs]));
 #endif
-                    goto interpreter_loop_start;
+                 DISPATCH();
                 }
                      op_0x90: { // TRUNC.I64.I32 Rd(u8), Rs(u8)
                    uint8_t rd = READ_U8();
@@ -1929,7 +2030,7 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "TRUNC.I64.I32 R%u, R%u = %" PRId32, rd, rs, V_I32(locals[rd]));
 #endif
-                   goto interpreter_loop_start;
+                   DISPATCH();
                }
 
                op_0xA4: { // FPROUND Rd(u8), Rs(u8) - F64 → F32
@@ -1947,7 +2048,7 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "FPROUND R%u, R%u: %f → %f", rd, rs, V_F64(locals[rs]), V_F32(locals[rd]));
 #endif
-                   goto interpreter_loop_start;
+                   DISPATCH();
                }
 
                op_0xA5: { // FPROMOTE Rd(u8), Rs(u8) - F32 → F64
@@ -1965,134 +2066,36 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "FPROMOTE R%u, R%u: %f → %f", rd, rs, V_F32(locals[rs]), V_F64(locals[rd]));
 #endif
-                   goto interpreter_loop_start;
-               }
-               op_0x13: { // MOV.I64 / MOV (generic)
-                    uint8_t rd = READ_U8();
-                    uint8_t rs = READ_U8();
-                    V_RAW(locals[rd]) = V_RAW(locals[rs]);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "MOV.I64 R%u, R%u = (raw=0x%016" PRIx64 ")", rd, rs, V_RAW(locals[rs]));
-#endif
-                 goto interpreter_loop_start;
-            }
-            
-
-op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
-    uint8_t rd = READ_U8();
-    uint8_t r1 = READ_U8();
-    uint8_t r2 = READ_U8();
-
-    const int32_t val1 = V_I32(locals[r1]);
-    const int32_t val2 = V_I32(locals[r2]);
-
-    SET_TYPE(locals[rd], ESPB_TYPE_I32);
-    V_I32(locals[rd]) = val1 + val2;
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-    ESP_LOGD(TAG, "ADD.I32 R%u, R%u, R%u = %" PRId32, rd, r1, r2, V_I32(locals[rd]));
-#endif
-    goto interpreter_loop_start;
-}
-                
-                op_0x21: { // SUB.I32 Rd(u8), R1(u8), R2(u8)
-    uint8_t rd = READ_U8();
-    uint8_t r1 = READ_U8();
-    uint8_t r2 = READ_U8();
-
-    const int32_t val1 = V_I32(locals[r1]);
-    const int32_t val2 = V_I32(locals[r2]);
-
-    SET_TYPE(locals[rd], ESPB_TYPE_I32);
-    V_I32(locals[rd]) = val1 - val2;
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-    ESP_LOGD(TAG, "SUB.I32 R%u, R%u, R%u = %" PRId32, rd, r1, r2, V_I32(locals[rd]));
-#endif
-    goto interpreter_loop_start;
-}
-                
-                op_0x22: { // MUL.I32 Rd(u8), R1(u8), R2(u8)
-    uint8_t rd = READ_U8();
-    uint8_t r1 = READ_U8();
-    uint8_t r2 = READ_U8();
-
-    const int32_t val1 = V_I32(locals[r1]);
-    const int32_t val2 = V_I32(locals[r2]);
-    const int64_t prod = (int64_t)val1 * val2;
-    if (prod > INT32_MAX || prod < INT32_MIN) {
-        // REFACTOR: // REFACTOR_REMOVED: // REMOVED_free_locals removed to prevent double free
-        return ESPB_ERR_RUNTIME_TRAP_INTEGER_OVERFLOW;
-    }
-    SET_TYPE(locals[rd], ESPB_TYPE_I32);
-    V_I32(locals[rd]) = (int32_t)prod;
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-    ESP_LOGD(TAG, "MUL.I32 R%u, R%u, R%u = %" PRId32, rd, r1, r2, V_I32(locals[rd]));
-#endif
-    goto interpreter_loop_start;
-}
-
-                op_0x23: { // DIV.I32 Rd(u8), R1(u8), R2(u8)
-    uint8_t rd = READ_U8();
-    uint8_t r1 = READ_U8();
-    uint8_t r2 = READ_U8();
-
-    const int32_t dividend = V_I32(locals[r1]);
-    const int32_t divisor = V_I32(locals[r2]);
-    if (divisor == 0) {
-        // REFACTOR: // REFACTOR_REMOVED: // REMOVED_free_locals removed to prevent double free
-        return ESPB_ERR_RUNTIME_TRAP_DIV_BY_ZERO;
-    }
-    if (dividend == INT32_MIN && divisor == -1) {
-        // REFACTOR: // REFACTOR_REMOVED: // REMOVED_free_locals removed to prevent double free
-        return ESPB_ERR_RUNTIME_TRAP_INTEGER_OVERFLOW;
-    }
-    SET_TYPE(locals[rd], ESPB_TYPE_I32);
-    V_I32(locals[rd]) = dividend / divisor;
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-    ESP_LOGD(TAG, "DIV.I32 R%u, R%u, R%u = %" PRId32, rd, r1, r2, V_I32(locals[rd]));
-#endif
-    goto interpreter_loop_start;
-}
-
-                op_0x24: { // REM.I32 Rd(u8), R1(u8), R2(u8)
-    uint8_t rd = READ_U8();
-    uint8_t r1 = READ_U8();
-    uint8_t r2 = READ_U8();
-
-    const int32_t dividend_r = V_I32(locals[r1]);
-    const int32_t divisor_r = V_I32(locals[r2]);
-    if (divisor_r == 0) {
-        // REFACTOR: // REFACTOR_REMOVED: // REMOVED_free_locals removed to prevent double free
-        return ESPB_ERR_RUNTIME_TRAP_DIV_BY_ZERO;
-    }
-    if (dividend_r == INT32_MIN && divisor_r == -1) {
-        // REFACTOR: // REFACTOR_REMOVED: // REMOVED_free_locals removed to prevent double free
-        return ESPB_ERR_RUNTIME_TRAP_INTEGER_OVERFLOW;
-    }
-    SET_TYPE(locals[rd], ESPB_TYPE_I32);
-    V_I32(locals[rd]) = dividend_r % divisor_r;
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-    ESP_LOGD(TAG, "REM.I32 R%u, R%u, R%u = %" PRId32, rd, r1, r2, V_I32(locals[rd]));
-#endif
-    goto interpreter_loop_start;
-}
-
-                op_0x26: { // DIV.U32 Rd(u8), R1(u8), R2(u8)
-                    uint8_t rd = READ_U8();
-                    uint8_t r1 = READ_U8();
-                    uint8_t r2 = READ_U8();
-                    uint32_t dividend_u = V_I32(locals[r1]);
-                    uint32_t divisor_u = V_I32(locals[r2]);
-                    if (divisor_u == 0) {
-                        // REFACTOR: // REFACTOR_REMOVED: // REMOVED_free_locals removed to prevent double free
-                        return ESPB_ERR_RUNTIME_TRAP_DIV_BY_ZERO;
-                    }
-                    SET_TYPE(locals[rd], ESPB_TYPE_U32);
-                    V_I32(locals[rd]) = dividend_u / divisor_u;
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "DIV.U32 R%d, R%d, R%d = %" PRIu32, rd, r1, r2, V_I32(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
+                   DISPATCH();
                 }
+                op_0x13: { // MOV.I64 / MOV (generic)
+                     uint8_t rd = *pc++;
+                     uint8_t rs = *pc++;
+                     V_RAW(locals[rd]) = V_RAW(locals[rs]);
+#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
+                     ESP_LOGD(TAG, "MOV.I64 R%u, R%u = (raw=0x%016" PRIx64 ")", rd, rs, V_RAW(locals[rs]));
+#endif
+                     DISPATCH();
+             }
+op_0x20: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I32(locals[rd])=V_I32(locals[r1])+V_I32(locals[r2]); ESPB_OP_LOG("ADD.I32 R%u, R%u, R%u = %" PRId32, rd, r1, r2, V_I32(locals[rd])); DISPATCH(); }
+op_0x21: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I32(locals[rd])=V_I32(locals[r1])-V_I32(locals[r2]); ESPB_OP_LOG("SUB.I32 R%u, R%u, R%u = %" PRId32, rd, r1, r2, V_I32(locals[rd])); DISPATCH(); }
+op_0x22: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I32(locals[rd])=V_I32(locals[r1])*V_I32(locals[r2]); ESPB_OP_LOG("MUL.I32 R%u, R%u, R%u = %" PRId32, rd, r1, r2, V_I32(locals[rd])); DISPATCH(); }
+
+op_0x23: ESPB_OP_I32_DIV(/, true); // DIV.I32 signed с проверкой overflow
+
+op_0x24: ESPB_OP_I32_DIV(%, true); // REM.I32 signed с проверкой overflow
+
+op_0x26: { // DIV.U32 (unsigned, нужен каст)
+    uint8_t rd = *pc++;
+    uint8_t r1 = *pc++;
+    uint8_t r2 = *pc++;
+    uint32_t divisor = (uint32_t)V_I32(locals[r2]);
+    if (__builtin_expect(divisor == 0, 0)) {
+        return ESPB_ERR_RUNTIME_TRAP_DIV_BY_ZERO;
+    }
+    V_I32(locals[rd]) = (int32_t)((uint32_t)V_I32(locals[r1]) / divisor);
+    DISPATCH();
+}
 
                 // I32 arithmetic with 8-bit immediate (per spec v1.7 0x40..0x48)
                 op_0x40: { // ADD.I32.IMM8 Rd(u8), R1(u8), imm8(i8)
@@ -2104,7 +2107,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "ADD.I32.IMM8 R%u, R%u, %d = %" PRId32, rd, r1, (int)imm, V_I32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x41: { // SUB.I32.IMM8 Rd(u8), R1(u8), imm8(i8)
                     uint8_t rd = READ_U8();
@@ -2115,7 +2118,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "SUB.I32.IMM8 R%u, R%u, %d = %" PRId32, rd, r1, (int)imm, V_I32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x42: { // MUL.I32.IMM8 Rd(u8), R1(u8), imm8(i8)
                     uint8_t rd = READ_U8();
@@ -2129,7 +2132,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "MUL.I32.IMM8 R%u, R%u, %d = %" PRId32, rd, r1, (int)imm, V_I32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x43: { // DIVS.I32.IMM8 Rd(u8), R1(u8), imm8(i8)
                     uint8_t rd = READ_U8();
@@ -2146,7 +2149,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "DIVS.I32.IMM8 R%u, R%u, %d = %" PRId32, rd, r1, (int)imm, V_I32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x44: { // DIVU.I32.IMM8 Rd(u8), R1(u8), imm8(u8)
                     uint8_t rd = READ_U8();
@@ -2161,7 +2164,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "DIVU.I32.IMM8 R%u, R%u, %u = %" PRId32, rd, r1, (unsigned)imm, V_I32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x45: { // REMS.I32.IMM8 Rd(u8), R1(u8), imm8(i8)
                     uint8_t rd = READ_U8();
@@ -2178,7 +2181,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "REMS.I32.IMM8 R%u, R%u, %d = %" PRId32, rd, r1, (int)imm, V_I32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x46: { // REMU.I32.IMM8 Rd(u8), R1(u8), imm8(u8)
                     uint8_t rd = READ_U8();
@@ -2193,7 +2196,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "REMU.I32.IMM8 R%u, R%u, %u = %" PRId32, rd, r1, (unsigned)imm, V_I32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x47: { // SHRS.I32.IMM8 Rd(u8), R1(u8), imm8(u8)
                     uint8_t rd = READ_U8();
@@ -2206,7 +2209,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "SHRS.I32.IMM8 R%u, R%u, %u = %" PRId32, rd, r1, (unsigned)imm, V_I32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x48: { // SHRU.I32.IMM8 Rd(u8), R1(u8), imm8(u8)
                     uint8_t rd = READ_U8();
@@ -2219,7 +2222,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "SHRU.I32.IMM8 R%u, R%u, %u = %" PRIu32, rd, r1, (unsigned)imm, (uint32_t)V_I32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
 
                 op_0x49: { // AND.I32.IMM8 Rd(u8), R1(u8), imm8(i8)
@@ -2231,7 +2234,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "AND.I32.IMM8 R%u, R%u, %d = %" PRId32, rd, r1, (int)imm, V_I32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
 
                 op_0x4A: { // OR.I32.IMM8 Rd(u8), R1(u8), imm8(i8)
@@ -2243,7 +2246,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "OR.I32.IMM8 R%u, R%u, %d = %" PRId32, rd, r1, (int)imm, V_I32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
 
                 op_0x4B: { // XOR.I32.IMM8 Rd(u8), R1(u8), imm8(i8)
@@ -2255,47 +2258,13 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "XOR.I32.IMM8 R%u, R%u, %d = %" PRId32, rd, r1, (int)imm, V_I32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
 
-                op_0x60: { // ADD.F32 Rd, R1, R2
-                    uint8_t rd = READ_U8();
-                    uint8_t r1 = READ_U8();
-                    uint8_t r2 = READ_U8();
-                    SET_TYPE(locals[rd], ESPB_TYPE_F32);
-                    V_F32(locals[rd]) = V_F32(locals[r1]) + V_F32(locals[r2]);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "ADD.F32 R%u, R%u, R%u = %f", rd, r1, r2, V_F32(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
-                op_0x61: { // SUB.F32
-                    uint8_t rd = READ_U8(); uint8_t r1 = READ_U8(); uint8_t r2 = READ_U8();
-                    SET_TYPE(locals[rd], ESPB_TYPE_F32);
-                    V_F32(locals[rd]) = V_F32(locals[r1]) - V_F32(locals[r2]);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "SUB.F32 R%u, R%u, R%u = %f", rd, r1, r2, V_F32(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
-                op_0x62: { // MUL.F32
-                    uint8_t rd = READ_U8(); uint8_t r1 = READ_U8(); uint8_t r2 = READ_U8();
-                    SET_TYPE(locals[rd], ESPB_TYPE_F32);
-                    V_F32(locals[rd]) = V_F32(locals[r1]) * V_F32(locals[r2]);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "MUL.F32 R%u, R%u, R%u = %f", rd, r1, r2, V_F32(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
-                op_0x63: { // DIV.F32
-                    uint8_t rd = READ_U8(); uint8_t r1 = READ_U8(); uint8_t r2 = READ_U8();
-                    SET_TYPE(locals[rd], ESPB_TYPE_F32);
-                    V_F32(locals[rd]) = V_F32(locals[r1]) / V_F32(locals[r2]);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "DIV.F32 R%u, R%u, R%u = %f", rd, r1, r2, V_F32(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
+                op_0x60: ESPB_OP_F32_BINARY_RU8(+); // ADD.F32
+                op_0x61: ESPB_OP_F32_BINARY_RU8(-); // SUB.F32
+                op_0x62: ESPB_OP_F32_BINARY_RU8(*); // MUL.F32
+                op_0x63: ESPB_OP_F32_BINARY_RU8(/); // DIV.F32
                 op_0x64: { // MIN.F32
                     uint8_t rd = READ_U8(); uint8_t r1 = READ_U8(); uint8_t r2 = READ_U8();
                     SET_TYPE(locals[rd], ESPB_TYPE_F32);
@@ -2303,7 +2272,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "MIN.F32 R%u, R%u, R%u = %f", rd, r1, r2, V_F32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x65: { // MAX.F32
                     uint8_t rd = READ_U8(); uint8_t r1 = READ_U8(); uint8_t r2 = READ_U8();
@@ -2312,7 +2281,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "MAX.F32 R%u, R%u, R%u = %f", rd, r1, r2, V_F32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x66: { // ABS.F32
                     uint8_t rd = READ_U8(); uint8_t r1 = READ_U8();
@@ -2321,7 +2290,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "ABS.F32 R%u, R%u = %f", rd, r1, V_F32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x67: { // SQRT.F32
                     uint8_t rd = READ_U8(); uint8_t r1 = READ_U8();
@@ -2330,46 +2299,14 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "SQRT.F32 R%u, R%u = %f", rd, r1, V_F32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
 
                 // и для double:
-                op_0x68: { // ADD.F64
-                    uint8_t rd=READ_U8(), r1=READ_U8(), r2=READ_U8();
-                    SET_TYPE(locals[rd],ESPB_TYPE_F64);
-                    V_F64(locals[rd]) = V_F64(locals[r1]) + V_F64(locals[r2]);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "ADD.F64 R%u, R%u, R%u = %f", rd, r1, r2, V_F64(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
-                op_0x69: { // SUB.F64
-                    uint8_t rd=READ_U8(), r1=READ_U8(), r2=READ_U8();
-                    SET_TYPE(locals[rd],ESPB_TYPE_F64);
-                    V_F64(locals[rd]) = V_F64(locals[r1]) - V_F64(locals[r2]);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "SUB.F64 R%u, R%u, R%u = %f", rd, r1, r2, V_F64(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
-                op_0x6A: { // MUL.F64
-                    uint8_t rd=READ_U8(), r1=READ_U8(), r2=READ_U8();
-                    SET_TYPE(locals[rd],ESPB_TYPE_F64);
-                    V_F64(locals[rd]) = V_F64(locals[r1]) * V_F64(locals[r2]);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "MUL.F64 R%u, R%u, R%u = %f", rd, r1, r2, V_F64(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
-                op_0x6B: { // DIV.F64
-                    uint8_t rd=READ_U8(), r1=READ_U8(), r2=READ_U8();
-                    SET_TYPE(locals[rd],ESPB_TYPE_F64);
-                    V_F64(locals[rd]) = V_F64(locals[r1]) / V_F64(locals[r2]);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "DIV.F64 R%u, R%u, R%u = %f", rd, r1, r2, V_F64(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
+                op_0x68: ESPB_OP_F64_BINARY_RU8(+); // ADD.F64
+                op_0x69: ESPB_OP_F64_BINARY_RU8(-); // SUB.F64
+                op_0x6A: ESPB_OP_F64_BINARY_RU8(*); // MUL.F64
+                op_0x6B: ESPB_OP_F64_BINARY_RU8(/); // DIV.F64
                 op_0x6C: { // MIN.F64
                     uint8_t rd=READ_U8(), r1=READ_U8(), r2=READ_U8();
                     SET_TYPE(locals[rd],ESPB_TYPE_F64);
@@ -2377,7 +2314,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "MIN.F64 R%u, R%u, R%u = %f", rd, r1, r2, V_F64(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x6D: { // MAX.F64
                     uint8_t rd=READ_U8(), r1=READ_U8(), r2=READ_U8();
@@ -2386,7 +2323,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "MAX.F64 R%u, R%u, R%u = %f", rd, r1, r2, V_F64(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x6E: { // ABS.F64
                     uint8_t rd=READ_U8(), r1=READ_U8();
@@ -2395,7 +2332,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "ABS.F64 R%u, R%u = %f", rd, r1, V_F64(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x6F: { // SQRT.F64
                     uint8_t rd=READ_U8(), r1=READ_U8();
@@ -2404,7 +2341,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "SQRT.F64 R%u, R%u = %f", rd, r1, V_F64(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
 
                 op_0xBC: { // PTRTOINT Rd(u8), Rs(u8)
@@ -2476,7 +2413,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
                         V_I32(locals[rd]) = (int32_t)(uintptr_t)ptr_value;
                        ESP_LOGD(TAG, "PTRTOINT R%d, R%d (val=0x%08" PRIx32 ")", rd, rs, (uint32_t)V_I32(locals[rd]));
                     }
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
 
                 op_0xBD: { // INTTOPTR Rd(u8), Rs(u8)
@@ -2489,104 +2426,38 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "INTTOPTR R%u, R%u -> %p", rd, rs, V_PTR(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
 
-                op_0x27: { // REM.U32 Rd(u8), R1(u8), R2(u8)
-                    uint8_t rd = READ_U8();
-                    uint8_t r1 = READ_U8();
-                    uint8_t r2 = READ_U8();
-                    uint32_t dividend_u = V_I32(locals[r1]);
-                    uint32_t divisor_u = V_I32(locals[r2]);
-                    if (divisor_u == 0) {
-                        return ESPB_ERR_RUNTIME_TRAP_DIV_BY_ZERO;
-                    }
-                    SET_TYPE(locals[rd], ESPB_TYPE_U32);
-                    V_I32(locals[rd]) = dividend_u % divisor_u;
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "REM.U32 R%d, R%d, R%d = %" PRIu32, rd, r1, r2, V_I32(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
+op_0x27: { // REM.U32 (unsigned, нужен каст)
+    uint8_t rd = *pc++;
+    uint8_t r1 = *pc++;
+    uint8_t r2 = *pc++;
+    uint32_t divisor = (uint32_t)V_I32(locals[r2]);
+    if (__builtin_expect(divisor == 0, 0)) {
+        return ESPB_ERR_RUNTIME_TRAP_DIV_BY_ZERO;
+    }
+    V_I32(locals[rd]) = (int32_t)((uint32_t)V_I32(locals[r1]) % divisor);
+    DISPATCH();
+}
 
-                op_0x28: { // AND.I32 Rd(u8), R1(u8), R2(u8)
-                    uint8_t rd = READ_U8();
-                    uint8_t r1 = READ_U8();
-                    uint8_t r2 = READ_U8();
-                    
-                    SET_TYPE(locals[rd], ESPB_TYPE_I32);
-                    V_I32(locals[rd]) = V_I32(locals[r1]) & V_I32(locals[r2]);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                   ESP_LOGD(TAG, "AND.I32 R%d, R%d, R%d = %" PRId32, rd, r1, r2, V_I32(locals[rd]));
-#endif
-                goto interpreter_loop_start;
-            }
+op_0x28: ESPB_OP_I32_BITOP(&); // AND.I32
 
-            op_0x29: { // OR.I32 Rd(u8), R1(u8), R2(u8)
-                    uint8_t rd = READ_U8();
-                    uint8_t r1 = READ_U8();
-                    uint8_t r2 = READ_U8();
-                    SET_TYPE(locals[rd], ESPB_TYPE_I32);
-                    V_I32(locals[rd]) = V_I32(locals[r1]) | V_I32(locals[r2]);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                   ESP_LOGD(TAG, "OR.I32 R%d, R%d, R%d = %" PRId32, rd, r1, r2, V_I32(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
+op_0x29: ESPB_OP_I32_BITOP(|); // OR.I32
 
-            op_0x2A: { // XOR.I32 Rd(u8), R1(u8), R2(u8)
-                    uint8_t rd = READ_U8();
-                    uint8_t r1 = READ_U8();
-                    uint8_t r2 = READ_U8();
-                    SET_TYPE(locals[rd], ESPB_TYPE_I32);
-                    V_I32(locals[rd]) = V_I32(locals[r1]) ^ V_I32(locals[r2]);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                   ESP_LOGD(TAG, "XOR.I32 R%d, R%d, R%d = %" PRId32, rd, r1, r2, V_I32(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
+op_0x2A: ESPB_OP_I32_BITOP(^); // XOR.I32
 
-            op_0x2B: { // SHL.I32 Rd(u8), R1(u8), R2(u8)
-                    uint8_t rd = READ_U8();
-                    uint8_t r1 = READ_U8();
-                    uint8_t r2 = READ_U8();
-                    uint32_t val1 = (uint32_t)V_I32(locals[r1]);
-                    uint32_t shift = V_I32(locals[r2]) & 31;
-                    SET_TYPE(locals[rd], ESPB_TYPE_I32);
-                    V_I32(locals[rd]) = (int32_t)(val1 << shift);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                   ESP_LOGD(TAG, "SHL.I32 R%d, R%d, R%d = %" PRId32, rd, r1, r2, V_I32(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
+op_0x2B: ESPB_OP_I32_SHIFT(<<); // SHL.I32
 
-            op_0x2C: { // SHR.I32 Rd(u8), R1(u8), R2(u8) (arithmetic)
-                    uint8_t rd = READ_U8();
-                    uint8_t r1 = READ_U8();
-                    uint8_t r2 = READ_U8();
-                    int32_t sval = V_I32(locals[r1]);
-                    uint32_t shift_a = V_I32(locals[r2]) & 31;
-                    SET_TYPE(locals[rd], ESPB_TYPE_I32);
-                    V_I32(locals[rd]) = sval >> shift_a;
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                   ESP_LOGD(TAG, "SHR.I32 R%d, R%d, R%d = %" PRId32, rd, r1, r2, V_I32(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
+op_0x2C: ESPB_OP_I32_SHIFT(>>); // SHR.I32 (arithmetic)
 
-            op_0x2D: { // USHR.I32 Rd(u8), R1(u8), R2(u8) (logical)
-                    uint8_t rd = READ_U8();
-                    uint8_t r1 = READ_U8();
-                    uint8_t r2 = READ_U8();
-                    uint32_t uval = V_I32(locals[r1]);
-                    uint32_t shift = V_I32(locals[r2]) & 31;
-                    SET_TYPE(locals[rd], ESPB_TYPE_I32);
-                    V_I32(locals[rd]) = (int32_t)(uval >> shift);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                   ESP_LOGD(TAG, "USHR.I32 R%d, R%d, R%d = %" PRIu32, rd, r1, r2, (uint32_t)V_I32(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
+op_0x2D: { // USHR.I32 (logical shift right - нужен каст к unsigned)
+    uint8_t rd = *pc++;
+    uint8_t r1 = *pc++;
+    uint8_t r2 = *pc++;
+    V_I32(locals[rd]) = (int32_t)((uint32_t)V_I32(locals[r1]) >> (V_I32(locals[r2]) & 31));
+    DISPATCH();
+}
 
                 op_0x2E: { // NOT.I32 Rd(u8), Rs(u8)
                     uint8_t rd = READ_U8();
@@ -2596,44 +2467,11 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "NOT.I32 R%d, R%d = %" PRId32, rd, rs, V_I32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
-                }
-
-                op_0x30: { // ADD.I64 Rd(u8), R1(u8), R2(u8)
-                    uint8_t rd = READ_U8();
-                    uint8_t r1 = READ_U8();
-                    uint8_t r2 = READ_U8();
-                    SET_TYPE(locals[rd], ESPB_TYPE_I64);
-                    V_I64(locals[rd]) = V_I64(locals[r1]) + V_I64(locals[r2]);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "ADD.I64 R%d, R%d, R%d = %" PRId64, rd, r1, r2, V_I64(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
-
-                op_0x31: { // SUB.I64 Rd(u8), R1(u8), R2(u8)
-                    uint8_t rd = READ_U8();
-                    uint8_t r1 = READ_U8();
-                    uint8_t r2 = READ_U8();
-                    SET_TYPE(locals[rd], ESPB_TYPE_I64);
-                    V_I64(locals[rd]) = V_I64(locals[r1]) - V_I64(locals[r2]);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "SUB.I64 R%d, R%d, R%d = %" PRId64, rd, r1, r2, V_I64(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
-
-                op_0x32: { // MUL.I64 Rd(u8), R1(u8), R2(u8)
-                    uint8_t rd = READ_U8();
-                    uint8_t r1 = READ_U8();
-                    uint8_t r2 = READ_U8();
-                    SET_TYPE(locals[rd], ESPB_TYPE_I64);
-                    V_I64(locals[rd]) = V_I64(locals[r1]) * V_I64(locals[r2]);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "MUL.I64 R%d, R%d, R%d = %" PRId64, rd, r1, r2, V_I64(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
+                    DISPATCH();
+                 }
+op_0x30: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I64(locals[rd])=V_I64(locals[r1])+V_I64(locals[r2]); ESPB_OP_LOG("ADD.I64 R%u, R%u, R%u = %" PRId64, rd, r1, r2, V_I64(locals[rd])); DISPATCH(); }
+op_0x31: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I64(locals[rd])=V_I64(locals[r1])-V_I64(locals[r2]); ESPB_OP_LOG("SUB.I64 R%u, R%u, R%u = %" PRId64, rd, r1, r2, V_I64(locals[rd])); DISPATCH(); }
+op_0x32: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I64(locals[rd])=V_I64(locals[r1])*V_I64(locals[r2]); ESPB_OP_LOG("MUL.I64 R%u, R%u, R%u = %" PRId64, rd, r1, r2, V_I64(locals[rd])); DISPATCH(); }
 
                 op_0x33: { // DIV.I64 Rd(u8), R1(u8), R2(u8) (signed)
                     uint8_t rd = READ_U8();
@@ -2654,7 +2492,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "DIV.I64 R%d, R%d, R%d = %" PRId64, rd, r1, r2, V_I64(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
 
                 op_0x36: { // DIV.U64 Rd(u8), R1(u8), R2(u8) (unsigned)
@@ -2672,7 +2510,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "DIVU.I64 R%d, R%d, R%d = %" PRIu64, rd, r1, r2, (uint64_t)V_I64(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
 
                 op_0x34: { // REM.I64 Rd(u8), R1(u8), R2(u8) (signed)
@@ -2694,7 +2532,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "REM.I64 R%d, R%d, R%d = %" PRId64, rd, r1, r2, V_I64(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
 
                 op_0x37: { // REM.U64 Rd(u8), R1(u8), R2(u8) (unsigned)
@@ -2712,91 +2550,29 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "REMU.I64 R%d, R%d, R%d = %" PRIu64, rd, r1, r2, (uint64_t)V_I64(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
 
-                op_0x38: { // AND.I64 Rd(u8), R1(u8), R2(u8)
-                    uint8_t rd = READ_U8();
-                    uint8_t r1 = READ_U8();
-                    uint8_t r2 = READ_U8();
-                    SET_TYPE(locals[rd], ESPB_TYPE_I64);
-                    V_I64(locals[rd]) = V_I64(locals[r1]) & V_I64(locals[r2]);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "AND.I64 R%d, R%d, R%d = %" PRId64, rd, r1, r2, V_I64(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
+op_0x38: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I64(locals[rd])=V_I64(locals[r1])&V_I64(locals[r2]); ESPB_OP_LOG("AND.I64 R%u, R%u, R%u = 0x%016" PRIx64, rd, r1, r2, V_I64(locals[rd])); DISPATCH(); }
+op_0x39: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I64(locals[rd])=V_I64(locals[r1])|V_I64(locals[r2]); ESPB_OP_LOG("OR.I64 R%u, R%u, R%u = 0x%016" PRIx64, rd, r1, r2, V_I64(locals[rd])); DISPATCH(); }
+op_0x3A: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I64(locals[rd])=V_I64(locals[r1])^V_I64(locals[r2]); ESPB_OP_LOG("XOR.I64 R%u, R%u, R%u = 0x%016" PRIx64, rd, r1, r2, V_I64(locals[rd])); DISPATCH(); }
+op_0x3B: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I64(locals[rd])=V_I64(locals[r1])<<(V_I32(locals[r2])&63); ESPB_OP_LOG("SHL.I64 R%u, R%u, R%u = %" PRId64, rd, r1, r2, V_I64(locals[rd])); DISPATCH(); }
+op_0x3C: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I64(locals[rd])=V_I64(locals[r1])>>(V_I32(locals[r2])&63); ESPB_OP_LOG("SHR.I64 R%u, R%u, R%u = %" PRId64, rd, r1, r2, V_I64(locals[rd])); DISPATCH(); }
 
-                op_0x39: { // OR.I64 Rd(u8), R1(u8), R2(u8)
-                    uint8_t rd = READ_U8();
-                    uint8_t r1 = READ_U8();
-                    uint8_t r2 = READ_U8();
-                    SET_TYPE(locals[rd], ESPB_TYPE_I64);
-                    V_I64(locals[rd]) = V_I64(locals[r1]) | V_I64(locals[r2]);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "OR.I64 R%d, R%d, R%d = %" PRId64, rd, r1, r2, V_I64(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
+op_0x3D: { // USHR.I64 (logical shift - unsigned)
+    uint8_t rd = *pc++;
+    uint8_t r1 = *pc++;
+    uint8_t r2 = *pc++;
+    V_I64(locals[rd]) = (int64_t)((uint64_t)V_I64(locals[r1]) >> (V_I32(locals[r2]) & 63));
+    DISPATCH();
+}
 
-                op_0x3A: { // XOR.I64 Rd(u8), R1(u8), R2(u8)
-                    uint8_t rd = READ_U8();
-                    uint8_t r1 = READ_U8();
-                    uint8_t r2 = READ_U8();
-                    SET_TYPE(locals[rd], ESPB_TYPE_I64);
-                    V_I64(locals[rd]) = V_I64(locals[r1]) ^ V_I64(locals[r2]);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "XOR.I64 R%d, R%d, R%d = %" PRId64, rd, r1, r2, V_I64(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
-
-                op_0x3B: { // SHL.I64 Rd(u8), R1(u8), R2(u8)
-                    uint8_t rd = READ_U8();
-                    uint8_t r1 = READ_U8();
-                    uint8_t r2 = READ_U8();
-                    SET_TYPE(locals[rd], ESPB_TYPE_I64);
-                    V_I64(locals[rd]) = V_I64(locals[r1]) << (V_I32(locals[r2]) & 63);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "SHL.I64 R%d, R%d, R%d = %" PRId64, rd, r1, r2, V_I64(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
-
-                op_0x3C: { // SHR.I64 Rd(u8), R1(u8), R2(u8) (arithmetic)
-                    uint8_t rd = READ_U8();
-                    uint8_t r1 = READ_U8();
-                    uint8_t r2 = READ_U8();
-                    SET_TYPE(locals[rd], ESPB_TYPE_I64);
-                    V_I64(locals[rd]) = V_I64(locals[r1]) >> (V_I32(locals[r2]) & 63);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "SHR.I64 R%d, R%d, R%d = %" PRId64, rd, r1, r2, V_I64(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
-
-                op_0x3D: { // USHR.I64 Rd(u8), R1(u8), R2(u8) (logical)
-                    uint8_t rd = READ_U8();
-                    uint8_t r1 = READ_U8();
-                    uint8_t r2 = READ_U8();
-                    SET_TYPE(locals[rd], ESPB_TYPE_U64);
-                    V_I64(locals[rd]) = (uint64_t)V_I64(locals[r1]) >> (V_I32(locals[r2]) & 63);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "USHR.I64 R%d, R%d, R%d = %" PRIu64, rd, r1, r2, (uint64_t)V_I64(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
-
-                op_0x3E: { // NOT.I64 Rd(u8), R1(u8)
-                    uint8_t rd = READ_U8();
-                    uint8_t r1 = READ_U8();
-                    SET_TYPE(locals[rd], ESPB_TYPE_I64);
-                    V_I64(locals[rd]) = ~V_I64(locals[r1]);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "NOT.I64 R%d, R%d = %" PRId64, rd, r1, V_I64(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
+op_0x3E: { // NOT.I64 (unary)
+    uint8_t rd = *pc++;
+    uint8_t r1 = *pc++;
+    V_I64(locals[rd]) = ~V_I64(locals[r1]);
+    DISPATCH();
+}
 
                 op_0x70: { // STORE.I8 Rs(u8), Ra(u8), offset(i16)
                     uint8_t rs = READ_U8();
@@ -2829,7 +2605,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
                         ESP_LOGD(TAG, "STORE.I8 R%hhu(%hhd) -> abs[%p]", rs, val_i8, (void*)target_addr);
 #endif
                     }
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x71: { // STORE.U8 Rs(u8), Ra(u8), offset(i16)
                     uint8_t rs = READ_U8();
@@ -2862,7 +2638,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
                         ESP_LOGD(TAG, "STORE.U8 R%u(%u) -> abs[%p]", (unsigned)rs, (unsigned)val8, (void*)target_addr);
 #endif
                     }
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x72: { // STORE.I16 Rs(u8), Ra(u8), offset(i16)
                     uint8_t rs = READ_U8();
@@ -2895,7 +2671,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
                         ESP_LOGD(TAG, "STORE.I16 R%hhu(%hd) -> abs[%p]", rs, val_i16, (void*)target_addr);
 #endif
                     }
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x73: { // STORE.U16 Rs(u8), Ra(u8), offset(i16)
                     uint8_t rs = READ_U8();
@@ -2928,7 +2704,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
                         ESP_LOGD(TAG, "STORE.U16 R%u(%u) -> abs[%p]", (unsigned)rs, (unsigned)val16, (void*)target_addr);
 #endif
                     }
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x74: { // STORE.I32 Rs(u8), Ra(u8), offset(i16)
                     uint8_t rs = READ_U8();
@@ -2961,7 +2737,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
                         ESP_LOGD(TAG, "STORE.I32 R%u(%ld) -> abs[%p]", rs, (long)val32, (void*)target_addr);
 #endif
                     }
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 // op_0x75 has been removed and is now unhandled
                 op_0x7A: { // STORE.PTR Rs(u8), Ra(u8), offset(i16)
@@ -2989,7 +2765,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "STORE.PTR R%u(%p) -> mem[%u]", (unsigned)rs, ptr_val, (unsigned)target);
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
 
                 // Добавляем поддержку 8-битного булевого типа
@@ -3013,7 +2789,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "STORE.BOOL [R%u + %d] <- R%u(%u)", ra_bool, offset_bool, rs_bool, (unsigned)bool_val);
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
 
                 op_0x76: { // STORE.I64 Rs(u8), Ra(u8), offset(i16)
@@ -3050,7 +2826,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "STORE.I64 R%u(%" PRId64 ") -> mem[%" PRIu32 "]", rs, val64, target);
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 // op_0x77 (STORE.U64) is now handled by op_0x76 (STORE.I64)
                 op_0x78: { // STORE.F32 Rd(u8), Ra(u8), offset(i16)
@@ -3066,7 +2842,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG,"STORE.F32 R%u(%f)->mem[%u]", rs, V_F32(locals[rs]), tgt);
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x79: { // STORE.F64 Rd(u8), Ra(u8), offset(i16)
                     uint8_t rs=READ_U8(), ra=READ_U8();
@@ -3081,7 +2857,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG,"STORE.F64 R%u(%f)->mem[%u]", rs, V_F64(locals[rs]), tgt);
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x85: { // LOAD.I64 Rd(u8), Ra(u8), offset(i16)
                     uint8_t rd = READ_U8();
@@ -3110,7 +2886,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "LOAD.I64 R%u <- mem[%" PRIu32 "] = %" PRId64, rd, target, loadv);
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x86: { // LOAD.F32 Rd(u8), Ra(u8), offset(i16)
                     uint8_t rd=READ_U8(), ra=READ_U8();
@@ -3125,7 +2901,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG,"LOAD.F32 R%u<-mem[%u]=%f", rd, tgt, V_F32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x87: { // LOAD.F64 Rd(u8), Ra(u8), offset(i16)
                     uint8_t rd=READ_U8(), ra=READ_U8();
@@ -3140,7 +2916,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG,"LOAD.F64 R%u<-mem[%u]=%f", rd, tgt, V_F64(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x88: { // LOAD.PTR Rd(u8), Ra(u8), offset(i16)
                     uint8_t rd = READ_U8();
@@ -3163,7 +2939,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "LOAD.PTR R%u <- mem[%" PRIu32 "] = %p", rd, target_ptr, loaded_ptr);
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 
                 op_0x89: { // LOAD.BOOL Rd(u8), Ra(u8), offset(i16) - loads and normalizes to 0 or 1
@@ -3187,7 +2963,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "LOAD.BOOL R%u <- mem[%" PRIu32 "] = %d (raw: %u)", rd, target, bool_val, raw_val);
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                     
 
@@ -3240,21 +3016,10 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
                     }
 
                     // 5. Restore caller's full register frame if it was saved on the stack
-                    if (saved_frame_ptr != NULL && num_regs_saved > 0) { // Check if there's anything to restore
+                    // ОПТИМИЗАЦИЯ: условие almost always true для не-leaf функций
+                    if (__builtin_expect(saved_frame_ptr != NULL && num_regs_saved > 0, 1)) {
                         Value* caller_locals_ptr = (Value*)(exec_ctx->shadow_stack_buffer + restored_fp);
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                        ESP_LOGD(TAG, "END (Slow Path): Restoring %zu registers from shadow stack at %p to caller frame %p", num_regs_saved, saved_frame_ptr, caller_locals_ptr);
-#endif
-                        
-                        if (num_regs_saved == module->function_bodies[restored_caller_idx].header.num_virtual_regs) {
-                            memcpy(caller_locals_ptr, saved_frame_ptr, num_regs_saved * sizeof(Value));
-                        } else {
-                            ESP_LOGW(TAG, "END: Mismatch in saved regs (%zu) vs caller regs (%u). Not restoring frame.", num_regs_saved, module->function_bodies[restored_caller_idx].header.num_virtual_regs);
-                        }
-                    } else {
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                        ESP_LOGD(TAG, "END (Fast Path): Skipped register restore for leaf function call.");
-#endif
+                        memcpy(caller_locals_ptr, saved_frame_ptr, num_regs_saved * sizeof(Value));
                     }
 
                     // 6. Unwind the stack and restore context
@@ -3278,18 +3043,17 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "END: Returned to function %" PRIu32 ". pc_offset=%d, fp=%zu, sp=%zu", local_func_idx, restored_pc, exec_ctx->fp, exec_ctx->sp);
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 // --- Поддержка i8 ---
                 op_0x10: { // MOV.I8 Rd(u8), Rs(u8)
-                    uint8_t rd = READ_U8();
-                    uint8_t rs = READ_U8();
-                    SET_TYPE(locals[rd], ESPB_TYPE_I8);
-                    V_I32(locals[rd]) = V_I32(locals[rs]);
+                    uint8_t rd = *pc++;
+                    uint8_t rs = *pc++;
+                    V_RAW(locals[rd]) = V_RAW(locals[rs]);
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                   ESP_LOGD(TAG, "MOV.I8 R%u, R%u = %" PRId8, (unsigned)rd, (unsigned)rs, (int8_t)V_I32(locals[rd]));
+                    ESP_LOGD(TAG, "MOV.I8 R%u, R%u = %" PRId8, (unsigned)rd, (unsigned)rs, (int8_t)V_I32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x80: { // LOAD.I8S Rd(u8), Ra(u8), offset(i16)
                     uint8_t rd = READ_U8();
@@ -3312,7 +3076,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "LOAD.I8S R%u <- mem[%" PRIu32 "] = %" PRId8, (unsigned)rd, target, val_i8);
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x81: { // LOAD.I8U Rd(u8), Ra(u8), offset(i16)
                     uint8_t rd = READ_U8();
@@ -3335,7 +3099,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "LOAD.I8U R%u <- mem[%" PRIu32 "] = %" PRIu8, rd, target, val_u8);
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x82: { // LOAD.I16S Rd(u8), Ra(u8), offset(i16)
                     uint8_t rd = READ_U8();
@@ -3360,7 +3124,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "LOAD.I16S R%u <- mem[%" PRIu32 "] = %" PRId16, rd, target, val_i16);
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
 
                 op_0x92: { // TRUNC.I64.I8 Rd(u8), Rs(u8)
@@ -3371,7 +3135,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "TRUNC.I64.I8 R%u, R%u = %" PRId8, (unsigned)rd, (unsigned)rs, (int8_t)V_I32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x94: { // TRUNC.I32.I8 (alias) Rd(u8), Rs(u8)
                     uint8_t rd94 = READ_U8();
@@ -3381,7 +3145,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "TRUNC.I32.I8 R%u, R%u = %" PRId8, (unsigned)rd94, (unsigned)rs94, (int8_t)V_I32(locals[rd94]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x95: { // TRUNC.I16.I8 Rd(u8), Rs(u8)
                     uint8_t rd95 = READ_U8();
@@ -3391,7 +3155,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "TRUNC.I16.I8 R%u, R%u = %" PRId8, (unsigned)rd95, (unsigned)rs95, (int8_t)V_I32(locals[rd95]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x96: { // ZEXT.I8.I16 Rd(u8), Rs(u8) - Zero-extend I8 to I16
                     uint8_t rd = READ_U8();
@@ -3401,7 +3165,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "ZEXT.I8.I16 R%u, R%u = %" PRId32, (unsigned)rd, (unsigned)rs, V_I32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x97: { // ZEXT.I8.I32 Rd(u8), Rs(u8) - Zero-extend I8 to I32
                     uint8_t rd = READ_U8();
@@ -3411,7 +3175,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "ZEXT.I8.I32 R%u, R%u = %" PRId32, (unsigned)rd, (unsigned)rs, V_I32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x9E: { // SEXT.I8.I64 Rd(u8), Rs(u8)
                     uint8_t rd = READ_U8();
@@ -3421,7 +3185,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "SEXT.I8.I64 R%u, R%u = %" PRId64, (unsigned)rd, (unsigned)rs, V_I64(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x98: { // ZEXT.I8.I64 Rd(u8), Rs(u8) - Zero-extend I8 to I64
                     uint8_t rd = READ_U8();
@@ -3431,7 +3195,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "ZEXT.I8.I64 R%u, R%u = %" PRId64, (unsigned)rd, (unsigned)rs, V_I64(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x99: { // ZEXT.I16.I32 Rd(u8), Rs(u8) - Zero-extend I16 to I32
                     uint8_t rd = READ_U8();
@@ -3441,7 +3205,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "ZEXT.I16.I32 R%u, R%u = %" PRId32, (unsigned)rd, (unsigned)rs, V_I32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x11: { // MOV.I16 - Now generic MOV
                     uint8_t rd = READ_U8();
@@ -3450,7 +3214,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "MOV.I16 R%d, R%d = (raw=0x%016" PRIx64 ")", rd, rs, V_RAW(locals[rs]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x83: { // LOAD.U16 Rd(u8), Ra(u8), offset(i16)
                     uint8_t rd = READ_U8();
@@ -3474,7 +3238,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "LOAD.U16 R%u <- mem[%" PRIu32 "] = %" PRIu16, rd, tgt2, lval);
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x93: { // TRUNC.I32.I16 Rd(u8), Rs(u8)
                     uint8_t rd = READ_U8();
@@ -3484,7 +3248,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "TRUNC.I32.I16 R%d, R%d = %" PRId16, rd, rs2, (int16_t)V_I32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x9D: { // SEXT.I8.I32 Rd(u8), Rs(u8)
                     uint8_t rd2 = READ_U8();
@@ -3494,7 +3258,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "SEXT.I8.I32 R%d, R%d = %" PRId32, rd2, rs3, V_I32(locals[rd2]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x9F: { // SEXT.I16.I32 Rd(u8), Rs(u8)
                     uint8_t rd2 = READ_U8();
@@ -3504,7 +3268,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "SEXT.I16.I32 R%d, R%d = %" PRId32, rd2, rs3, V_I32(locals[rd2]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xA0: { // SEXT.I16.I64 Rd(u8), Rs(u8)
                     uint8_t rd = READ_U8();
@@ -3514,7 +3278,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "SEXT.I16.I64 R%u, R%u = %" PRId64, (unsigned)rd, (unsigned)rs, V_I64(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x9B: { // ZEXT.I32.I64 Rd(u8), Rs(u8)
                     uint8_t rd = READ_U8();
@@ -3525,7 +3289,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "ZEXT.I32.I64 R%d, R%d = %" PRIu64, rd, rs, (uint64_t)V_I64(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x9C: { // SEXT.I8.I16 Rd(u8), Rs(u8)
                     uint8_t rd = READ_U8();
@@ -3536,7 +3300,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "SEXT.I8.I16 R%d, R%d = %" PRId16, rd, rs, (int16_t)V_I32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xA1: { // SEXT.I32.I64 Rd(u8), Rs(u8)
                     uint8_t rd = READ_U8();
@@ -3546,118 +3310,117 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "SEXT.I32.I64 R%d, R%d = %" PRId64, rd, rs, V_I64(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xA6: { // CVT.F32.U32
                     uint8_t rd = READ_U8(); uint8_t rs = READ_U8();
                     SET_TYPE(locals[rd], ESPB_TYPE_U32);
                     V_I32(locals[rd]) = (uint32_t)V_F32(locals[rs]);
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xA7: { // CVT.F32.U64
                     uint8_t rd = READ_U8(); uint8_t rs = READ_U8();
                     SET_TYPE(locals[rd], ESPB_TYPE_U64);
                     V_I64(locals[rd]) = (uint64_t)V_F32(locals[rs]);
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xA8: { // CVT.F64.U32
                     uint8_t rd = READ_U8(); uint8_t rs = READ_U8();
                     SET_TYPE(locals[rd], ESPB_TYPE_U32);
                     V_I32(locals[rd]) = (uint32_t)V_F64(locals[rs]);
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xA9: { // CVT.F64.U64
                     uint8_t rd = READ_U8(); uint8_t rs = READ_U8();
                     SET_TYPE(locals[rd], ESPB_TYPE_U64);
                     V_I64(locals[rd]) = (uint64_t)V_F64(locals[rs]);
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xAA: { // CVT.F32.I32
                     uint8_t rd = READ_U8(); uint8_t rs = READ_U8();
                     SET_TYPE(locals[rd], ESPB_TYPE_I32);
                     V_I32(locals[rd]) = (int32_t)V_F32(locals[rs]);
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xAB: { // CVT.F32.I64
                     uint8_t rd = READ_U8(); uint8_t rs = READ_U8();
                     SET_TYPE(locals[rd], ESPB_TYPE_I64);
                     V_I64(locals[rd]) = (int64_t)V_F32(locals[rs]);
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xAC: { // CVT.F64.I32
                     uint8_t rd = READ_U8(); uint8_t rs = READ_U8();
                     SET_TYPE(locals[rd], ESPB_TYPE_I32);
                     V_I32(locals[rd]) = (int32_t)V_F64(locals[rs]);
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xAD: { // CVT.F64.I64
                     uint8_t rd = READ_U8(); uint8_t rs = READ_U8();
                     SET_TYPE(locals[rd], ESPB_TYPE_I64);
                     V_I64(locals[rd]) = (int64_t)V_F64(locals[rs]);
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xAE: { // CVT.U32.F32
                     uint8_t rd = READ_U8(); uint8_t rs = READ_U8();
                     SET_TYPE(locals[rd], ESPB_TYPE_F32);
                     V_F32(locals[rd]) = (float)V_I32(locals[rs]);
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xAF: { // CVT.U32.F64
                     uint8_t rd = READ_U8(); uint8_t rs = READ_U8();
                     SET_TYPE(locals[rd], ESPB_TYPE_F64);
                     V_F64(locals[rd]) = (double)V_I32(locals[rs]);
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xB0: { // CVT.U64.F32
                     uint8_t rd = READ_U8(); uint8_t rs = READ_U8();
                     SET_TYPE(locals[rd], ESPB_TYPE_F32);
                     V_F32(locals[rd]) = (float)V_I64(locals[rs]);
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xB1: { // CVT.U64.F64
                     uint8_t rd = READ_U8(); uint8_t rs = READ_U8();
                     SET_TYPE(locals[rd], ESPB_TYPE_F64);
                     V_F64(locals[rd]) = (double)V_I64(locals[rs]);
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xB2: { // CVT.I32.F32
                     uint8_t rd = READ_U8(); uint8_t rs = READ_U8();
                     SET_TYPE(locals[rd], ESPB_TYPE_F32);
                     V_F32(locals[rd]) = (float)V_I32(locals[rs]);
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xB3: { // CVT.I32.F64
                     uint8_t rd = READ_U8(); uint8_t rs = READ_U8();
                     SET_TYPE(locals[rd], ESPB_TYPE_F64);
                     V_F64(locals[rd]) = (double)V_I32(locals[rs]);
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xB4: { // CVT.I64.F32
                     uint8_t rd = READ_U8(); uint8_t rs = READ_U8();
                     SET_TYPE(locals[rd], ESPB_TYPE_F32);
                     V_F32(locals[rd]) = (float)V_I64(locals[rs]);
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xB5: { // CVT.I64.F64
                     uint8_t rd = READ_U8(); uint8_t rs = READ_U8();
                     SET_TYPE(locals[rd], ESPB_TYPE_F64);
                     V_F64(locals[rd]) = (double)V_I64(locals[rs]);
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x01: { // NOP: Если встречается отдельно (не после END)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "NOP");
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
             op_0x00: { // padding/выравнивающий NOP
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x1D: { // LD_GLOBAL_ADDR Rd(u8), symbol_idx(u16)
                     uint8_t rd = READ_U8();
                     uint16_t symbol_idx = READ_U16();
                     uintptr_t addr = 0;
-                    bool found_in_func_map = false;
 
                     // Function pointer flag: high bit set
                     if (symbol_idx & 0x8000) {
@@ -3673,7 +3436,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
                                 DEBUG_CHECK_REG(rd, max_reg_used, "LD_GLOBAL_ADDR");
                                 SET_TYPE(locals[rd], ESPB_TYPE_PTR);
                                 V_PTR(locals[rd]) = (void*)addr;
-                                goto interpreter_loop_start;
+                                DISPATCH();
                             }
                         }
                         ESP_LOGE(TAG, "LD_GLOBAL_ADDR: Invalid func_idx %u (symbol_idx=0x%04x)", func_idx, symbol_idx);
@@ -3705,7 +3468,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                         ESP_LOGD(TAG, "LD_GLOBAL_ADDR R%u <- global[%hu] = %p", rd, symbol_idx, (void*)addr);
 #endif
-                        goto interpreter_loop_start;
+                        DISPATCH();
                     }
 
                     ESP_LOGE(TAG, "LD_GLOBAL_ADDR: Invalid symbol_idx %hu (not a valid global)", symbol_idx);
@@ -4263,7 +4026,7 @@ op_0x20: { // ADD.I32 Rd(u8), R1(u8), R2(u8)
                         }
                     }
 
-                    goto interpreter_loop_start;
+                    DISPATCH();
 
              }
 // --- Начало блока для SELECT ---
@@ -4278,7 +4041,7 @@ op_0xBE: // SELECT.I32 / BOOL
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
     ESP_LOGD(TAG, "SELECT.I32 R%u, R%u(%s), R%u, R%u -> val=%" PRId32, rd, r_cond, condition ? "true" : "false", r_true, r_false, V_I32(locals[rd]));
 #endif
-    goto interpreter_loop_start;
+    DISPATCH();
 }
 op_0xBF: // SELECT.I64
 {
@@ -4291,7 +4054,7 @@ op_0xBF: // SELECT.I64
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
     ESP_LOGD(TAG, "SELECT.I64 R%u, R%u(%s), R%u, R%u -> val=%" PRId64, rd, r_cond, condition ? "true" : "false", r_true, r_false, V_I64(locals[rd]));
 #endif
-    goto interpreter_loop_start;
+    DISPATCH();
 }
 op_0xD4: // SELECT.F32
 {
@@ -4304,7 +4067,7 @@ op_0xD4: // SELECT.F32
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
     ESP_LOGD(TAG, "SELECT.F32 R%u, R%u(%s), R%u, R%u -> val=%f", rd, r_cond, condition ? "true" : "false", r_true, r_false, V_F32(locals[rd]));
 #endif
-    goto interpreter_loop_start;
+    DISPATCH();
 }
 op_0xD5: // SELECT.F64
 {
@@ -4317,7 +4080,7 @@ op_0xD5: // SELECT.F64
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
     ESP_LOGD(TAG, "SELECT.F64 R%u, R%u(%s), R%u, R%u -> val=%f", rd, r_cond, condition ? "true" : "false", r_true, r_false, V_F64(locals[rd]));
 #endif
-    goto interpreter_loop_start;
+    DISPATCH();
 }
 op_0xD6: // SELECT.PTR
 {
@@ -4330,49 +4093,19 @@ op_0xD6: // SELECT.PTR
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
     ESP_LOGD(TAG, "SELECT.PTR R%u, R%u(%s), R%u, R%u -> val=%p", rd, r_cond, condition ? "true" : "false", r_true, r_false, V_PTR(locals[rd]));
 #endif
-    goto interpreter_loop_start;
+    DISPATCH();
 }
 // --- Конец блока для SELECT ---
-                op_0xC0: // CMP.EQ.I32
-                op_0xC1: // CMP.NE.I32
-                op_0xC2: // CMP.LT.I32S
-                op_0xC3: // CMP.GT.I32S
-                op_0xC4: // CMP.LE.I32S
-                op_0xC5: // CMP.GE.I32S
-                op_0xC6: // CMP.LT.I32U
-                op_0xC7: // CMP.GT.I32U
-                op_0xC8: // CMP.LE.I32U
-                op_0xC9: { // CMP.GE.I32U
-                    uint8_t rd = READ_U8();
-                    uint8_t r1 = READ_U8();
-                    uint8_t r2 = READ_U8();
-                    DEBUG_CHECK_REGS_3(rd, r1, r2, max_reg_used, "CMP");
-
-                    int32_t val1 = V_I32(locals[r1]);
-                    int32_t val2 = V_I32(locals[r2]);
-                    bool cmp_res = false;
-
-                    switch(opcode) {
-                        case 0xC0: cmp_res = (val1 == val2); break;
-                        case 0xC1: cmp_res = (val1 != val2); break;
-                        case 0xC2: cmp_res = (val1 < val2); break;
-                        case 0xC3: cmp_res = (val1 > val2); break;
-                        case 0xC4: cmp_res = (val1 <= val2); break;
-                        case 0xC5: cmp_res = (val1 >= val2); break;
-                        case 0xC6: cmp_res = ((uint32_t)val1 < (uint32_t)val2); break;
-                        case 0xC7: cmp_res = ((uint32_t)val1 > (uint32_t)val2); break;
-                        case 0xC8: cmp_res = ((uint32_t)val1 <= (uint32_t)val2); break;
-                        case 0xC9: cmp_res = ((uint32_t)val1 >= (uint32_t)val2); break;
-                    }
-                    
-                    SET_TYPE(locals[rd], ESPB_TYPE_BOOL);
-                    V_I32(locals[rd]) = cmp_res ? 1 : 0;
-                    
-#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                    ESP_LOGD(TAG, "CMP Opcode 0x%02X: R%u, R%u, R%u -> %d", opcode, rd, r1, r2, V_I32(locals[rd]));
-#endif
-                    goto interpreter_loop_start;
-                }
+                op_0xC0: ESPB_OP_CMP_I32(==); // CMP.EQ.I32
+                op_0xC1: ESPB_OP_CMP_I32(!=); // CMP.NE.I32
+                op_0xC2: ESPB_OP_CMP_I32(<);  // CMP.LT.I32S
+                op_0xC3: ESPB_OP_CMP_I32(>);  // CMP.GT.I32S
+                op_0xC4: ESPB_OP_CMP_I32(<=); // CMP.LE.I32S
+                op_0xC5: ESPB_OP_CMP_I32(>=); // CMP.GE.I32S
+                op_0xC6: ESPB_OP_CMP_I32U(<);  // CMP.LT.I32U
+                op_0xC7: ESPB_OP_CMP_I32U(>);  // CMP.GT.I32U
+                op_0xC8: ESPB_OP_CMP_I32U(<=); // CMP.LE.I32U
+                op_0xC9: ESPB_OP_CMP_I32U(>=); // CMP.GE.I32U
             op_0xCA: // CMP.EQ.I64
             op_0xCB: // CMP.NE.I64
             op_0xCC: // CMP.LT.I64S
@@ -4407,7 +4140,7 @@ op_0xD6: // SELECT.PTR
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                 ESP_LOGD(TAG, "CMP.I64 Opcode 0x%02X -> %d", opcode, V_I32(locals[rd]));
 #endif
-                goto interpreter_loop_start;
+                DISPATCH();
             }
             op_0xE0: // CMP.EQ.F32
             op_0xE1: // CMP.NE.F32
@@ -4440,7 +4173,7 @@ op_0xD6: // SELECT.PTR
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                 ESP_LOGD(TAG, "CMP.F32 Opcode 0x%02X -> %d", opcode, V_I32(locals[rd]));
 #endif
-                goto interpreter_loop_start;
+                DISPATCH();
             }
             op_0xE6: // CMP.EQ.F64
             op_0xE7: // CMP.NE.F64
@@ -4473,7 +4206,7 @@ op_0xD6: // SELECT.PTR
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                 ESP_LOGD(TAG, "CMP.F64 Opcode 0x%02X -> %d", opcode, V_I32(locals[rd]));
 #endif
-                goto interpreter_loop_start;
+                DISPATCH();
             }
 
                 op_0x8E: { // ADDR_OF Rd(u8), Rs(u8) - Создает указатель на виртуальный регистр
@@ -4488,7 +4221,7 @@ op_0xD6: // SELECT.PTR
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG,"ESPB DEBUG: ADDR_OF R%u, R%u = %p\n", rd, rs, ptr_to_reg);
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x84: { // LOAD.I32 Rd(u8), Ra(u8), offset(i16)
                     uint8_t rd = READ_U8();
@@ -4513,7 +4246,7 @@ op_0xD6: // SELECT.PTR
                            ESP_LOGW(TAG, "HACK: LOAD.I32 on R%u (val=0x%x) is treated as MOV.I32", ra, (unsigned int)ra_addr);
                             SET_TYPE(locals[rd], ESPB_TYPE_I32);
                             V_I32(locals[rd]) = ra_addr + offset; // Also apply offset
-                            goto interpreter_loop_start; // Skip dereferencing
+                            DISPATCH(); // Skip dereferencing
                         }
                         if (is_native_pointer) {
                             // ВОССТАНОВЛЕНО: Правильно читаем значение из нативной памяти ESP32
@@ -4528,7 +4261,7 @@ op_0xD6: // SELECT.PTR
                             V_I32(locals[rd]) = loaded_value;
                             
                            ESP_LOGD(TAG, "FIXED: Loaded I32 value %d from native addr 0x%x", loaded_value, (unsigned int)(ra_addr + offset));
-                            goto interpreter_loop_start; // Завершаем обработку
+                            DISPATCH(); // Завершаем обработку
                         }
                     }
                     */
@@ -4561,7 +4294,7 @@ op_0xD6: // SELECT.PTR
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "LOAD.I32 R%u <- mem[R%u(0x%x)+%d] = %" PRId32, rd, ra, (unsigned int)ra_addr, V_I32(locals[rd]));
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 // Remove duplicate/old added opcodes block (0x47/0x48/0x49) - handled earlier
 
@@ -4573,7 +4306,7 @@ op_0xD6: // SELECT.PTR
                     SET_TYPE(locals[rd], ESPB_TYPE_I64);
                     V_I64(locals[rd]) = V_I64(locals[r1]) + imm;
                    ESP_LOGD(TAG, "ADD.I64.IMM8 R%u, R%u, %" PRId8 " = %" PRId64, rd, r1, imm, V_I64(locals[rd]));
-                goto interpreter_loop_start;
+                DISPATCH();
             }
                 op_0x51: { // SUB.I64.IMM8 Rd(u8), R1(u8), imm8(i8)
                     uint8_t rd = READ_U8();
@@ -4582,7 +4315,7 @@ op_0xD6: // SELECT.PTR
                     SET_TYPE(locals[rd], ESPB_TYPE_I64);
                     V_I64(locals[rd]) = V_I64(locals[r1]) - imm;
                     ESP_LOGD(TAG, "SUB.I64.IMM8 R%u, R%u, %" PRId8 " = %" PRId64, rd, r1, imm, V_I64(locals[rd]));
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x52: { // MUL.I64.IMM8 Rd(u8), R1(u8), imm8(i8)
                     uint8_t rd = READ_U8();
@@ -4591,7 +4324,7 @@ op_0xD6: // SELECT.PTR
                     SET_TYPE(locals[rd], ESPB_TYPE_I64);
                     V_I64(locals[rd]) = V_I64(locals[r1]) * imm;
                     ESP_LOGD(TAG, "MUL.I64.IMM8 R%u, R%u, %" PRId8 " = %" PRId64, rd, r1, imm, V_I64(locals[rd]));
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
 
                 op_0x53: { // DIVS.I64.IMM8 Rd, R1, imm8
@@ -4605,7 +4338,7 @@ op_0xD6: // SELECT.PTR
                     SET_TYPE(locals[rd], ESPB_TYPE_I64);
                     V_I64(locals[rd]) = dividend / divisor;
                     ESP_LOGD(TAG, "DIVS.I64.IMM8 R%u, R%u, %" PRId8 " = %" PRId64, rd, r1, imm, V_I64(locals[rd]));
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x54: { // DIVU.I64.IMM8 Rd, R1, imm8
                     uint8_t rd = READ_U8();
@@ -4617,7 +4350,7 @@ op_0xD6: // SELECT.PTR
                     SET_TYPE(locals[rd], ESPB_TYPE_U64);
                     V_I64(locals[rd]) = dividend / divisor;
                     ESP_LOGD(TAG, "DIVU.I64.IMM8 R%u, R%u, %" PRIu8 " = %" PRIu64, rd, r1, imm, (uint64_t)V_I64(locals[rd]));
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x55: { // REMS.I64.IMM8 Rd, R1, imm8
                     uint8_t rd = READ_U8();
@@ -4633,7 +4366,7 @@ op_0xD6: // SELECT.PTR
                         V_I64(locals[rd]) = dividend % divisor;
                     }
                     ESP_LOGD(TAG, "REMS.I64.IMM8 R%u, R%u, %" PRId8 " = %" PRId64, rd, r1, imm, V_I64(locals[rd]));
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0x56: { // REMU.I64.IMM8 Rd, R1, imm8
                     uint8_t rd = READ_U8();
@@ -4645,7 +4378,7 @@ op_0xD6: // SELECT.PTR
                     SET_TYPE(locals[rd], ESPB_TYPE_U64);
                     V_I64(locals[rd]) = dividend % divisor;
                     ESP_LOGD(TAG, "REMU.I64.IMM8 R%u, R%u, %" PRIu8 " = %" PRIu64, rd, r1, imm, (uint64_t)V_I64(locals[rd]));
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 // 0x57 is RESERVED
                 op_0x58: { // SHRU.I64.IMM8 Rd, R1, imm8 (Logical Shift Right)
@@ -4657,7 +4390,7 @@ op_0xD6: // SELECT.PTR
                     SET_TYPE(locals[rd], ESPB_TYPE_U64);
                     V_I64(locals[rd]) = val >> shift;
                     ESP_LOGD(TAG, "SHRU.I64.IMM8 R%u, R%u, %u = %" PRIu64, rd, r1, imm, (uint64_t)V_I64(locals[rd]));
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 
                 op_0x1E: { // LD_GLOBAL Rd(u8), global_idx(u16)
@@ -4713,7 +4446,7 @@ op_0xD6: // SELECT.PTR
                        ESP_LOGD(TAG, "LD_GLOBAL R%u <- global[%hu] (type=%d)", rd, global_idx, g->type);
 #endif
                     }
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
 
                 op_0x1F: { // ST_GLOBAL global_idx(u16), Rs(u8)
@@ -4740,7 +4473,7 @@ op_0xD6: // SELECT.PTR
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                        ESP_LOGD(TAG, "ST_GLOBAL global[%hu] <- R%u (type=%d)", global_idx, rs, g->type);
 #endif
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xD7: { // ATOMIC.RMW.*.I32
                     uint8_t rd = READ_U8();
@@ -4760,7 +4493,7 @@ op_0xD6: // SELECT.PTR
                     }
                     SET_TYPE(locals[rd], ESPB_TYPE_I32);
                     V_I32(locals[rd]) = old_val;
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xDD: { // ATOMIC.RMW.CMPXCHG.I32
                     uint8_t rd = READ_U8();
@@ -4773,7 +4506,7 @@ op_0xD6: // SELECT.PTR
                     __atomic_compare_exchange_n(addr, &expected, desired, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
                     SET_TYPE(locals[rd], ESPB_TYPE_I32);
                     V_I32(locals[rd]) = expected;
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xDE: { // ATOMIC.LOAD.I32
                     uint8_t rd = READ_U8();
@@ -4781,7 +4514,7 @@ op_0xD6: // SELECT.PTR
                     int32_t* addr = (int32_t*)V_PTR(locals[ra]);
                     SET_TYPE(locals[rd], ESPB_TYPE_I32);
                     V_I32(locals[rd]) = __atomic_load_n(addr, __ATOMIC_SEQ_CST);
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xDF: { // ATOMIC.STORE.I32
                     uint8_t rs = READ_U8();
@@ -4789,7 +4522,7 @@ op_0xD6: // SELECT.PTR
                     int32_t* addr = (int32_t*)V_PTR(locals[ra]);
                     int32_t value = V_I32(locals[rs]);
                     __atomic_store_n(addr, value, __ATOMIC_SEQ_CST);
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 // --- I64 Atomics ---
                 op_0xF0: { // ATOMIC.RMW.*.I64
@@ -4810,7 +4543,7 @@ op_0xD6: // SELECT.PTR
                     }
                     SET_TYPE(locals[rd], ESPB_TYPE_I64);
                     V_I64(locals[rd]) = old_val;
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xF6: { // ATOMIC.RMW.CMPXCHG.I64
                     uint8_t rd = READ_U8();
@@ -4823,7 +4556,7 @@ op_0xD6: // SELECT.PTR
                     __atomic_compare_exchange_n(addr, &expected, desired, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
                     SET_TYPE(locals[rd], ESPB_TYPE_I64);
                     V_I64(locals[rd]) = expected;
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xEC: { // ATOMIC.LOAD.I64
                     uint8_t rd = READ_U8();
@@ -4831,7 +4564,7 @@ op_0xD6: // SELECT.PTR
                     int64_t* addr = (int64_t*)V_PTR(locals[ra]);
                     SET_TYPE(locals[rd], ESPB_TYPE_I64);
                     V_I64(locals[rd]) = __atomic_load_n(addr, __ATOMIC_SEQ_CST);
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xED: { // ATOMIC.STORE.I64
                     uint8_t rs = READ_U8();
@@ -4839,11 +4572,11 @@ op_0xD6: // SELECT.PTR
                     int64_t* addr = (int64_t*)V_PTR(locals[ra]);
                     int64_t value = V_I64(locals[rs]);
                     __atomic_store_n(addr, value, __ATOMIC_SEQ_CST);
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 op_0xEE: { // ATOMIC.FENCE
                     __atomic_thread_fence(__ATOMIC_SEQ_CST);
-                    goto interpreter_loop_start;
+                    DISPATCH();
                 }
                 
                 op_0xFC: { // Префикс для расширенных опкодов
@@ -4875,7 +4608,7 @@ op_0xD6: // SELECT.PTR
             ESP_LOGD(TAG, "MEMORY.INIT: Copied %u bytes from data segment %u (offset %u) to memory addr %u", size, data_seg_idx, src_offset, dest_addr);
 #endif
 #endif
-            goto interpreter_loop_start;
+            DISPATCH();
         }
         case 0x01: { // DATA.DROP data_seg_idx(u32)
             uint32_t data_seg_idx;
@@ -4888,7 +4621,7 @@ op_0xD6: // SELECT.PTR
             ESP_LOGD(TAG, "DATA.DROP: Dropped data segment %u", data_seg_idx);
 #endif
 #endif
-            goto interpreter_loop_start;
+            DISPATCH();
         }
         case 0x02: { // MEMORY.COPY Rd(u8), Rs(u8), Rn(u8)
             uint8_t rd_dest = READ_U8();
@@ -4949,7 +4682,7 @@ op_0xD6: // SELECT.PTR
             ESP_LOGD(TAG, "MEMORY.COPY: Successfully copied %u bytes from offset %u to offset %u", size, src_addr, dest_addr);
 #endif
 #endif
-            goto interpreter_loop_start;
+            DISPATCH();
         }
         case 0x03: { // MEMORY.FILL Rd(u8), Rval(u8), Rn(u8)
             uint8_t rd_dest = READ_U8();
@@ -4979,7 +4712,7 @@ op_0xD6: // SELECT.PTR
             ESP_LOGD(TAG, "MEMORY.FILL: Filled %u bytes at addr %u with value %u", size, dest_addr, val);
 #endif
 #endif
-            goto interpreter_loop_start;
+            DISPATCH();
         }
         
         // --- НОВЫЕ ОПКОДЫ УПРАВЛЕНИЯ КУЧЕЙ ---
@@ -4992,14 +4725,14 @@ op_0xD6: // SELECT.PTR
             void* new_ptr = espb_heap_realloc(instance, old_ptr, new_size);
             SET_TYPE(locals[rd], ESPB_TYPE_PTR);
             V_PTR(locals[rd]) = new_ptr;
-            goto interpreter_loop_start;
+            DISPATCH();
         }
         case 0x07: { // HEAP_FREE Rp(u8)
             uint8_t rp = READ_U8();
             void* ptr = V_PTR(locals[rp]);
             espb_heap_free(instance, ptr);
             V_PTR(locals[rp]) = NULL;
-            goto interpreter_loop_start;
+            DISPATCH();
         }
         case 0x09: { // HEAP_CALLOC Rd(u8), Rn(u8), Rs(u8)
             uint8_t rd = READ_U8();
@@ -5019,7 +4752,7 @@ op_0xD6: // SELECT.PTR
             }
             SET_TYPE(locals[rd], ESPB_TYPE_PTR);
             V_PTR(locals[rd]) = ptr;
-            goto interpreter_loop_start;
+            DISPATCH();
         }
         case 0x0B: { // HEAP_MALLOC Rd(u8), Rs(u8)
             uint8_t rd = READ_U8();
@@ -5028,7 +4761,7 @@ op_0xD6: // SELECT.PTR
             void* ptr = espb_heap_malloc(instance, size);
             SET_TYPE(locals[rd], ESPB_TYPE_PTR);
             V_PTR(locals[rd]) = ptr;
-            goto interpreter_loop_start;
+            DISPATCH();
         }
         
         // --- TABLE ОПКОДЫ ---
@@ -5115,7 +4848,7 @@ op_0xD6: // SELECT.PTR
             ESP_LOGD(TAG, "TABLE.INIT: Successfully copied %u indices from element segment %u to table %u",
                      size, elem_seg_idx, table_idx);
 #endif
-            goto interpreter_loop_start;
+            DISPATCH();
         }
         
         case 0x08: { // TABLE.SIZE Rd(u8), table_idx(u8)
@@ -5136,7 +4869,7 @@ op_0xD6: // SELECT.PTR
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
             ESP_LOGD(TAG, "TABLE.SIZE R%u <- table[%u].size = %" PRIu32, rd, table_idx, size);
 #endif
-            goto interpreter_loop_start;
+            DISPATCH();
         }
         
         case 0x16: { // TABLE.COPY tableD(u8), tableS(u8), Rd(u8), Rs(u8), Rn(u8)
@@ -5195,7 +4928,7 @@ op_0xD6: // SELECT.PTR
             ESP_LOGD(TAG, "TABLE.COPY: Copied %u elements from table %u (offset %u) to table %u (offset %u)",
                 size, table_src_idx, src_offset, table_dest_idx, dest_offset);
 #endif
-            goto interpreter_loop_start;
+            DISPATCH();
         }
         
         case 0x17: { // TABLE.FILL table_idx(u8), Rd(u8), Rval(u8), Rn(u8)
@@ -5247,7 +4980,7 @@ op_0xD6: // SELECT.PTR
             ESP_LOGD(TAG, "TABLE.FILL: Filled %u elements in table %u at offset %u with value %p",
                 size, table_idx, dest_offset, fill_val);
 #endif
-            goto interpreter_loop_start;
+            DISPATCH();
         }
         
         case 0x18: { // TABLE.GET Rd(u8), table_idx(u8), Rs(u8)
@@ -5277,7 +5010,7 @@ op_0xD6: // SELECT.PTR
             ESP_LOGD(TAG, "TABLE.GET: R%u = table[%u][%u] = %p",
                      rd_dest, table_idx, index, V_PTR(locals[rd_dest]));
 #endif
-            goto interpreter_loop_start;
+            DISPATCH();
         }
         
         case 0x19: { // TABLE.SET table_idx(u8), Rd(u8), Rval(u8)
@@ -5332,16 +5065,16 @@ op_0xD6: // SELECT.PTR
             ESP_LOGD(TAG, "TABLE.SET: table[%u][%u] = 0x%x",
                      table_idx, index, V_I32(locals[rval]));
 #endif
-            goto interpreter_loop_start;
+            DISPATCH();
         }
         // --- КОНЕЦ TABLE ОПКОДОВ ---
 
         default:
-            ESP_LOGE(TAG, "Unknown extended opcode 0xFC 0x%02X at pc=%ld", extended_opcode, pos);
+            ESP_LOGE(TAG, "Unknown extended opcode 0xFC 0x%02X at pc=%ld", extended_opcode, (long)(pc - 1 - instructions_ptr));
             // REFACTOR_REMOVED: // REMOVED_free_locals
             return ESPB_ERR_UNKNOWN_OPCODE;
     }
-    goto interpreter_loop_start;
+    DISPATCH();
 }
 
                 // Опкоды 0x0C-0x0E зарезервированы в спецификации ESPB v1.7

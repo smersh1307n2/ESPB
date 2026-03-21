@@ -560,14 +560,25 @@ typedef union __attribute__((aligned(8))) {
 // Макросы для прямого доступа к полям Value
 #define V_I32(val) ((val).i32)
 #define V_I64(val) ((val).i64)
+#define V_U32(val) ((val).u32)
+#define V_U64(val) ((val).u64)
 #define V_F32(val) ((val).f32)
 #define V_F64(val) ((val).f64)
 #define V_PTR(val) ((val).ptr)
 #define V_RAW(val) ((val).raw)
 
-// Заглушки для старого кода (чтобы не ломать логику, если она осталась)
-#define SET_TYPE(val, t) do { } while(0)
+// Макросы для проверки типов (активны только в debug режиме)
+#ifdef CONFIG_ESPB_DEBUG_CHECKS
+// В debug режиме: SET_TYPE ничего не делает (тип определяется по используемому полю)
+// CHECK_TYPE всегда возвращает true, так как тип определяется контекстом операции
+// Для полноценной проверки типов нужно добавить отдельное поле type в Value union
+#define SET_TYPE(val, t) do { (void)(t); } while(0)
 #define CHECK_TYPE(val, t) (true)
+#else
+// В релизе: все проверки отключены (нулевой overhead)
+#define SET_TYPE(val, t) ((void)0)
+#define CHECK_TYPE(val, t) (true)
+#endif
 
 // Представление кадра вызова функции в стеке вызовов
 // РЕФАКТОРИНГ: Упрощенная структура для единого виртуального стека
