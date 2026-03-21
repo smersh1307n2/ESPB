@@ -36,6 +36,8 @@
 #include "espb_callback_system.h" // Добавлена система callback'ов
 #include "espb_runtime_oc_debug.h"
 
+//#define CONFIG_IDF_TARGET_ARCH_RISCV
+
 // If OC debug is disabled, compile-out ALL ESP_LOGD in this translation unit.
 // This guarantees zero benchmark impact even if LOG_LOCAL_LEVEL is DEBUG.
 #if !ESPB_RUNTIME_OC_DEBUG
@@ -1032,7 +1034,11 @@ EspbResult espb_call_function(EspbInstance *instance, ExecutionContext *exec_ctx
         }
         
 // `locals` теперь просто указатель на текущую позицию в `shadow_stack_buffer`
+#if defined(CONFIG_IDF_TARGET_ARCH_RISCV) || defined(__riscv)
         register Value *locals asm("s0") = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->sp);
+#else
+        Value *locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->sp);
+#endif
 
         // Обнуляем выделенный кадр
         memset(locals, 0, frame_size_bytes);
@@ -1054,10 +1060,17 @@ EspbResult espb_call_function(EspbInstance *instance, ExecutionContext *exec_ctx
             }
         }
         
-register const uint8_t *pc asm("s1") = instructions_ptr;
-    bool end_reached = false;
-    int return_register = 0;
-    register uint8_t opcode asm("s2") = 0;
+#if defined(CONFIG_IDF_TARGET_ARCH_RISCV)
+        register const uint8_t *pc asm("s1") = instructions_ptr;
+        bool end_reached = false;
+        int return_register = 0;
+        register uint8_t opcode asm("s2") = 0;
+#else
+        const uint8_t *pc = instructions_ptr;
+        bool end_reached = false;
+        int return_register = 0;
+        uint8_t opcode = 0;
+#endif
         
       //  uint32_t instruction_count = 0;
       //  TickType_t last_yield_time = xTaskGetTickCount();
