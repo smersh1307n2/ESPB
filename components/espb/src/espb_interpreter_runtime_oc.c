@@ -833,8 +833,8 @@ static void init_callback_system_for_context(ExecutionContext *ctx, const EspbMo
 
 
 // Функции для работы со стеком вызовов (новая, упрощенная реализация)
-static EspbResult push_call_frame(ExecutionContext *ctx, int return_pc, size_t saved_fp, uint32_t caller_local_func_idx, Value* frame_to_save, size_t num_regs_to_save) {
-    if (ctx->call_stack_top >= CALL_STACK_SIZE) {
+static inline EspbResult push_call_frame(ExecutionContext *ctx, int return_pc, size_t saved_fp, uint32_t caller_local_func_idx, Value* frame_to_save, size_t num_regs_to_save) {
+    if (__builtin_expect(ctx->call_stack_top >= CALL_STACK_SIZE, 0)) {
         ESP_LOGE(TAG, "Call stack overflow");
         return ESPB_ERR_STACK_OVERFLOW;
     }
@@ -853,8 +853,8 @@ static EspbResult push_call_frame(ExecutionContext *ctx, int return_pc, size_t s
     return ESPB_OK;
 }
 
-static EspbResult pop_call_frame(ExecutionContext *ctx, int* return_pc, size_t* saved_fp, uint32_t* caller_local_func_idx, Value** saved_frame_ptr, size_t* num_regs_saved_ptr) {
-    if (ctx->call_stack_top <= 0) {
+static inline EspbResult pop_call_frame(ExecutionContext *ctx, int* return_pc, size_t* saved_fp, uint32_t* caller_local_func_idx, Value** saved_frame_ptr, size_t* num_regs_saved_ptr) {
+    if (__builtin_expect(ctx->call_stack_top <= 0, 0)) {
         ESP_LOGE(TAG, "Call stack underflow");
         return ESPB_ERR_STACK_UNDERFLOW;
     }
@@ -1034,11 +1034,11 @@ EspbResult espb_call_function(EspbInstance *instance, ExecutionContext *exec_ctx
         }
         
 // `locals` теперь просто указатель на текущую позицию в `shadow_stack_buffer`
-#if defined(CONFIG_IDF_TARGET_ARCH_RISCV) || defined(__riscv)
-        register Value *locals asm("s0") = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->sp);
-#else
-        Value *locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->sp);
-#endif
+//#if defined(CONFIG_IDF_TARGET_ARCH_RISCV) || defined(__riscv)
+//        register Value *locals asm("s0") = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->sp);
+//#else
+        register Value *locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->sp);
+//#endif
 
         // Обнуляем выделенный кадр
         memset(locals, 0, frame_size_bytes);
@@ -1060,17 +1060,17 @@ EspbResult espb_call_function(EspbInstance *instance, ExecutionContext *exec_ctx
             }
         }
         
-#if defined(CONFIG_IDF_TARGET_ARCH_RISCV)
-        register const uint8_t *pc asm("s1") = instructions_ptr;
-        bool end_reached = false;
-        int return_register = 0;
-        register uint8_t opcode asm("s2") = 0;
-#else
-        const uint8_t *pc = instructions_ptr;
+//#if defined(CONFIG_IDF_TARGET_ARCH_RISCV)
+//        register const uint8_t *pc asm("s1") = instructions_ptr;
+//        bool end_reached = false;
+//        int return_register = 0;
+//        register uint8_t opcode asm("s2") = 0;
+//#else
+        register const uint8_t *pc = instructions_ptr;
         bool end_reached = false;
         int return_register = 0;
         uint8_t opcode = 0;
-#endif
+//#endif
         
       //  uint32_t instruction_count = 0;
       //  TickType_t last_yield_time = xTaskGetTickCount();
@@ -1321,8 +1321,7 @@ EspbResult espb_call_function(EspbInstance *instance, ExecutionContext *exec_ctx
         if (!(pc < instructions_end_ptr)) { \
             goto interpreter_loop_end; \
         } \
-        opcode = *pc++; \
-        goto *dispatch_table[opcode]; \
+        goto *dispatch_table[*pc++]; \
     } while(0)
 
     DISPATCH_CHECK();
@@ -1678,11 +1677,11 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                     ESPB_OP_LOG("BR offset %d", offset);
                     DISPATCH();
                 }
-         op_0x03: { // BR_IF reg(u8), offset(i16)
+          op_0x03: { // BR_IF reg(u8), offset(i16)
               uint8_t cond_reg = *pc++;
               int16_t offset = *(int16_t*)pc;
               pc += 2;
-              if (V_I32(locals[cond_reg]) != 0) {
+              if (__builtin_expect(V_I32(locals[cond_reg]) != 0, 0)) {
                   pc = (pc - 4) + offset;
               }
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
@@ -1702,22 +1701,21 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                  DISPATCH();
              }
                 
-                op_0x8F: { // ALLOCA Rd(u8), Rs(u8), align(u8) - NEW HEAP-BASED IMPLEMENTATION
-                    uint8_t rd_alloc = READ_U8();
-                    uint8_t rs_alloc_size_reg = READ_U8();
-                    uint8_t align = READ_U8();
+                 op_0x8F: { // ALLOCA Rd(u8), Rs(u8), align(u8) - NEW HEAP-BASED IMPLEMENTATION
+                     uint8_t rd_alloc = READ_U8();
+                     uint8_t rs_alloc_size_reg = READ_U8();
+                     uint8_t align = READ_U8();
 
-                    // Проверки валидности регистров
-                    DEBUG_CHECK_REG(rs_alloc_size_reg, max_reg_used, "HEAP_ALLOC");
-                    if (0) { // Unreachable after debug check
-                        ESP_LOGE(TAG, "ALLOCA - Size register R%u out of bounds", rs_alloc_size_reg);
-                        return ESPB_ERR_INVALID_REGISTER_INDEX;
-                    }
-                    DEBUG_CHECK_REG(rd_alloc, max_reg_used, "HEAP_ALLOC");
-                    if (0) { // Unreachable after debug check
-                        ESP_LOGE(TAG, "ALLOCA - Dest register R%u out of bounds", rd_alloc);
-                        return ESPB_ERR_INVALID_REGISTER_INDEX;
-                    }
+                     DEBUG_CHECK_REG(rs_alloc_size_reg, max_reg_used, "HEAP_ALLOC");
+                     if (0) {
+                         ESP_LOGE(TAG, "ALLOCA - Size register R%u out of bounds", rs_alloc_size_reg);
+                         return ESPB_ERR_INVALID_REGISTER_INDEX;
+                     }
+                     DEBUG_CHECK_REG(rd_alloc, max_reg_used, "HEAP_ALLOC");
+                     if (0) {
+                         ESP_LOGE(TAG, "ALLOCA - Dest register R%u out of bounds", rd_alloc);
+                         return ESPB_ERR_INVALID_REGISTER_INDEX;
+                     }
 
                     // Корректировка выравнивания
                     if (align == 0 || (align & (align - 1)) != 0) {
@@ -1950,7 +1948,7 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                         memset(callee_locals, 0, callee_frame_size);
                     }
                     for (uint32_t i = 0; i < num_args_to_copy; i++) {
-                        if(i < callee_body->header.num_virtual_regs) callee_locals[i] = temp_args[i];
+                        callee_locals[i] = temp_args[i];
                     }
 
                     local_func_idx = local_func_idx_to_call;
@@ -2493,11 +2491,9 @@ op_0x32: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I64(locals[rd])=V_I64(locals[r1
                     int64_t dividend = V_I64(locals[r1]);
                     int64_t divisor = V_I64(locals[r2]);
                     if (divisor == 0) {
-                        // REFACTOR: // REFACTOR_REMOVED: // REMOVED_free_locals removed to prevent double free
                         return ESPB_ERR_RUNTIME_TRAP_DIV_BY_ZERO;
                     }
                     if (dividend == INT64_MIN && divisor == -1) {
-                        // REFACTOR: // REFACTOR_REMOVED: // REMOVED_free_locals removed to prevent double free
                         return ESPB_ERR_RUNTIME_TRAP_INTEGER_OVERFLOW;
                     }
                     SET_TYPE(locals[rd], ESPB_TYPE_I64);
@@ -2515,7 +2511,6 @@ op_0x32: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I64(locals[rd])=V_I64(locals[r1
                     uint64_t udividend = (uint64_t)V_I64(locals[r1]);
                     uint64_t udivisor = (uint64_t)V_I64(locals[r2]);
                     if (udivisor == 0) {
-                        // REFACTOR: // REFACTOR_REMOVED: // REMOVED_free_locals removed to prevent double free
                         return ESPB_ERR_RUNTIME_TRAP_DIV_BY_ZERO;
                     }
                     SET_TYPE(locals[rd], ESPB_TYPE_U64);
@@ -2533,11 +2528,9 @@ op_0x32: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I64(locals[rd])=V_I64(locals[r1
                     int64_t dividend_r = V_I64(locals[r1]);
                     int64_t divisor_r = V_I64(locals[r2]);
                     if (divisor_r == 0) {
-                        // REFACTOR: // REFACTOR_REMOVED: // REMOVED_free_locals removed to prevent double free
                         return ESPB_ERR_RUNTIME_TRAP_DIV_BY_ZERO;
                     }
                     if (dividend_r == INT64_MIN && divisor_r == -1) {
-                        // REFACTOR: // REFACTOR_REMOVED: // REMOVED_free_locals removed to prevent double free
                         return ESPB_ERR_RUNTIME_TRAP_INTEGER_OVERFLOW;
                     }
                     SET_TYPE(locals[rd], ESPB_TYPE_I64);
@@ -2555,7 +2548,6 @@ op_0x32: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I64(locals[rd])=V_I64(locals[r1
                     uint64_t udividend_r = (uint64_t)V_I64(locals[r1]);
                     uint64_t udivisor_r = (uint64_t)V_I64(locals[r2]);
                     if (udivisor_r == 0) {
-                        // REFACTOR: // REFACTOR_REMOVED: // REMOVED_free_locals removed to prevent double free
                         return ESPB_ERR_RUNTIME_TRAP_DIV_BY_ZERO;
                     }
                     SET_TYPE(locals[rd], ESPB_TYPE_U64);
@@ -2813,11 +2805,11 @@ op_0x3E: { // NOT.I64 (unary)
                     uint32_t mem_size = instance->memory_size_bytes;
                     uintptr_t ra_addr = (uintptr_t)V_PTR(locals[ra]);
                     uintptr_t base_addr = (uintptr_t)base;
-                    if (ra_addr < base_addr) { // REFACTOR: // REFACTOR_REMOVED: // REMOVED_free_locals removed to prevent double free
+                    if (ra_addr < base_addr) {
                         return ESPB_ERR_MEMORY_ACCESS_OUT_OF_BOUNDS; }
                     uint32_t ra_offset = (uint32_t)(ra_addr - base_addr);
                     int64_t target_signed = (int64_t)ra_offset + offset;
-                    if (target_signed < 0 || (uint64_t)target_signed + sizeof(int64_t) > mem_size) { // REFACTOR: // REFACTOR_REMOVED: // REMOVED_free_locals removed to prevent double free
+                    if (target_signed < 0 || (uint64_t)target_signed + sizeof(int64_t) > mem_size) {
                         return ESPB_ERR_MEMORY_ACCESS_OUT_OF_BOUNDS; }
                     uint32_t target = (uint32_t)target_signed;
                     
@@ -4285,12 +4277,10 @@ op_0xD6: // SELECT.PTR
                     uintptr_t base_addr = (uintptr_t)base;
 
                     if (ra_addr >= base_addr && ra_addr < base_addr + mem_size) {
-                        // Standard case: Ra points into ESPB memory.
                         uint32_t ra_off = (uint32_t)(ra_addr - base_addr);
                         int64_t tgt = (int64_t)ra_off + offset;
                         if (tgt < 0 || (uint64_t)tgt + sizeof(int32_t) > mem_size) {
                             ESP_LOGE(TAG, "LOAD.I32 - Address out of bounds: base=0x%x offset=0x%x", (unsigned int)ra_off, (unsigned int)offset);
-                            // REFACTOR: // REFACTOR_REMOVED: // REMOVED_free_locals removed to prevent double free
                         return ESPB_ERR_MEMORY_ACCESS_OUT_OF_BOUNDS;
                         }
                         uint32_t target = (uint32_t)tgt;
