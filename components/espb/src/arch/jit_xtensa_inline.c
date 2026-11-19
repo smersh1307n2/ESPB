@@ -7269,9 +7269,9 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Call helper: espb_runtime_alloca(instance, exec_ctx, regs, num_vregs, rd, rs_size, align)
                 // NOTE: current JIT entrypoint signature doesn't provide ExecutionContext, so we pass NULL.
 
-                // a10 = instance
-                emit_l32i(&ctx, 8, 1, 4);
-                emit_mov_n(&ctx, 10, 8);
+                // a10 = instance. Load directly into the ABI argument register;
+                // the previous a8 + MOV.N sequence emitted two instructions.
+                emit_l32i(&ctx, 10, 1, 4);
 
                 // a11 = exec_ctx (NULL)
                 emit_movi_n(&ctx, 11, 0);
