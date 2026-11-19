@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include "espb_api.h"
+#include "esp_timer.h"
 #include <esp_log.h>
 #include "espb_host_symbols.h"
 
@@ -98,7 +99,10 @@ extern "C" void app_main(void)
         ESPB_PTR(NULL)
     };
 
+    const int64_t benchmark_start_us = esp_timer_get_time();
     result = espb_call_function_sync(espb_handle, "app_main", args, 3, NULL);
+    const int64_t benchmark_elapsed_us = esp_timer_get_time() - benchmark_start_us;
+    printf("[ESPB_BENCH] app_main_elapsed_us=%lld\\n", (long long)benchmark_elapsed_us);
     if (result != ESPB_OK) {
         printf("Failed to call 'app_main', error: %d\n", result);
         espb_unload_module(espb_handle);
