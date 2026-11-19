@@ -3218,10 +3218,18 @@ EspbResult espb_jit_compile_function_xtensa_inline(
     uint8_t last_op = 0x00;
     size_t last_off = 0;
 
+    // Compile-time per-opcode accounting. This measures which bytecode
+    // operations cause vreg memory traffic without touching generated code.
+    uint16_t opcode_count[256] = {0};
+    uint16_t opcode_loads[256] = {0};
+    uint16_t opcode_stores[256] = {0};
+
     while (pc < end && !ctx.error) {
         last_op = *pc;
         last_off = (size_t)(pc - start);
         uint8_t op = *pc++;
+        const uint32_t op_loads_before = ctx.emitted_loads;
+        const uint32_t op_stores_before = ctx.emitted_stores;
 
         // NOTE: Alignment disabled for performance. Xtensa can execute unaligned 2/3-byte instructions.
         // emit_align4_with_nops(&ctx);
@@ -8253,6 +8261,14 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 ctx.error = true;
                 break;
         }
+
+        if (opcode_count[op] != UINT16_MAX) opcode_count[op]++;
+        uint32_t load_delta = ctx.emitted_loads - op_loads_before;
+        uint32_t store_delta = ctx.emitted_stores - op_stores_before;
+        uint32_t next_loads = (uint32_t)opcode_loads[op] + load_delta;
+        uint32_t next_stores = (uint32_t)opcode_stores[op] + store_delta;
+        opcode_loads[op] = (uint16_t)(next_loads > UINT16_MAX ? UINT16_MAX : next_loads);
+        opcode_stores[op] = (uint16_t)(next_stores > UINT16_MAX ? UINT16_MAX : next_stores);
     }
 
     // Ensure all bytes are committed before final fixups
@@ -8395,6 +8411,16 @@ EspbResult espb_jit_compile_function_xtensa_inline(
     ESP_LOGI(TAG, "[jit-codegen] func=%u code_bytes=%u l32i=%u s32i=%u",
              (unsigned)func_idx, (unsigned)ctx.offset,
              (unsigned)ctx.emitted_loads, (unsigned)ctx.emitted_stores);
+    for (uint32_t opcode = 0; opcode < 256; ++opcode) {
+        if (opcode_count[opcode] != 0 &&
+            (opcode_loads[opcode] != 0 || opcode_stores[opcode] != 0)) {
+            ESP_LOGI(TAG, "[jit-opstat] func=%u op=0x%02X count=%u l32i=%u s32i=%u",
+                     (unsigned)func_idx, (unsigned)opcode,
+                     (unsigned)opcode_count[opcode],
+                     (unsigned)opcode_loads[opcode],
+                     (unsigned)opcode_stores[opcode]);
+        }
+    }
 
     *out_code = buffer;
     *out_size = ctx.offset;
