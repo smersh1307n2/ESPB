@@ -67,14 +67,19 @@ jobs:
           # Require five numeric samples and one numeric median; a completion
           # marker alone must not turn an incomplete benchmark into a pass.
           for sample in 0 1 2 3 4; do
-            if ! grep -Eq "\\[ESPB_BENCH\\] sample_${sample}_us=[1-9][0-9]*([[:space:]]|\\\\n|$)" qemu.log; then
+            if ! grep -Eq "\\[ESPB_BENCH\\] sample_${sample}_us=[1-9][0-9]* cycles_start=[0-9]+ cycles_end=[0-9]+ cycles_delta=[1-9][0-9]*$" qemu.log; then
               echo "Missing or invalid benchmark sample ${sample}"
               exit 1
             fi
           done
           median_count=$(grep -Ec "\\[ESPB_BENCH\\] app_main_median_us=[1-9][0-9]*([[:space:]]|$)" qemu.log || true)
           if [ "$median_count" -ne 1 ]; then
-            echo "Expected exactly one numeric benchmark median, found $median_count"
+            echo "Expected exactly one numeric microsecond median, found $median_count"
+            exit 1
+          fi
+          cycle_median_count=$(grep -Ec "\\[ESPB_BENCH\\] app_main_median_cycles=[1-9][0-9]*$" qemu.log || true)
+          if [ "$cycle_median_count" -ne 1 ]; then
+            echo "Expected exactly one numeric cycle median, found $cycle_median_count"
             exit 1
           fi
 
