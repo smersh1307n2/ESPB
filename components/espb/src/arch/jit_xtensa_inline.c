@@ -3984,7 +3984,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     emit_mov_n(&ctx, 9, 8);
                 } else {
                     emit_l32i(&ctx, 9, 11, (uint16_t)(rs2 * 8));
-                } (shift amount)
+                }
                 
                 // Xtensa variable shift uses a two-step sequence:
                 //   1) set shift amount register via SSL/SSR
