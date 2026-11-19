@@ -62,3 +62,5 @@ jobs:
           fi
 
           grep -F -- "--- ESPB API Demo Finished ---" qemu.log
+
+# Push-triggered smoke test; kept isolated on the experiment branch.
