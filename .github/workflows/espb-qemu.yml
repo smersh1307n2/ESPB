@@ -1,0 +1,64 @@
+name: ESPB QEMU smoke tests
+
+on:
+  push:
+    branches:
+      - experiment/qemu-esp32-runtime-tests
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qemu-smoke:
+    name: QEMU / ${{ matrix.target }}
+    runs-on: ubuntu-22.04
+    container:
+      image: espressif/idf:v5.4.1
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - esp32
+          - esp32c3
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Espressif QEMU
+        shell: bash
+        run: |
+          python "$IDF_PATH/tools/idf_tools.py" install qemu-xtensa qemu-riscv32
+          . "$IDF_PATH/export.sh"
+          qemu-system-xtensa --version
+          qemu-system-riscv32 --version
+
+      - name: Build ESPB firmware
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          idf.py set-target "${{ matrix.target }}"
+          idf.py build
+
+      - name: Run ESPB firmware in QEMU
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          set +e
+          timeout --signal=INT --kill-after=5s 45s idf.py qemu > qemu.log 2>&1
+          qemu_status=$?
+          set -e
+          cat qemu.log
+
+          # The demo firmware is expected to keep the FreeRTOS scheduler alive.
+          # A timeout is therefore normal; the UART completion marker is the test.
+          if [ "$qemu_status" -ne 0 ] && [ "$qemu_status" -ne 124 ] && [ "$qemu_status" -ne 130 ]; then
+            echo "QEMU exited unexpectedly: $qemu_status"
+            exit "$qemu_status"
+          fi
+
+          grep -F -- "--- ESPB API Demo Finished ---" qemu.log
