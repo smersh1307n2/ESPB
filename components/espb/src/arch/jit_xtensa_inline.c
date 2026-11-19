@@ -3800,7 +3800,12 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 
                 // Load rs1 into a8, rs2 into a9
                 emit_l32i(&ctx, 8, 11, (uint16_t)(rs1 * 8));   // a8 = v_regs[rs1].i32
-                emit_l32i(&ctx, 9, 11, (uint16_t)(rs2 * 8));   // a9 = v_regs[rs2].i32
+                if (rs1 == rs2) {
+                    // Reuse the already loaded value instead of issuing a second vreg load.
+                    emit_mov_n(&ctx, 9, 8);
+                } else {
+                    emit_l32i(&ctx, 9, 11, (uint16_t)(rs2 * 8));
+                }
                 
                 switch (op) {
                     case 0x20: // ADD.I32: a8 = a8 + a9
@@ -3897,7 +3902,12 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 
                 // Load rs1 into a8, rs2 into a9
                 emit_l32i(&ctx, 8, 11, (uint16_t)(rs1 * 8));   // a8 = v_regs[rs1].i32
-                emit_l32i(&ctx, 9, 11, (uint16_t)(rs2 * 8));   // a9 = v_regs[rs2].i32
+                if (rs1 == rs2) {
+                    // Reuse the already loaded value instead of issuing a second vreg load.
+                    emit_mov_n(&ctx, 9, 8);
+                } else {
+                    emit_l32i(&ctx, 9, 11, (uint16_t)(rs2 * 8));
+                }
                 
                 // Xtensa bitwise instructions (3 bytes each):
                 // Format: RST with op2 field
@@ -3969,7 +3979,12 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 
                 // Load rs1 (value to shift) into a8, rs2 (shift amount) into a9
                 emit_l32i(&ctx, 8, 11, (uint16_t)(rs1 * 8));   // a8 = v_regs[rs1].i32
-                emit_l32i(&ctx, 9, 11, (uint16_t)(rs2 * 8));   // a9 = v_regs[rs2].i32 (shift amount)
+                if (rs1 == rs2) {
+                    // Reuse the already loaded value instead of issuing a second vreg load.
+                    emit_mov_n(&ctx, 9, 8);
+                } else {
+                    emit_l32i(&ctx, 9, 11, (uint16_t)(rs2 * 8));
+                } (shift amount)
                 
                 // Xtensa variable shift uses a two-step sequence:
                 //   1) set shift amount register via SSL/SSR
