@@ -103,6 +103,15 @@ extern "C" void app_main(void)
     // Measure the same export repeatedly on one loaded module. Cycle
     // counters are read immediately around the call; UART output stays outside.
     enum { ESPB_BENCH_SAMPLES = 5 };
+
+    // Warm the interpreter/JIT once; exclude this first call from statistics.
+    result = espb_call_function_sync(espb_handle, "app_main", args, 3, NULL);
+    if (result != ESPB_OK) {
+        printf("Warmup call failed, error: %d\\n", result);
+        espb_unload_module(espb_handle);
+        return;
+    }
+
     int64_t benchmark_samples_us[ESPB_BENCH_SAMPLES];
     uint32_t benchmark_cycles_start[ESPB_BENCH_SAMPLES];
     uint32_t benchmark_cycles_end[ESPB_BENCH_SAMPLES];
