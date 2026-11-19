@@ -117,7 +117,7 @@ extern "C" void app_main(void)
             benchmark_cycles_end[i] - benchmark_cycles_start[i];
         benchmark_samples_us[i] = esp_timer_get_time() - benchmark_start_us;
 
-        printf("[ESPB_BENCH] sample_%d_cycles_start=%u cycles_end=%u cycles_delta=%u us=%lld\\n",
+        printf("[ESPB_BENCH] sample_%d_cycles_start=%u cycles_end=%u cycles_delta=%u us=%lld\n",
                i,
                (unsigned)benchmark_cycles_start[i],
                (unsigned)benchmark_cycles_end[i],
@@ -125,7 +125,7 @@ extern "C" void app_main(void)
                (long long)benchmark_samples_us[i]);
 
         if (result != ESPB_OK) {
-            printf("Failed to call 'app_main', error: %d\\n", result);
+            printf("Failed to call 'app_main', error: %d\n", result);
             espb_unload_module(espb_handle);
             return;
         }
@@ -141,7 +141,7 @@ extern "C" void app_main(void)
         }
         benchmark_samples_cycles[j] = value;
     }
-    printf("[ESPB_BENCH] app_main_median_cycles=%u\\n",
+    printf("[ESPB_BENCH] app_main_median_cycles=%u\n",
            (unsigned)benchmark_samples_cycles[ESPB_BENCH_SAMPLES / 2]);
 
     // The embedded test.espb exports app_main; it does not export a
