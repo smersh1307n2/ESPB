@@ -117,12 +117,12 @@ extern "C" void app_main(void)
             benchmark_cycles_end[i] - benchmark_cycles_start[i];
         benchmark_samples_us[i] = esp_timer_get_time() - benchmark_start_us;
 
-        printf("[ESPB_BENCH] sample_%d_cycles_start=%u cycles_end=%u cycles_delta=%u us=%lld\n",
+        printf("[ESPB_BENCH] sample_%d_us=%lld cycles_start=%u cycles_end=%u cycles_delta=%u\n",
                i,
+               (long long)benchmark_samples_us[i],
                (unsigned)benchmark_cycles_start[i],
                (unsigned)benchmark_cycles_end[i],
-               (unsigned)benchmark_samples_cycles[i],
-               (long long)benchmark_samples_us[i]);
+               (unsigned)benchmark_samples_cycles[i]);
 
         if (result != ESPB_OK) {
             printf("Failed to call 'app_main', error: %d\n", result);
@@ -141,8 +141,21 @@ extern "C" void app_main(void)
         }
         benchmark_samples_cycles[j] = value;
     }
-    printf("[ESPB_BENCH] app_main_median_cycles=%u\n",
+    printf("[ESPB_BENCH] app_main_median_cycles=%u\\n",
            (unsigned)benchmark_samples_cycles[ESPB_BENCH_SAMPLES / 2]);
+
+    // Keep the microsecond median for side-by-side comparison with prior runs.
+    for (int i = 1; i < ESPB_BENCH_SAMPLES; ++i) {
+        const int64_t value = benchmark_samples_us[i];
+        int j = i;
+        while (j > 0 && benchmark_samples_us[j - 1] > value) {
+            benchmark_samples_us[j] = benchmark_samples_us[j - 1];
+            --j;
+        }
+        benchmark_samples_us[j] = value;
+    }
+    printf("[ESPB_BENCH] app_main_median_us=%lld\\n",
+           (long long)benchmark_samples_us[ESPB_BENCH_SAMPLES / 2]);
 
     // The embedded test.espb exports app_main; it does not export a
     // separate "test" function. Keep the smoke test aligned with the
