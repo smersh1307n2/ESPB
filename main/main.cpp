@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include "espb_api.h"
 #include "esp_timer.h"
+#include "esp_cpu.h"
 #include <esp_log.h>
 #include "espb_host_symbols.h"
 
@@ -99,15 +100,30 @@ extern "C" void app_main(void)
         ESPB_PTR(NULL)
     };
 
-    // Repeat the same export on one loaded module. Keep all samples so
-    // startup/lazy effects can be separated from steady-state execution.
+    // Measure the same export repeatedly on one loaded module. Cycle
+    // counters are read immediately around the call; UART output stays outside.
     enum { ESPB_BENCH_SAMPLES = 5 };
-    int64_t benchmark_samples[ESPB_BENCH_SAMPLES];
+    int64_t benchmark_samples_us[ESPB_BENCH_SAMPLES];
+    uint32_t benchmark_cycles_start[ESPB_BENCH_SAMPLES];
+    uint32_t benchmark_cycles_end[ESPB_BENCH_SAMPLES];
+    uint32_t benchmark_samples_cycles[ESPB_BENCH_SAMPLES];
+
     for (int i = 0; i < ESPB_BENCH_SAMPLES; ++i) {
         const int64_t benchmark_start_us = esp_timer_get_time();
+        benchmark_cycles_start[i] = esp_cpu_get_cycle_count();
         result = espb_call_function_sync(espb_handle, "app_main", args, 3, NULL);
-        benchmark_samples[i] = esp_timer_get_time() - benchmark_start_us;
-        printf("[ESPB_BENCH] sample_%d_us=%lld\n", i, (long long)benchmark_samples[i]);
+        benchmark_cycles_end[i] = esp_cpu_get_cycle_count();
+        benchmark_samples_cycles[i] =
+            benchmark_cycles_end[i] - benchmark_cycles_start[i];
+        benchmark_samples_us[i] = esp_timer_get_time() - benchmark_start_us;
+
+        printf("[ESPB_BENCH] sample_%d_cycles_start=%u cycles_end=%u cycles_delta=%u us=%lld\\n",
+               i,
+               (unsigned)benchmark_cycles_start[i],
+               (unsigned)benchmark_cycles_end[i],
+               (unsigned)benchmark_samples_cycles[i],
+               (long long)benchmark_samples_us[i]);
+
         if (result != ESPB_OK) {
             printf("Failed to call 'app_main', error: %d\\n", result);
             espb_unload_module(espb_handle);
@@ -115,18 +131,18 @@ extern "C" void app_main(void)
         }
     }
 
-    // Five values: insertion sort is allocation-free and bounded.
+    // Sort cycle deltas in-place; bounded insertion sort uses no heap.
     for (int i = 1; i < ESPB_BENCH_SAMPLES; ++i) {
-        const int64_t value = benchmark_samples[i];
+        const uint32_t value = benchmark_samples_cycles[i];
         int j = i;
-        while (j > 0 && benchmark_samples[j - 1] > value) {
-            benchmark_samples[j] = benchmark_samples[j - 1];
+        while (j > 0 && benchmark_samples_cycles[j - 1] > value) {
+            benchmark_samples_cycles[j] = benchmark_samples_cycles[j - 1];
             --j;
         }
-        benchmark_samples[j] = value;
+        benchmark_samples_cycles[j] = value;
     }
-    printf("[ESPB_BENCH] app_main_median_us=%lld\n",
-           (long long)benchmark_samples[ESPB_BENCH_SAMPLES / 2]);
+    printf("[ESPB_BENCH] app_main_median_cycles=%u\\n",
+           (unsigned)benchmark_samples_cycles[ESPB_BENCH_SAMPLES / 2]);
 
     // The embedded test.espb exports app_main; it does not export a
     // separate "test" function. Keep the smoke test aligned with the
