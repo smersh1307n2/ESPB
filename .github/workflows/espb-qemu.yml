@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - experiment/qemu-esp32-runtime-tests
-  pull_request:
-    branches:
-      - main
   workflow_dispatch:
 
 permissions:
@@ -61,6 +58,11 @@ jobs:
             exit "$qemu_status"
           fi
 
+          if grep -F -- "Failed to call" qemu.log; then
+            echo "ESPB API call failed"
+            exit 1
+          fi
+          grep -F -- "Result is CORRECT." qemu.log
           grep -F -- "--- ESPB API Demo Finished ---" qemu.log
 
 # Push-triggered smoke test; kept isolated on the experiment branch.
