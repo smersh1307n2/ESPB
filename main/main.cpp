@@ -101,28 +101,15 @@ extern "C" void app_main(void)
     result = espb_call_function_sync(espb_handle, "app_main", args, 3, NULL);
     if (result != ESPB_OK) {
         printf("Failed to call 'app_main', error: %d\n", result);
+        espb_unload_module(espb_handle);
+        return;
     }
 
-    printf("\nCalling 'test' with (int, double, char*)...\n");
-
-   //  double d=0;
-  //  printf("hi_hi %f",d);
-    ///*
-    Value args1[] = {
-        ESPB_I32(12345),           // Argument 1: int (32-bit)
-        ESPB_F64(3.1415926535),    // Argument 2: double (64-bit float)
-        ESPB_STRING("This is a test string!")  // Argument 3: char* (pointer)
-    };
-  
-    // Synchronous call to function "test" with 3 arguments
-    result = espb_call_function_sync(espb_handle, "test",(Value *) args1, 3, NULL);
-    if (result != ESPB_OK) {
-        printf("Failed to call 'test', error: %d\n", result);
-    }
-
+    // The embedded test.espb exports app_main; it does not export a
+    // separate "test" function. Keep the smoke test aligned with the
+    // module's actual public interface.
     espb_unload_module(espb_handle);
 
-    
     printf("\n--- ESPB API Demo Finished ---\n");
 }
 
