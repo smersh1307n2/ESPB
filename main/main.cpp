@@ -141,7 +141,7 @@ extern "C" void app_main(void)
         }
         benchmark_samples_cycles[j] = value;
     }
-    printf("[ESPB_BENCH] app_main_median_cycles=%u\\n",
+    printf("[ESPB_BENCH] app_main_median_cycles=%u\n",
            (unsigned)benchmark_samples_cycles[ESPB_BENCH_SAMPLES / 2]);
 
     // Keep the microsecond median for side-by-side comparison with prior runs.
@@ -154,7 +154,7 @@ extern "C" void app_main(void)
         }
         benchmark_samples_us[j] = value;
     }
-    printf("[ESPB_BENCH] app_main_median_us=%lld\\n",
+    printf("[ESPB_BENCH] app_main_median_us=%lld\n",
            (long long)benchmark_samples_us[ESPB_BENCH_SAMPLES / 2]);
 
     // The embedded test.espb exports app_main; it does not export a
