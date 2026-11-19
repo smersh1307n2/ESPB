@@ -1356,6 +1356,10 @@ typedef struct {
     uint32_t* bc_to_native;
     size_t current_bc_off;
     size_t code_size;
+
+    // Compile-time diagnostics only; these do not affect generated machine code.
+    uint32_t emitted_loads;
+    uint32_t emitted_stores;
 } XtensaJitContext;
 
 // ===== Low-level Xtensa Emitters =====
@@ -1543,6 +1547,7 @@ static void emit_l32i_raw(XtensaJitContext* ctx, uint8_t at, uint8_t as, uint16_
         uint8_t offw = (uint8_t)(offset_bytes / 4);
         emit_u8(ctx, 0x88);
         emit_u8(ctx, (uint8_t)(((offw & 0xF) << 4) | (as & 0xF)));
+        if (!ctx->error) ctx->emitted_loads++;
         return;
     }
 
@@ -1561,6 +1566,7 @@ static void emit_l32i_raw(XtensaJitContext* ctx, uint8_t at, uint8_t as, uint16_
             emit_u8(ctx, (uint8_t)(((at & 0xF) << 4) | 0x2u));
             emit_u8(ctx, (uint8_t)(0x20u | (as & 0xFu)));
             emit_u8(ctx, (uint8_t)offw);
+            if (!ctx->error) ctx->emitted_loads++;
             return;
         }
     }
@@ -1622,6 +1628,7 @@ static void emit_s32i_raw(XtensaJitContext* ctx, uint8_t at, uint8_t as, uint16_
         uint8_t offw = (uint8_t)(offset_bytes / 4);
         emit_u8(ctx, 0x89);
         emit_u8(ctx, (uint8_t)(((offw & 0xF) << 4) | (as & 0xF)));
+        if (!ctx->error) ctx->emitted_stores++;
         return;
     }
 
@@ -1636,6 +1643,7 @@ static void emit_s32i_raw(XtensaJitContext* ctx, uint8_t at, uint8_t as, uint16_
             emit_u8(ctx, (uint8_t)(((at & 0xF) << 4) | 0x2u));
             emit_u8(ctx, (uint8_t)(0x60u | (as & 0xFu)));
             emit_u8(ctx, (uint8_t)offw);
+            if (!ctx->error) ctx->emitted_stores++;
             return;
         }
     }
@@ -3122,7 +3130,9 @@ EspbResult espb_jit_compile_function_xtensa_inline(
         .word_fill = 0,
         .bc_to_native = NULL,  // Will be set later after bc_to_native allocation
         .current_bc_off = 0,
-        .code_size = code_size
+        .code_size = code_size,
+        .emitted_loads = 0,
+        .emitted_stores = 0
     };
 
     XtensaLiteralPool litpool = {0};
@@ -8381,6 +8391,10 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
     heap_caps_free(fixups);
     heap_caps_free(bc_to_native);
+
+    ESP_LOGI(TAG, "[jit-codegen] func=%u code_bytes=%u l32i=%u s32i=%u",
+             (unsigned)func_idx, (unsigned)ctx.offset,
+             (unsigned)ctx.emitted_loads, (unsigned)ctx.emitted_stores);
 
     *out_code = buffer;
     *out_size = ctx.offset;
