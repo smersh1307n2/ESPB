@@ -5057,8 +5057,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 if (ctx.error) break;
 
                 // a10 = v_regs
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 10, 8);
+                emit_l32i(&ctx, 10, 1, 8);
 
                 // a11 = rd
                 if (rd <= 15) emit_movi_n(&ctx, 11, (int8_t)rd);
@@ -5078,8 +5077,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 // Re-load v_regs and set up args (callee a2..a7 <= caller a10..a15)
                 // NOTE: a8 is used as scratch in this sequence, so load helper address into a8 *after* args are ready.
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 10, 8); // a10 = v_regs
+                emit_l32i(&ctx, 10, 1, 8); // a10 = v_regs
 
                 // a11 = rd
                 if (rd <= 15) emit_movi_n(&ctx, 11, (int8_t)rd);
@@ -5104,8 +5102,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_callx8_a8(&ctx);
 
                 // Restore a11 back to v_regs pointer (ABI for rest of JIT assumes a11=v_regs)
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 11, 8);
+                emit_l32i(&ctx, 11, 1, 8);
                 break;
             }
 
@@ -5796,8 +5793,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Call helper: espb_jit_xtensa_store_i32(v_regs, rs, ra, offset)
                 // Windowed ABI mapping: callee a2..a7 <= caller a10..a15
                 // a10 = v_regs
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 10, 8);
+                emit_l32i(&ctx, 10, 1, 8);
 
                 // a11 = rs
                 if (rs <= 15) emit_movi_n(&ctx, 11, (int8_t)rs);
@@ -5814,8 +5810,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_call_helper(&ctx, &litpool, (void*)&espb_jit_xtensa_store_i32);
 
                 // Restore a11 back to v_regs pointer (ABI for rest of JIT assumes a11=v_regs)
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 11, 8);
+                emit_l32i(&ctx, 11, 1, 8);
                 break;
             }
 
@@ -5857,8 +5852,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 }
 
                 // Unaligned -> same helper as STORE.I32
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 10, 8);
+                emit_l32i(&ctx, 10, 1, 8);
 
                 if (rs <= 15) emit_movi_n(&ctx, 11, (int8_t)rs);
                 else { emit_load_u32_to_a8(&ctx, &litpool, rs); emit_mov_n(&ctx, 11, 8); }
@@ -5871,8 +5865,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 emit_call_helper(&ctx, &litpool, (void*)&espb_jit_xtensa_store_i32);
 
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 11, 8);
+                emit_l32i(&ctx, 11, 1, 8);
                 break;
             }
 
@@ -5918,8 +5911,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 }
 
                 // Fallback to memcpy semantics via store_i64 helper
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 10, 8);
+                emit_l32i(&ctx, 10, 1, 8);
 
                 if (rs <= 15) emit_movi_n(&ctx, 11, (int8_t)rs);
                 else { emit_load_u32_to_a8(&ctx, &litpool, rs); emit_mov_n(&ctx, 11, 8); }
@@ -5932,8 +5924,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 emit_call_helper(&ctx, &litpool, (void*)&espb_jit_xtensa_store_i64);
 
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 11, 8);
+                emit_l32i(&ctx, 11, 1, 8);
                 break;
             }
 
@@ -6257,8 +6248,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Call helper: espb_jit_xtensa_store_i64(v_regs, rs, ra, offset)
                 // Windowed ABI mapping: callee a2..a7 <= caller a10..a15
                 // a10 = v_regs
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 10, 8);
+                emit_l32i(&ctx, 10, 1, 8);
 
                 // a11 = rs
                 if (rs <= 15) emit_movi_n(&ctx, 11, (int8_t)rs);
@@ -6275,8 +6265,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_call_helper(&ctx, &litpool, (void*)&espb_jit_xtensa_store_i64);
 
                 // Restore a11 back to v_regs pointer (ABI for rest of JIT assumes a11=v_regs)
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 11, 8);
+                emit_l32i(&ctx, 11, 1, 8);
                 break;
             }
 
@@ -6327,8 +6316,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Call helper: espb_jit_xtensa_load_i32(v_regs, rd, ra, offset)
                 // Windowed ABI mapping: callee a2..a7 <= caller a10..a15
                 // a10 = v_regs
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 10, 8);
+                emit_l32i(&ctx, 10, 1, 8);
 
                 // a11 = rd
                 if (rd <= 15) emit_movi_n(&ctx, 11, (int8_t)rd);
@@ -6345,8 +6333,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_call_helper(&ctx, &litpool, (void*)&espb_jit_xtensa_load_i32);
 
                 // Restore a11 back to v_regs pointer (ABI for rest of JIT assumes a11=v_regs)
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 11, 8);
+                emit_l32i(&ctx, 11, 1, 8);
                 break;
             }
 
@@ -6387,8 +6374,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 }
 
                 // Unaligned => reuse the same helper as LOAD.I32
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 10, 8);
+                emit_l32i(&ctx, 10, 1, 8);
 
                 if (rd <= 15) emit_movi_n(&ctx, 11, (int8_t)rd);
                 else { emit_load_u32_to_a8(&ctx, &litpool, rd); emit_mov_n(&ctx, 11, 8); }
@@ -6401,8 +6387,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 emit_call_helper(&ctx, &litpool, (void*)&espb_jit_xtensa_load_i32);
 
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 11, 8);
+                emit_l32i(&ctx, 11, 1, 8);
                 break;
             }
 
@@ -6453,8 +6438,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Call helper: espb_jit_xtensa_load_i64(v_regs, rd, ra, offset)
                 // Windowed ABI mapping: callee a2..a7 <= caller a10..a15
                 // a10 = v_regs
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 10, 8);
+                emit_l32i(&ctx, 10, 1, 8);
 
                 // a11 = rd
                 if (rd <= 15) emit_movi_n(&ctx, 11, (int8_t)rd);
@@ -6471,8 +6455,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_call_helper(&ctx, &litpool, (void*)&espb_jit_xtensa_load_i64);
 
                 // Restore a11 back to v_regs pointer (ABI for rest of JIT assumes a11=v_regs)
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 11, 8);
+                emit_l32i(&ctx, 11, 1, 8);
                 break;
             }
 
@@ -6514,8 +6497,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 }
 
                 // Unaligned -> reuse load_i64 helper (memcpy 8 bytes)
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 10, 8);
+                emit_l32i(&ctx, 10, 1, 8);
 
                 if (rd <= 15) emit_movi_n(&ctx, 11, (int8_t)rd);
                 else { emit_load_u32_to_a8(&ctx, &litpool, rd); emit_mov_n(&ctx, 11, 8); }
@@ -6528,8 +6510,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 emit_call_helper(&ctx, &litpool, (void*)&espb_jit_xtensa_load_i64);
 
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 11, 8);
+                emit_l32i(&ctx, 11, 1, 8);
                 break;
             }
 
@@ -6613,8 +6594,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Slow path: call helper for other I64 comparisons
                 // Windowed ABI mapping: callee a2..a7 <= caller a10..a15
                 // a10 = v_regs
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 10, 8);
+                emit_l32i(&ctx, 10, 1, 8);
 
                 // a11 = opcode (use l32r for values > 95 as movi.n has limited range -32..95)
                 if (op <= 95) {
@@ -6639,8 +6619,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_call_helper(&ctx, &litpool, (void*)&espb_jit_xtensa_cmp_i64);
 
                 // Restore a11 back to v_regs pointer
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 11, 8);
+                emit_l32i(&ctx, 11, 1, 8);
                 break;
             }
 
@@ -6751,8 +6730,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Helper copies full Value slot.
                 if (op == 0xD6) {
                     // a10 = v_regs
-                    emit_l32i(&ctx, 8, 1, 8);
-                    emit_mov_n(&ctx, 10, 8);
+                    emit_l32i(&ctx, 10, 1, 8);
 
                     // a11 = rd
                     if (rd <= 15) emit_movi_n(&ctx, 11, (int8_t)rd);
@@ -6775,8 +6753,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     emit_callx8_a8(&ctx);
 
                     // Restore a11 back to v_regs
-                    emit_l32i(&ctx, 8, 1, 8);
-                    emit_mov_n(&ctx, 11, 8);
+                    emit_l32i(&ctx, 11, 1, 8);
                     break;
                 }
 
@@ -6848,8 +6825,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_call_helper(&ctx, &litpool, (void*)&jit_call_espb_function_xtensa);
 
                 // Restore a11 back to v_regs pointer
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 11, 8);
+                emit_l32i(&ctx, 11, 1, 8);
                 break;
             }
 
@@ -7277,8 +7253,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_movi_n(&ctx, 11, 0);
 
                 // a12 = regs (v_regs)
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 12, 8);
+                emit_l32i(&ctx, 12, 1, 8);
 
                 // a13 = effective_vregs = max(num_vregs, rd+1, rs_size+1)
                 // Необходимо т.к. LLVM может генерировать регистры выше num_virtual_regs из заголовка.
@@ -7350,16 +7325,14 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // espb_jit_call_import(instance, import_idx, v_regs, num_vregs, has_var, num_args, arg_types_ptr)
 
                 // a10 = instance
-                emit_l32i(&ctx, 8, 1, 4);
-                emit_mov_n(&ctx, 10, 8);
+                emit_l32i(&ctx, 10, 1, 4);
 
                 // a11 = import_idx
                 if (import_idx <= 15) emit_movi_n(&ctx, 11, (int8_t)import_idx);
                 else { emit_load_u32_to_a8(&ctx, &litpool, import_idx); emit_mov_n(&ctx, 11, 8); }
 
                 // a12 = v_regs
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 12, 8);
+                emit_l32i(&ctx, 12, 1, 8);
 
                 // a13 = num_vregs
                 if (num_vregs <= 15) emit_movi_n(&ctx, 13, (int8_t)num_vregs);
