@@ -107,7 +107,7 @@ extern "C" void app_main(void)
         const int64_t benchmark_start_us = esp_timer_get_time();
         result = espb_call_function_sync(espb_handle, "app_main", args, 3, NULL);
         benchmark_samples[i] = esp_timer_get_time() - benchmark_start_us;
-        printf("[ESPB_BENCH] sample_%d_us=%lld\\n", i, (long long)benchmark_samples[i]);
+        printf("[ESPB_BENCH] sample_%d_us=%lld\n", i, (long long)benchmark_samples[i]);
         if (result != ESPB_OK) {
             printf("Failed to call 'app_main', error: %d\\n", result);
             espb_unload_module(espb_handle);
@@ -125,7 +125,7 @@ extern "C" void app_main(void)
         }
         benchmark_samples[j] = value;
     }
-    printf("[ESPB_BENCH] app_main_median_us=%lld\\n",
+    printf("[ESPB_BENCH] app_main_median_us=%lld\n",
            (long long)benchmark_samples[ESPB_BENCH_SAMPLES / 2]);
 
     // The embedded test.espb exports app_main; it does not export a
