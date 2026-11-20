@@ -2,6 +2,9 @@ name: Generate 01_integer_integer
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ESPB_WORK]
+    paths: [.github/trigger-integer-test]
 
 permissions:
   contents: write
