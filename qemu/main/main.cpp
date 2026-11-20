@@ -10,23 +10,23 @@ typedef void (*qemu_cb1_t)(void *);
 typedef void (*qemu_cb2_t)(int, void *);
 
 __attribute__((noinline, optimize("O0")))
-static void host_invoke_cb(qemu_cb1_t cb, void *user_data)
+void host_invoke_cb(qemu_cb1_t cb, void *user_data)
 {
     if (cb) cb(user_data);
 }
 
 __attribute__((noinline, optimize("O0")))
-static void host_invoke_cb2(qemu_cb2_t cb, int value, void *user_data)
+void host_invoke_cb2(qemu_cb2_t cb, int value, void *user_data)
 {
     if (cb) cb(value, user_data);
 }
 
-static void my_custom_print(const char *message)
+void my_custom_print(const char *message)
 {
     printf("QEMU custom print: %s\\n", message ? message : "(null)");
 }
 
-static void native_set_magic_number(int *out_value)
+void native_set_magic_number(int *out_value)
 {
     if (out_value) *out_value = 42;
 }
