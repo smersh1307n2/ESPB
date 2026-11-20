@@ -3225,10 +3225,58 @@ EspbResult espb_jit_compile_function_xtensa_inline(
     uint16_t opcode_loads[256] = {0};
     uint16_t opcode_stores[256] = {0};
 
+    // Conservative two-entry I32 vreg cache, live only across adjacent native
+    // Xtensa ALU bytecodes. Every other opcode is a coherence/control-flow barrier.
+    // a12/a13 are saved by the prologue and restored by the epilogue.
+    typedef struct { uint8_t vreg, phys; bool valid, dirty; uint32_t stamp; } XtensaVregCacheSlot;
+    XtensaVregCacheSlot vcache[2] = {
+        { 0, 12, false, false, 0 }, { 0, 13, false, false, 0 }
+    };
+    uint32_t vcache_clock = 0, vcache_hits = 0, vcache_spills = 0, vcache_coalesced_writes = 0;
+#define XTENSA_VCACHE_FIND(v, result) do { \
+        (result) = -1; \
+        for (int _i = 0; _i < 2; ++_i) { \
+            if (vcache[_i].valid && vcache[_i].vreg == (v)) { (result) = _i; break; } \
+        } \
+    } while (0)
+#define XTENSA_VCACHE_LOAD(v, dst) do { \
+        int _slot; XTENSA_VCACHE_FIND((v), _slot); \
+        if (_slot >= 0) { emit_mov_n(&ctx, (dst), vcache[_slot].phys); \
+            vcache[_slot].stamp = ++vcache_clock; ++vcache_hits; \
+        } else { emit_l32i(&ctx, (dst), 6, (uint16_t)((v) * 8)); } \
+    } while (0)
+#define XTENSA_VCACHE_STORE(v, src) do { \
+        int _slot; XTENSA_VCACHE_FIND((v), _slot); \
+        if (_slot < 0) { \
+            if (!vcache[0].valid) _slot = 0; else if (!vcache[1].valid) _slot = 1; \
+            else _slot = (vcache[0].stamp <= vcache[1].stamp) ? 0 : 1; \
+            if (vcache[_slot].valid && vcache[_slot].dirty) { \
+                emit_s32i(&ctx, vcache[_slot].phys, 6, (uint16_t)(vcache[_slot].vreg * 8)); \
+                ++vcache_spills; \
+            } \
+            vcache[_slot].vreg = (v); vcache[_slot].valid = true; vcache[_slot].dirty = false; \
+        } else if (vcache[_slot].dirty) { ++vcache_coalesced_writes; } \
+        emit_mov_n(&ctx, vcache[_slot].phys, (src)); \
+        vcache[_slot].dirty = true; vcache[_slot].stamp = ++vcache_clock; \
+    } while (0)
+#define XTENSA_VCACHE_FLUSH() do { \
+        for (int _i = 0; _i < 2; ++_i) { \
+            if (vcache[_i].valid && vcache[_i].dirty) { \
+                emit_s32i(&ctx, vcache[_i].phys, 6, (uint16_t)(vcache[_i].vreg * 8)); \
+                ++vcache_spills; \
+            } \
+            vcache[_i].valid = false; vcache[_i].dirty = false; \
+        } \
+    } while (0)
+
     while (pc < end && !ctx.error) {
         last_op = *pc;
         last_off = (size_t)(pc - start);
         uint8_t op = *pc++;
+        // Flush before recording native-address mapping: every branch target enters
+        // with coherent v_regs. Helper/division opcodes never see a dirty cache.
+        const bool vcacheable = ((op >= 0x20 && op <= 0x22) || (op >= 0x28 && op <= 0x2D));
+        if (!vcacheable) XTENSA_VCACHE_FLUSH();
         const uint32_t op_loads_before = ctx.emitted_loads;
         const uint32_t op_stores_before = ctx.emitted_stores;
 
@@ -3787,14 +3835,10 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs1 = *pc++;
                 uint8_t rs2 = *pc++;
                 
-                // Load rs1 into a8, rs2 into a9
-                emit_l32i(&ctx, 8, 6, (uint16_t)(rs1 * 8));   // a8 = v_regs[rs1].i32
-                if (rs1 == rs2) {
-                    // Reuse the already loaded value instead of issuing a second vreg load.
-                    emit_mov_n(&ctx, 9, 8);
-                } else {
-                    emit_l32i(&ctx, 9, 6, (uint16_t)(rs2 * 8));
-                }
+                // Resolve operands from the block-local vreg cache when possible.
+                XTENSA_VCACHE_LOAD(rs1, 8);
+                if (rs1 == rs2) emit_mov_n(&ctx, 9, 8);
+                else XTENSA_VCACHE_LOAD(rs2, 9);
                 
                 switch (op) {
                     case 0x20: // ADD.I32: a8 = a8 + a9
@@ -3872,8 +3916,8 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     }
                 }
                 
-                // Store result to v_regs[rd]
-                emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
+                if (op >= 0x20 && op <= 0x22) XTENSA_VCACHE_STORE(rd, 8);
+                else emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
                 break;
             }
 
@@ -3887,14 +3931,10 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs1 = *pc++;
                 uint8_t rs2 = *pc++;
                 
-                // Load rs1 into a8, rs2 into a9
-                emit_l32i(&ctx, 8, 6, (uint16_t)(rs1 * 8));   // a8 = v_regs[rs1].i32
-                if (rs1 == rs2) {
-                    // Reuse the already loaded value instead of issuing a second vreg load.
-                    emit_mov_n(&ctx, 9, 8);
-                } else {
-                    emit_l32i(&ctx, 9, 6, (uint16_t)(rs2 * 8));
-                }
+                // Resolve operands from the block-local vreg cache when possible.
+                XTENSA_VCACHE_LOAD(rs1, 8);
+                if (rs1 == rs2) emit_mov_n(&ctx, 9, 8);
+                else XTENSA_VCACHE_LOAD(rs2, 9);
                 
                 // Xtensa bitwise instructions (3 bytes each):
                 // Format: RST with op2 field
@@ -3926,8 +3966,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         break;
                 }
                 
-                // Store result to v_regs[rd]
-                emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
+                XTENSA_VCACHE_STORE(rd, 8);
                 break;
             }
 
@@ -3964,14 +4003,10 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs1 = *pc++;
                 uint8_t rs2 = *pc++;
                 
-                // Load rs1 (value to shift) into a8, rs2 (shift amount) into a9
-                emit_l32i(&ctx, 8, 6, (uint16_t)(rs1 * 8));   // a8 = v_regs[rs1].i32
-                if (rs1 == rs2) {
-                    // Reuse the already loaded value instead of issuing a second vreg load.
-                    emit_mov_n(&ctx, 9, 8);
-                } else {
-                    emit_l32i(&ctx, 9, 6, (uint16_t)(rs2 * 8));
-                }
+                // Resolve shift operands from the block-local vreg cache.
+                XTENSA_VCACHE_LOAD(rs1, 8);
+                if (rs1 == rs2) emit_mov_n(&ctx, 9, 8);
+                else XTENSA_VCACHE_LOAD(rs2, 9);
                 
                 // Xtensa variable shift uses a two-step sequence:
                 //   1) set shift amount register via SSL/SSR
@@ -4018,8 +4053,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         break;
                 }
                 
-                // Store result to v_regs[rd]
-                emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
+                XTENSA_VCACHE_STORE(rd, 8);
                 break;
             }
 
@@ -8036,6 +8070,13 @@ EspbResult espb_jit_compile_function_xtensa_inline(
         opcode_stores[op] = (uint16_t)(next_stores > UINT16_MAX ? UINT16_MAX : next_stores);
     }
 
+    // Commit the final straight-line ALU block before the epilogue/fixups.
+    XTENSA_VCACHE_FLUSH();
+#undef XTENSA_VCACHE_FLUSH
+#undef XTENSA_VCACHE_STORE
+#undef XTENSA_VCACHE_LOAD
+#undef XTENSA_VCACHE_FIND
+
     // Ensure all bytes are committed before final fixups
     emit_flush_words(&ctx);
 
@@ -8173,9 +8214,10 @@ EspbResult espb_jit_compile_function_xtensa_inline(
     heap_caps_free(fixups);
     heap_caps_free(bc_to_native);
 
-    ESP_LOGI(TAG, "[jit-codegen] func=%u code_bytes=%u l32i=%u s32i=%u",
-             (unsigned)func_idx, (unsigned)ctx.offset,
-             (unsigned)ctx.emitted_loads, (unsigned)ctx.emitted_stores);
+    ESP_LOGI(TAG, "[jit-codegen] func=%u code_bytes=%u l32i=%u s32i=%u vcache_hits=%u vcache_spills=%u vcache_coalesced=%u",
+             (unsigned)func_idx, (unsigned)ctx.offset, (unsigned)ctx.emitted_loads,
+             (unsigned)ctx.emitted_stores, (unsigned)vcache_hits,
+             (unsigned)vcache_spills, (unsigned)vcache_coalesced_writes);
     for (uint32_t opcode = 0; opcode < 256; ++opcode) {
         if (opcode_count[opcode] != 0 &&
             (opcode_loads[opcode] != 0 || opcode_stores[opcode] != 0)) {
