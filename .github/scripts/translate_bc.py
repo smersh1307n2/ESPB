@@ -41,7 +41,7 @@ if not keys:
 
 url = os.environ.get("ESPB_API_URL", "http://espb.runasp.net/api/v1/translate")
 body = json.dumps(payload).encode("utf-8")
-quota_markers = ("quota", "remainingrequests", "daily limit", "request limit", "translation limit")
+quota_markers = ("quota", "remainingrequests", "daily limit", "request limit", "translation limit", "rate limit")
 
 for slot, key in enumerate(keys, 1):
     req = urllib.request.Request(url, data=body, headers={
@@ -71,7 +71,7 @@ for slot, key in enumerate(keys, 1):
         break
 
     error = str(result.get("errorMessage", result))
-    if any(marker in error.lower() for marker in quota_markers):
+    if any(marker in json.dumps(result).lower() for marker in quota_markers):
         print(f"Key slot {slot}: quota exhausted; trying next key.")
         continue
     raise SystemExit("Translation failed: " + error[:2000])
