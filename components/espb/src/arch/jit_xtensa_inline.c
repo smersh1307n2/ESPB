@@ -3268,6 +3268,19 @@ EspbResult espb_jit_compile_function_xtensa_inline(
             vcache[_i].valid = false; vcache[_i].dirty = false; \
         } \
     } while (0)
+#define XTENSA_VCACHE_FINISH(v, src, keep) do { \
+        if (keep) { \
+            XTENSA_VCACHE_STORE((v), (src)); \
+        } else { \
+            int _slot; XTENSA_VCACHE_FIND((v), _slot); \
+            if (_slot >= 0) { \
+                if (vcache[_slot].dirty) ++vcache_coalesced_writes; \
+                vcache[_slot].valid = false; vcache[_slot].dirty = false; \
+            } \
+            XTENSA_VCACHE_FLUSH(); \
+            emit_s32i(&ctx, (src), 6, (uint16_t)((v) * 8)); \
+        } \
+    } while (0)
 
     while (pc < end && !ctx.error) {
         last_op = *pc;
@@ -3276,6 +3289,8 @@ EspbResult espb_jit_compile_function_xtensa_inline(
         // Flush before recording native-address mapping: every branch target enters
         // with coherent v_regs. Helper/division opcodes never see a dirty cache.
         const bool vcacheable = ((op >= 0x20 && op <= 0x22) || (op >= 0x28 && op <= 0x2D));
+        const bool vcache_next = vcacheable && ((size_t)(end - pc) >= 4) &&
+            (((pc[3] >= 0x20 && pc[3] <= 0x22) || (pc[3] >= 0x28 && pc[3] <= 0x2D)));
         if (!vcacheable) XTENSA_VCACHE_FLUSH();
         const uint32_t op_loads_before = ctx.emitted_loads;
         const uint32_t op_stores_before = ctx.emitted_stores;
@@ -3916,7 +3931,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     }
                 }
                 
-                if (op >= 0x20 && op <= 0x22) XTENSA_VCACHE_STORE(rd, 8);
+                if (op >= 0x20 && op <= 0x22) XTENSA_VCACHE_FINISH(rd, 8, vcache_next);
                 else emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
                 break;
             }
@@ -3966,7 +3981,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         break;
                 }
                 
-                XTENSA_VCACHE_STORE(rd, 8);
+                XTENSA_VCACHE_FINISH(rd, 8, vcache_next);
                 break;
             }
 
@@ -4053,7 +4068,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         break;
                 }
                 
-                XTENSA_VCACHE_STORE(rd, 8);
+                XTENSA_VCACHE_FINISH(rd, 8, vcache_next);
                 break;
             }
 
@@ -8072,6 +8087,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
     // Commit the final straight-line ALU block before the epilogue/fixups.
     XTENSA_VCACHE_FLUSH();
+#undef XTENSA_VCACHE_FINISH
 #undef XTENSA_VCACHE_FLUSH
 #undef XTENSA_VCACHE_STORE
 #undef XTENSA_VCACHE_LOAD
