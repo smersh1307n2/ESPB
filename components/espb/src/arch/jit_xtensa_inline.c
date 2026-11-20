@@ -7177,46 +7177,36 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs_size = *pc++;
                 uint8_t align = *pc++;
 
-                // Call helper: espb_runtime_alloca(instance, exec_ctx, regs, num_vregs, rd, rs_size, align)
-                // NOTE: current JIT entrypoint signature doesn't provide ExecutionContext, so we pass NULL.
+                // Use the shared six-register JIT helper ABI. Calling the seven-argument
+                // interpreter helper directly requires a stack argument and an unused
+                // ExecutionContext pointer; keeping this path register-only avoids
+                // stack-argument layout differences in the generated CALL8 sequence.
 
-                // a10 = instance. Load directly into the ABI argument register;
-                // the previous a8 + MOV.N sequence emitted two instructions.
+                // a10 = instance; a11 = v_regs
                 emit_l32i(&ctx, 10, 1, 4);
+                emit_l32i(&ctx, 11, 1, 8);
 
-                // a11 = exec_ctx (NULL)
-                emit_movi_n(&ctx, 11, 0);
-
-                // a12 = regs (v_regs)
-                emit_l32i(&ctx, 12, 1, 8);
-
-                // a13 = effective_vregs = max(num_vregs, rd+1, rs_size+1)
-                // Необходимо т.к. LLVM может генерировать регистры выше num_virtual_regs из заголовка.
+                // a12 = actual v_regs length, including every referenced register.
                 uint16_t effective_vregs = num_vregs;
                 if ((uint16_t)(rd + 1) > effective_vregs) effective_vregs = (uint16_t)(rd + 1);
                 if ((uint16_t)(rs_size + 1) > effective_vregs) effective_vregs = (uint16_t)(rs_size + 1);
-                if (effective_vregs <= 15) emit_movi_n(&ctx, 13, (int8_t)effective_vregs);
-                else { emit_load_u32_to_a8(&ctx, &litpool, effective_vregs); emit_mov_n(&ctx, 13, 8); }
+                if (effective_vregs <= 15) emit_movi_n(&ctx, 12, (int8_t)effective_vregs);
+                else { emit_load_u32_to_a8(&ctx, &litpool, effective_vregs); emit_mov_n(&ctx, 12, 8); }
 
-                // a14 = rd
-                if (rd <= 15) emit_movi_n(&ctx, 14, (int8_t)rd);
-                else { emit_load_u32_to_a8(&ctx, &litpool, rd); emit_mov_n(&ctx, 14, 8); }
+                // a13 = rd; a14 = rs_size; a15 = align
+                if (rd <= 15) emit_movi_n(&ctx, 13, (int8_t)rd);
+                else { emit_load_u32_to_a8(&ctx, &litpool, rd); emit_mov_n(&ctx, 13, 8); }
 
-                // a15 = rs_size
-                if (rs_size <= 15) emit_movi_n(&ctx, 15, (int8_t)rs_size);
-                else { emit_load_u32_to_a8(&ctx, &litpool, rs_size); emit_mov_n(&ctx, 15, 8); }
+                if (rs_size <= 15) emit_movi_n(&ctx, 14, (int8_t)rs_size);
+                else { emit_load_u32_to_a8(&ctx, &litpool, rs_size); emit_mov_n(&ctx, 14, 8); }
 
-                // 7th arg: align on stack at a1+0
-                if (align <= 15) emit_movi_n(&ctx, 8, (int8_t)align);
-                else { emit_load_u32_to_a8(&ctx, &litpool, align); }
-                emit_s32i(&ctx, 8, 1, 0);
+                if (align <= 15) emit_movi_n(&ctx, 15, (int8_t)align);
+                else { emit_load_u32_to_a8(&ctx, &litpool, align); emit_mov_n(&ctx, 15, 8); }
 
-                emit_call_helper(&ctx, &litpool, (void*)&espb_runtime_alloca);
+                emit_call_helper(&ctx, &litpool, (void*)&espb_jit_alloca_ex);
 
-                // Restore a11 back to v_regs pointer from stack
-                // NOTE: Cannot use a12 here because CALL8 rotates window and a12 becomes
-                // callee's a4 which may be clobbered by the callee function.
-                emit_l32i(&ctx, 11, 1, 8);  // a11 = [a1+8] = v_regs
+                // CALL8 may clobber the volatile a11 register; restore v_regs.
+                emit_l32i(&ctx, 11, 1, 8);
                 break;
             }
 
