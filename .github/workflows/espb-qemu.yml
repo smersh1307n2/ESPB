@@ -64,6 +64,13 @@ jobs:
           fi
           grep -F -- "Result is CORRECT." qemu.log
           grep -F -- "--- ESPB API Demo Finished ---" qemu.log
+          # Every module discovered by CMake must be visited by the runtime loop.
+          expected_modules=$(grep -Eo "\\[ESPB_TEST\\] module_count=[0-9]+" qemu.log | tail -n 1 | cut -d= -f2)
+          actual_modules=$(grep -c "^\\[ESPB_TEST\\] module=" qemu.log || true)
+          if [ -z "$expected_modules" ] || [ "$expected_modules" -lt 1 ] || [ "$actual_modules" -ne "$expected_modules" ]; then
+            echo "Embedded module count mismatch: expected=$expected_modules actual=$actual_modules"
+            exit 1
+          fi
           # Require five numeric samples and one numeric median; a completion
           # marker alone must not turn an incomplete benchmark into a pass.
           for sample in 0 1 2 3 4; do
