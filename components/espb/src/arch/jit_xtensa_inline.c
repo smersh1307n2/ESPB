@@ -3229,15 +3229,15 @@ EspbResult espb_jit_compile_function_xtensa_inline(
     // Xtensa ALU bytecodes. Every other opcode is a coherence/control-flow barrier.
     // a12/a13 are saved by the prologue and restored by the epilogue.
     typedef struct { uint8_t vreg, phys; bool valid, dirty; uint32_t stamp; } XtensaVregCacheSlot;
-    XtensaVregCacheSlot vcache[2] = {
-        { 0, 12, false, false, 0 }, { 0, 13, false, false, 0 }
+    XtensaVregCacheSlot vcache[4] = {
+        { 0, 12, false, false, 0 }, { 0, 13, false, false, 0 },
+        { 0, 14, false, false, 0 }, { 0, 15, false, false, 0 }
     };
     uint32_t vcache_clock = 0, vcache_hits = 0, vcache_spills = 0, vcache_coalesced_writes = 0;
 
-    // Without a complete CFG/liveness pass, do not cache across functions that
-    // contain control-flow opcodes. The conservative byte scan may disable the
-    // optimization on an immediate containing 0x02/0x03/0x04, but cannot enable
-    // it incorrectly; branch-free functions remain eligible.
+    // Branch-free function-local I32 cache. The function scan disables caching
+    // whenever control-flow opcodes are present; physical a12-a15 are saved in
+    // the prologue and restored by the epilogue.
     bool vcache_function_safe = true;
     for (const uint8_t *scan = code; scan < code + code_size; ++scan) {
         if (*scan == 0x02 || *scan == 0x03 || *scan == 0x04) {
@@ -3245,53 +3245,55 @@ EspbResult espb_jit_compile_function_xtensa_inline(
             break;
         }
     }
-#define XTENSA_VCACHE_FIND(v, result) do { \
-        (result) = -1; \
-        for (int _i = 0; _i < 2; ++_i) { \
-            if (vcache[_i].valid && vcache[_i].vreg == (v)) { (result) = _i; break; } \
-        } \
+#define XTENSA_VCACHE_FIND(v, result) do { \\
+        (result) = -1; \\
+        for (int _i = 0; _i < 4; ++_i) { \\
+            if (vcache[_i].valid && vcache[_i].vreg == (v)) { (result) = _i; break; } \\
+        } \\
     } while (0)
-#define XTENSA_VCACHE_LOAD(v, dst) do { \
-        int _slot; XTENSA_VCACHE_FIND((v), _slot); \
-        if (_slot >= 0) { emit_mov_n(&ctx, (dst), vcache[_slot].phys); \
-            vcache[_slot].stamp = ++vcache_clock; ++vcache_hits; \
-        } else { emit_l32i(&ctx, (dst), 6, (uint16_t)((v) * 8)); } \
+#define XTENSA_VCACHE_LOAD(v, dst) do { \\
+        int _slot; XTENSA_VCACHE_FIND((v), _slot); \\
+        if (_slot >= 0) { emit_mov_n(&ctx, (dst), vcache[_slot].phys); \\
+            vcache[_slot].stamp = ++vcache_clock; ++vcache_hits; \\
+        } else { emit_l32i(&ctx, (dst), 6, (uint16_t)((v) * 8)); } \\
     } while (0)
-#define XTENSA_VCACHE_STORE(v, src) do { \
-        int _slot; XTENSA_VCACHE_FIND((v), _slot); \
-        if (_slot < 0) { \
-            if (!vcache[0].valid) _slot = 0; else if (!vcache[1].valid) _slot = 1; \
-            else _slot = (vcache[0].stamp <= vcache[1].stamp) ? 0 : 1; \
-            if (vcache[_slot].valid && vcache[_slot].dirty) { \
-                emit_s32i(&ctx, vcache[_slot].phys, 6, (uint16_t)(vcache[_slot].vreg * 8)); \
-                ++vcache_spills; \
-            } \
-            vcache[_slot].vreg = (v); vcache[_slot].valid = true; vcache[_slot].dirty = false; \
-        } else if (vcache[_slot].dirty) { ++vcache_coalesced_writes; } \
-        emit_mov_n(&ctx, vcache[_slot].phys, (src)); \
-        vcache[_slot].dirty = true; vcache[_slot].stamp = ++vcache_clock; \
+#define XTENSA_VCACHE_STORE(v, src) do { \\
+        int _slot; XTENSA_VCACHE_FIND((v), _slot); \\
+        if (_slot < 0) { \\
+            _slot = -1; \\
+            for (int _i = 0; _i < 4; ++_i) if (!vcache[_i].valid) { _slot = _i; break; } \\
+            if (_slot < 0) { _slot = (vcache[0].stamp <= vcache[1].stamp) ? 0 : 1; \\
+                for (int _i = 2; _i < 4; ++_i) if (vcache[_i].stamp < vcache[_slot].stamp) _slot = _i; } \\
+            if (vcache[_slot].valid && vcache[_slot].dirty) { \\
+                emit_s32i(&ctx, vcache[_slot].phys, 6, (uint16_t)(vcache[_slot].vreg * 8)); \\
+                ++vcache_spills; \\
+            } \\
+            vcache[_slot].vreg = (v); vcache[_slot].valid = true; vcache[_slot].dirty = false; \\
+        } else if (vcache[_slot].dirty) { ++vcache_coalesced_writes; } \\
+        emit_mov_n(&ctx, vcache[_slot].phys, (src)); \\
+        vcache[_slot].dirty = true; vcache[_slot].stamp = ++vcache_clock; \\
     } while (0)
-#define XTENSA_VCACHE_FLUSH() do { \
-        for (int _i = 0; _i < 2; ++_i) { \
-            if (vcache[_i].valid && vcache[_i].dirty) { \
-                emit_s32i(&ctx, vcache[_i].phys, 6, (uint16_t)(vcache[_i].vreg * 8)); \
-                ++vcache_spills; \
-            } \
-            vcache[_i].valid = false; vcache[_i].dirty = false; \
-        } \
+#define XTENSA_VCACHE_FLUSH() do { \\
+        for (int _i = 0; _i < 4; ++_i) { \\
+            if (vcache[_i].valid && vcache[_i].dirty) { \\
+                emit_s32i(&ctx, vcache[_i].phys, 6, (uint16_t)(vcache[_i].vreg * 8)); \\
+                ++vcache_spills; \\
+            } \\
+            vcache[_i].valid = false; vcache[_i].dirty = false; \\
+        } \\
     } while (0)
-#define XTENSA_VCACHE_FINISH(v, src, keep) do { \
-        if (keep) { \
-            XTENSA_VCACHE_STORE((v), (src)); \
-        } else { \
-            int _slot; XTENSA_VCACHE_FIND((v), _slot); \
-            if (_slot >= 0) { \
-                if (vcache[_slot].dirty) ++vcache_coalesced_writes; \
-                vcache[_slot].valid = false; vcache[_slot].dirty = false; \
-            } \
-            XTENSA_VCACHE_FLUSH(); \
-            emit_s32i(&ctx, (src), 6, (uint16_t)((v) * 8)); \
-        } \
+#define XTENSA_VCACHE_FINISH(v, src, keep) do { \\
+        if (keep) { \\
+            XTENSA_VCACHE_STORE((v), (src)); \\
+        } else { \\
+            int _slot; XTENSA_VCACHE_FIND((v), _slot); \\
+            if (_slot >= 0) { \\
+                if (vcache[_slot].dirty) ++vcache_coalesced_writes; \\
+                vcache[_slot].valid = false; vcache[_slot].dirty = false; \\
+            } \\
+            XTENSA_VCACHE_FLUSH(); \\
+            emit_s32i(&ctx, (src), 6, (uint16_t)((v) * 8)); \\
+        } \\
     } while (0)
 
     while (pc < end && !ctx.error) {
