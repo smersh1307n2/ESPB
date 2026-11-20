@@ -81,6 +81,7 @@ extern "C" void app_main(void)
     EspbResult result;
 
     // Load and execute every test*.espb embedded by the component CMake file.
+    printf("[ESPB_TEST] module_count=%u\\n", (unsigned)espb_embedded_module_count);
     for (size_t module_index = 0; module_index < espb_embedded_module_count; ++module_index) {
         const EspbEmbeddedModule &module = espb_embedded_modules[module_index];
         printf("\n[ESPB_TEST] module=%s size=%u\n", module.name, (unsigned)module.size);
