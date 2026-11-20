@@ -58,6 +58,10 @@ jobs:
             exit "$qemu_status"
           fi
 
+          if grep -E -m1 "Guru Meditation Error|panic'ed|LoadProhibited|StoreProhibited|Load access fault|Store access fault" qemu.log; then
+            echo "ESPB runtime panic detected"
+            exit 1
+          fi
           if grep -F -- "Failed to call" qemu.log; then
             echo "ESPB API call failed"
             exit 1
