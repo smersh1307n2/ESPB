@@ -3225,8 +3225,11 @@ EspbResult espb_jit_compile_function_xtensa_inline(
     uint16_t opcode_loads[256] = {0};
     uint16_t opcode_stores[256] = {0};
 
-    // Conservative two-entry I32 vreg cache, live only across adjacent native
-    // Xtensa ALU bytecodes. Every other opcode is a coherence/control-flow barrier.
+    // Conservative two-entry I32 vreg cache. Values live only across adjacent
+    // I32 ALU bytecodes. Every non-ALU opcode is a coherence barrier, including
+    // all branches, calls, memory operations and returns. Therefore every CFG
+    // edge leaves and enters with v_regs coherent; straight-line ALU runs inside
+    // branch-containing functions can safely use the cache without a CFG pass.
     // a12/a13 are saved by the prologue and restored by the epilogue.
     typedef struct { uint8_t vreg, phys; bool valid, dirty; uint32_t stamp; } XtensaVregCacheSlot;
     XtensaVregCacheSlot vcache[2] = {
@@ -3234,17 +3237,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
     };
     uint32_t vcache_clock = 0, vcache_hits = 0, vcache_spills = 0, vcache_coalesced_writes = 0;
 
-    // Without a complete CFG/liveness pass, do not cache across functions that
-    // contain control-flow opcodes. The conservative byte scan may disable the
-    // optimization on an immediate containing 0x02/0x03/0x04, but cannot enable
-    // it incorrectly; branch-free functions remain eligible.
-    bool vcache_function_safe = true;
-    for (const uint8_t *scan = code; scan < code + code_size; ++scan) {
-        if (*scan == 0x02 || *scan == 0x03 || *scan == 0x04) {
-            vcache_function_safe = false;
-            break;
-        }
-    }
 #define XTENSA_VCACHE_FIND(v, result) do { \
         (result) = -1; \
         for (int _i = 0; _i < 2; ++_i) { \
@@ -3300,7 +3292,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
         uint8_t op = *pc++;
         // Flush before recording native-address mapping: every branch target enters
         // with coherent v_regs. Helper/division opcodes never see a dirty cache.
-        const bool vcacheable = vcache_function_safe &&
+        const bool vcacheable =
             ((op >= 0x20 && op <= 0x22) || (op >= 0x28 && op <= 0x2D));
         const bool vcache_next = vcacheable && ((size_t)(end - pc) >= 4) &&
             (((pc[3] >= 0x20 && pc[3] <= 0x22) || (pc[3] >= 0x28 && pc[3] <= 0x2D)));
