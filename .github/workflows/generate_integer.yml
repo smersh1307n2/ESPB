@@ -37,9 +37,9 @@ jobs:
           cd projects/ESP32_PRJ_TO_LLVM
           . "$IDF_PATH/export.sh"
           python scripts/build_bitcode.py "examples/01_integer"
-          test -s "llvm_output/integer_integer.bc"
+          test -s "llvm_output/01_integer_integer.bc"
           mkdir -p "$GITHUB_WORKSPACE/.work"
-          cp "llvm_output/integer_integer.bc" "$GITHUB_WORKSPACE/.work/01_integer_integer.bc"
+          cp "llvm_output/01_integer_integer.bc" "$GITHUB_WORKSPACE/.work/01_integer_integer.bc"
       - name: Translate BC to ESPB (quota-aware key rotation)
         env:
           ESPB_TRANSLATOR_KEYS: ${{ secrets.ESPB_TRANSLATOR_KEYS }}
