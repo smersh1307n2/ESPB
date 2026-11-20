@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include "espb_api.h"
 #include "espb_embedded_modules.h"
 #include "esp_timer.h"
@@ -29,6 +30,79 @@ void my_custom_print(const char *message)
 void native_set_magic_number(int *out_value)
 {
     if (out_value) *out_value = 42;
+}
+
+static bool expect_u32(espb_handle_t handle, const char *function_name,
+                       const Value *args, uint32_t num_args,
+                       uint32_t expected, const char *label)
+{
+    Value result = ESPB_U32(0);
+    EspbResult rc = espb_call_function_sync(handle, function_name, args, num_args, &result);
+    const uint32_t actual = V_U32(result);
+    const bool ok = rc == ESPB_OK && actual == expected;
+    printf("[ESPB_ASSERT] %s=%s actual=%u expected=%u rc=%d\\n",
+           label, ok ? "PASS" : "FAIL", (unsigned)actual,
+           (unsigned)expected, (int)rc);
+    return ok;
+}
+
+static bool expect_i32(espb_handle_t handle, const char *function_name,
+                       const Value *args, uint32_t num_args,
+                       int32_t expected, const char *label)
+{
+    Value result = ESPB_I32(0);
+    EspbResult rc = espb_call_function_sync(handle, function_name, args, num_args, &result);
+    const int32_t actual = V_I32(result);
+    const bool ok = rc == ESPB_OK && actual == expected;
+    printf("[ESPB_ASSERT] %s=%s actual=%d expected=%d rc=%d\\n",
+           label, ok ? "PASS" : "FAIL", (int)actual,
+           (int)expected, (int)rc);
+    return ok;
+}
+
+static bool run_semantic_checks(espb_handle_t handle, const char *module_name)
+{
+    if (strstr(module_name, "test_01_integer") != NULL) {
+        const Value chain_args[] = { ESPB_U32(1112) };
+        const Value signed_args[] = { ESPB_I32(1112), ESPB_I32(0) };
+        const bool chain_ok = expect_u32(handle, "espb_integer_chain", chain_args, 1, 1110154669u, "integer_chain");
+        const bool signed_ok = expect_i32(handle, "espb_integer_signed", signed_args, 2, 7784, "integer_signed");
+        printf("[ESPB_ASSERT] integer=%s\\n", chain_ok && signed_ok ? "PASS" : "FAIL");
+        return chain_ok && signed_ok;
+    }
+
+    if (strstr(module_name, "test_02_control_flow") != NULL) {
+        const Value loop_args[] = { ESPB_U32(24) };
+        const Value nested_args[] = { ESPB_U32(1112) };
+        const bool loop_ok = expect_u32(handle, "espb_branch_loop", loop_args, 1, 249u, "branch_loop");
+        const bool nested_ok = expect_u32(handle, "espb_nested_branch", nested_args, 1, 165u, "nested_branch");
+        printf("[ESPB_ASSERT] control_flow=%s\\n", loop_ok && nested_ok ? "PASS" : "FAIL");
+        return loop_ok && nested_ok;
+    }
+
+    if (strstr(module_name, "test_03_memory") != NULL) {
+        uint32_t values[8];
+        for (uint32_t i = 0; i < 8; ++i) values[i] = 1112u + i * 7u;
+        const Value transform_args[] = { ESPB_PTR(values), ESPB_U32(8), ESPB_U32(1112) };
+        const Value checksum_args[] = { ESPB_PTR(values), ESPB_U32(8) };
+        const EspbResult transform_rc = espb_call_function_sync(handle, "espb_array_transform", transform_args, 3, NULL);
+        Value checksum = ESPB_U32(0);
+        const EspbResult checksum_rc = espb_call_function_sync(handle, "espb_array_checksum", checksum_args, 2, &checksum);
+        const uint32_t actual = V_U32(checksum);
+        const bool ok = transform_rc == ESPB_OK && checksum_rc == ESPB_OK && actual == 2623u;
+        printf("[ESPB_ASSERT] memory=%s checksum=%u expected=2623 transform_rc=%d checksum_rc=%d\\n",
+               ok ? "PASS" : "FAIL", (unsigned)actual, (int)transform_rc, (int)checksum_rc);
+        return ok;
+    }
+
+    if (strstr(module_name, "test_04_calls") != NULL) {
+        const Value args[] = { ESPB_U32(1112), ESPB_U32(12) };
+        const bool ok = expect_u32(handle, "espb_call_chain", args, 2, 3794755490u, "call_chain");
+        printf("[ESPB_ASSERT] calls=%s\\n", ok ? "PASS" : "FAIL");
+        return ok;
+    }
+
+    return true;
 }
 
 static const EspbSymbolFast qemu_fast_symbols[] = {
@@ -63,6 +137,12 @@ extern "C" void app_main(void)
         EspbResult result = espb_load_module(module.data, module.size, &handle);
         if (result != ESPB_OK) {
             printf("[ESPB_TEST] load_failed=%s error=%d\n", module.name, (int)result);
+            return;
+        }
+
+        if (!run_semantic_checks(handle, module.name)) {
+            printf("[ESPB_TEST] semantic_failed=%s\\n", module.name);
+            espb_unload_module(handle);
             return;
         }
 
