@@ -89,7 +89,7 @@ jobs:
           fi
 
           awk '
-            /^\\[ESPB_TEST\\] module=/ {
+            index($0, "[ESPB_TEST] module=") == 1 {
               if (active && mode == "jit" && !compiled) {
                 print "HOT/JIT module did not compile: " module_name > "/dev/stderr"
                 failed = 1
@@ -99,14 +99,14 @@ jobs:
               mode = ($0 ~ /module=jit__/) ? "jit" : "interpreter"
               compiled = 0
             }
-            /^\\[JIT\\] Compiled HOT function/ {
+            index($0, "[JIT] Compiled HOT function") == 1 {
               if (active && mode == "jit") compiled = 1
               if (active && mode == "interpreter") {
                 print "Interpreter-only module unexpectedly compiled JIT: " module_name > "/dev/stderr"
                 failed = 1
               }
             }
-            /^\\[ESPB_TEST\\] module_done=/ {
+            index($0, "[ESPB_TEST] module_done=") == 1 {
               if (active && mode == "jit" && !compiled) {
                 print "HOT/JIT module did not compile: " module_name > "/dev/stderr"
                 failed = 1

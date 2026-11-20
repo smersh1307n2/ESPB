@@ -21,9 +21,10 @@ extern "C" void app_main(void)
     espb_register_custom_index_symbol_table(qemu_fast_symbols);
     espb_register_symbol_table(0, qemu_named_symbols);
 
-    const Value args[] = {
+    char qemu_message[] = "Hello from ESPB_WORK QEMU";
+    Value args[] = {
         ESPB_I32(1112),
-        ESPB_PTR((const void*)"Hello from ESPB_WORK QEMU"),
+        ESPB_PTR(qemu_message),
         ESPB_PTR(NULL)
     };
 
