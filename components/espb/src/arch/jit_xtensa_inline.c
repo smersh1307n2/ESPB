@@ -1356,6 +1356,10 @@ typedef struct {
     uint32_t* bc_to_native;
     size_t current_bc_off;
     size_t code_size;
+
+    // Compile-time diagnostics only; these do not affect generated machine code.
+    uint32_t emitted_loads;
+    uint32_t emitted_stores;
 } XtensaJitContext;
 
 // ===== Low-level Xtensa Emitters =====
@@ -1543,6 +1547,7 @@ static void emit_l32i_raw(XtensaJitContext* ctx, uint8_t at, uint8_t as, uint16_
         uint8_t offw = (uint8_t)(offset_bytes / 4);
         emit_u8(ctx, 0x88);
         emit_u8(ctx, (uint8_t)(((offw & 0xF) << 4) | (as & 0xF)));
+        if (!ctx->error) ctx->emitted_loads++;
         return;
     }
 
@@ -1561,6 +1566,7 @@ static void emit_l32i_raw(XtensaJitContext* ctx, uint8_t at, uint8_t as, uint16_
             emit_u8(ctx, (uint8_t)(((at & 0xF) << 4) | 0x2u));
             emit_u8(ctx, (uint8_t)(0x20u | (as & 0xFu)));
             emit_u8(ctx, (uint8_t)offw);
+            if (!ctx->error) ctx->emitted_loads++;
             return;
         }
     }
@@ -1622,6 +1628,7 @@ static void emit_s32i_raw(XtensaJitContext* ctx, uint8_t at, uint8_t as, uint16_
         uint8_t offw = (uint8_t)(offset_bytes / 4);
         emit_u8(ctx, 0x89);
         emit_u8(ctx, (uint8_t)(((offw & 0xF) << 4) | (as & 0xF)));
+        if (!ctx->error) ctx->emitted_stores++;
         return;
     }
 
@@ -1636,6 +1643,7 @@ static void emit_s32i_raw(XtensaJitContext* ctx, uint8_t at, uint8_t as, uint16_
             emit_u8(ctx, (uint8_t)(((at & 0xF) << 4) | 0x2u));
             emit_u8(ctx, (uint8_t)(0x60u | (as & 0xFu)));
             emit_u8(ctx, (uint8_t)offw);
+            if (!ctx->error) ctx->emitted_stores++;
             return;
         }
     }
@@ -2927,7 +2935,7 @@ static uint32_t espb_jit_xtensa_debug_op_len(uint8_t o, const uint8_t* p, const 
         case 0x9E: return 1 + 1 + 1;       // SEXT.I8.I64 (rd,rs)
         case 0x9F: return 1 + 1 + 1;       // SEXT.I16.I32 (rd,rs)
         case 0xA0: return 1 + 1 + 1;       // SEXT.I16.I64 (rd,rs)
-        case 0x21: return 1;               // RET
+        case 0x21: return 1 + 3;           // SUB.I32 (rd,rs1,rs2); not RET
         case 0x30: return 1 + 3;           // ADD.I64 (rd,rs1,rs2)
         case 0x33: return 1 + 3;           // DIVS.I64 (rd,rs1,rs2)
         case 0x34: return 1 + 3;           // REMS.I64 (rd,rs1,rs2)
@@ -3122,7 +3130,9 @@ EspbResult espb_jit_compile_function_xtensa_inline(
         .word_fill = 0,
         .bc_to_native = NULL,  // Will be set later after bc_to_native allocation
         .current_bc_off = 0,
-        .code_size = code_size
+        .code_size = code_size,
+        .emitted_loads = 0,
+        .emitted_stores = 0
     };
 
     XtensaLiteralPool litpool = {0};
@@ -3161,6 +3171,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
     // CRITICAL: the rest of the JIT assumes a11 == v_regs base for vreg load/store.
     // If we don't initialize it, vreg stores may go to a garbage address and crash (PIF addr error).
     emit_mov_n(&ctx, 11, 3);     // a11 = v_regs
+    emit_mov_n(&ctx, 6, 3);      // a6 = pinned v_regs (preserved across CALLX8)
 
     // Preserve callee-saved registers expected by the C caller (windowed ABI).
     // Our JIT freely uses a12-a15 (and may alias a14 via window rotation), so restore them before retw.
@@ -3208,10 +3219,108 @@ EspbResult espb_jit_compile_function_xtensa_inline(
     uint8_t last_op = 0x00;
     size_t last_off = 0;
 
+    // Compile-time per-opcode accounting. This measures which bytecode
+    // operations cause vreg memory traffic without touching generated code.
+    uint16_t opcode_count[256] = {0};
+    uint16_t opcode_loads[256] = {0};
+    uint16_t opcode_stores[256] = {0};
+
+    // Four-entry I32 vreg cache, live only across adjacent branch-free native
+    // Xtensa ALU bytecodes. Every other opcode is a coherence/control-flow barrier.
+    // a12-a15 are saved by the prologue and restored by the epilogue.
+    typedef struct { uint8_t vreg, phys; bool valid, dirty; uint32_t stamp; } XtensaVregCacheSlot;
+    XtensaVregCacheSlot vcache[4] = {
+        { 0, 12, false, false, 0 }, { 0, 13, false, false, 0 },
+        { 0, 14, false, false, 0 }, { 0, 15, false, false, 0 }
+    };
+    uint32_t vcache_clock = 0, vcache_hits = 0, vcache_spills = 0, vcache_coalesced_writes = 0;
+
+    // Branch-free function-local I32 cache. Keep the conservative raw-byte
+    // scan until a complete instruction-boundary decoder is available: enabling
+    // caching in a prefix is unsafe when a later branch can target that prefix.
+    // False positives only disable the optimization; they do not affect results.
+    bool vcache_function_safe = true;
+    size_t vcache_scan_blocked_at = code_size;
+    uint8_t vcache_scan_blocked_byte = 0;
+    for (const uint8_t *scan = code; scan < code + code_size; ++scan) {
+        if (*scan == 0x02 || *scan == 0x03 || *scan == 0x04) {
+            vcache_function_safe = false;
+            vcache_scan_blocked_at = (size_t)(scan - code);
+            vcache_scan_blocked_byte = *scan;
+            break;
+        }
+    }
+
+    // Report the first conservative blocker after its state has been initialized.
+    if (!vcache_function_safe) {
+        ESP_LOGI(TAG, "[vcache-scan] disabled_at=%u byte=0x%02X code_bytes=%u",
+                 (unsigned)vcache_scan_blocked_at, (unsigned)vcache_scan_blocked_byte,
+                 (unsigned)code_size);
+    }
+#define XTENSA_VCACHE_FIND(v, result) do { \
+        (result) = -1; \
+        for (int _i = 0; _i < 4; ++_i) { \
+            if (vcache[_i].valid && vcache[_i].vreg == (v)) { (result) = _i; break; } \
+        } \
+    } while (0)
+#define XTENSA_VCACHE_LOAD(v, dst) do { \
+        int _slot; XTENSA_VCACHE_FIND((v), _slot); \
+        if (_slot >= 0) { emit_mov_n(&ctx, (dst), vcache[_slot].phys); \
+            vcache[_slot].stamp = ++vcache_clock; ++vcache_hits; \
+        } else { emit_l32i(&ctx, (dst), 6, (uint16_t)((v) * 8)); } \
+    } while (0)
+#define XTENSA_VCACHE_STORE(v, src) do { \
+        int _slot; XTENSA_VCACHE_FIND((v), _slot); \
+        if (_slot < 0) { \
+            _slot = -1; \
+            for (int _i = 0; _i < 4; ++_i) if (!vcache[_i].valid) { _slot = _i; break; } \
+            if (_slot < 0) { _slot = (vcache[0].stamp <= vcache[1].stamp) ? 0 : 1; \
+                for (int _i = 2; _i < 4; ++_i) if (vcache[_i].stamp < vcache[_slot].stamp) _slot = _i; } \
+            if (vcache[_slot].valid && vcache[_slot].dirty) { \
+                emit_s32i(&ctx, vcache[_slot].phys, 6, (uint16_t)(vcache[_slot].vreg * 8)); \
+                ++vcache_spills; \
+            } \
+            vcache[_slot].vreg = (v); vcache[_slot].valid = true; vcache[_slot].dirty = false; \
+        } else if (vcache[_slot].dirty) { ++vcache_coalesced_writes; } \
+        emit_mov_n(&ctx, vcache[_slot].phys, (src)); \
+        vcache[_slot].dirty = true; vcache[_slot].stamp = ++vcache_clock; \
+    } while (0)
+#define XTENSA_VCACHE_FLUSH() do { \
+        for (int _i = 0; _i < 4; ++_i) { \
+            if (vcache[_i].valid && vcache[_i].dirty) { \
+                emit_s32i(&ctx, vcache[_i].phys, 6, (uint16_t)(vcache[_i].vreg * 8)); \
+                ++vcache_spills; \
+            } \
+            vcache[_i].valid = false; vcache[_i].dirty = false; \
+        } \
+    } while (0)
+#define XTENSA_VCACHE_FINISH(v, src, keep) do { \
+        if (keep) { \
+            XTENSA_VCACHE_STORE((v), (src)); \
+        } else { \
+            int _slot; XTENSA_VCACHE_FIND((v), _slot); \
+            if (_slot >= 0) { \
+                if (vcache[_slot].dirty) ++vcache_coalesced_writes; \
+                vcache[_slot].valid = false; vcache[_slot].dirty = false; \
+            } \
+            XTENSA_VCACHE_FLUSH(); \
+            emit_s32i(&ctx, (src), 6, (uint16_t)((v) * 8)); \
+        } \
+    } while (0)
+
     while (pc < end && !ctx.error) {
         last_op = *pc;
         last_off = (size_t)(pc - start);
         uint8_t op = *pc++;
+        // Flush before recording native-address mapping: every branch target enters
+        // with coherent v_regs. Helper/division opcodes never see a dirty cache.
+        const bool vcacheable = vcache_function_safe &&
+            ((op >= 0x20 && op <= 0x22) || (op >= 0x28 && op <= 0x2D));
+        const bool vcache_next = vcacheable && ((size_t)(end - pc) >= 4) &&
+            (((pc[3] >= 0x20 && pc[3] <= 0x22) || (pc[3] >= 0x28 && pc[3] <= 0x2D)));
+        if (!vcacheable) XTENSA_VCACHE_FLUSH();
+        const uint32_t op_loads_before = ctx.emitted_loads;
+        const uint32_t op_stores_before = ctx.emitted_stores;
 
         // NOTE: Alignment disabled for performance. Xtensa can execute unaligned 2/3-byte instructions.
         // emit_align4_with_nops(&ctx);
@@ -3242,7 +3351,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 pc += sizeof(off16);
 
                 // PTR is 4 bytes on 32-bit architecture, same as I32
-                emit_mov_n(&ctx, 6, 11);  // a6 = v_regs
 
                 // a8 = base pointer from v_regs[ra].ptr
                 emit_l32i(&ctx, 8, 6, (uint16_t)(ra * 8));
@@ -3284,8 +3392,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Store type ESPB_TYPE_PTR (value 5) to v_regs[rd].type
                 emit_movi_n(&ctx, 10, 5);  // ESPB_TYPE_PTR = 5
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8 + 4));
-
-                emit_mov_n(&ctx, 11, 6);  // restore v_regs to a11
                 break;
             }
 
@@ -3295,7 +3401,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
 
                 // Use low 32 bits of v_regs[rs] to truncate to signed 8-bit
-                emit_mov_n(&ctx, 6, 11);  // a6 = v_regs
 
                 // a8 = v_regs[rs].low32
                 emit_l32i(&ctx, 8, 6, (uint16_t)(rs * 8));
@@ -3310,8 +3415,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Store type ESPB_TYPE_I8 (value 7) to v_regs[rd].type
                 emit_movi_n(&ctx, 10, 7);  // ESPB_TYPE_I8 = 7
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8 + 4));
-
-                emit_mov_n(&ctx, 11, 6);  // restore v_regs to a11
                 break;
             }
 
@@ -3322,7 +3425,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 // Load value from v_regs[rs].i32, truncate to 8-bit signed, store to v_regs[rd]
                 // Result: rd = (int8_t)rs (sign-extended back to 32-bit for storage)
-                emit_mov_n(&ctx, 6, 11);  // a6 = v_regs
 
                 // a8 = v_regs[rs].i32
                 emit_l32i(&ctx, 8, 6, (uint16_t)(rs * 8));
@@ -3338,8 +3440,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Store type ESPB_TYPE_I8 (value 7) to v_regs[rd].type
                 emit_movi_n(&ctx, 10, 7);  // ESPB_TYPE_I8 = 7
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8 + 4));
-
-                emit_mov_n(&ctx, 11, 6);  // restore v_regs to a11
                 break;
             }
 
@@ -3347,8 +3447,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 if (pc + 2 > end) { ctx.error = true; break; }
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
-
-                emit_mov_n(&ctx, 6, 11);  // a6 = v_regs
 
                 // a8 = v_regs[rs].i32 (contains low 16 bits)
                 emit_l32i(&ctx, 8, 6, (uint16_t)(rs * 8));
@@ -3362,8 +3460,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Store type ESPB_TYPE_I8 (value 7) to v_regs[rd].type
                 emit_movi_n(&ctx, 10, 7);
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8 + 4));
-
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -3374,7 +3470,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 // Load value from v_regs[rs].i32, truncate to 16-bit signed, store to v_regs[rd]
                 // Result: rd = (int16_t)rs (sign-extended back to 32-bit for storage)
-                emit_mov_n(&ctx, 6, 11);  // a6 = v_regs
 
                 // a8 = v_regs[rs].i32
                 emit_l32i(&ctx, 8, 6, (uint16_t)(rs * 8));
@@ -3390,8 +3485,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Store type ESPB_TYPE_I16 (value 8) to v_regs[rd].type
                 emit_movi_n(&ctx, 10, 8);  // ESPB_TYPE_I16 = 8
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8 + 4));
-
-                emit_mov_n(&ctx, 11, 6);  // restore v_regs to a11
                 break;
             }
 
@@ -3431,7 +3524,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 }
                 uint32_t target_bc = (uint32_t)target_bc_signed;
                 // Load condition low32 into a8
-                emit_l32i(&ctx, 8, 11, (uint16_t)(cond_reg * 8));
+                emit_l32i(&ctx, 8, 6, (uint16_t)(cond_reg * 8));
 
                 // Lower BR_IF using BEQZ.N (2-byte) + J:
                 //   beqz.n a8, L_after   ; if cond==0 skip
@@ -3554,12 +3647,11 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Load index value from v_regs[ridx] into a10 (not a8, because emit_load_imm32 uses a8 internally)
                 // v_regs base is in a11, but it may have been clobbered by previous helper calls
                 // Restore a11 from stack [a1+8] where v_regs was saved in prologue
-                // NOTE: We cannot use a6 because it's only set before CALL_IMPORT and may be invalid
-                // when BR_TABLE is reached via backward jump from a loop.
-                emit_l32i(&ctx, 11, 1, 8);  // a11 = [a1+8] = v_regs (restore from stack)
+                // a6 keeps the v_regs base for the entire generated function, including loop back-edges.
+                // Restore a11 for following opcodes that use it as their memory base.
                 
                 uint16_t ridx_off = (uint16_t)(ridx * 8);
-                emit_l32i(&ctx, 10, 11, ridx_off); // a10 = v_regs[ridx].lo (a11 = v_regs base)
+                emit_l32i(&ctx, 10, 6, ridx_off); // a10 = v_regs[ridx].lo (a11 = v_regs base)
 
                 // IMPORTANT: In the interpreter, target_offset is applied AFTER reading the entire BR_TABLE instruction.
                 // So source_bc should be the bytecode offset AFTER the BR_TABLE, which is current pc position.
@@ -3730,11 +3822,11 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 // store low 32
                 emit_load_u32_to_a8(&ctx, &litpool, lo);
-                emit_s32i(&ctx, 8, 11, off);
+                emit_s32i(&ctx, 8, 6, off);
 
                 // store high 32
                 emit_load_u32_to_a8(&ctx, &litpool, hi);
-                emit_s32i(&ctx, 8, 11, (uint16_t)(off + 4));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(off + 4));
 
                 break;
             }
@@ -3756,13 +3848,18 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint16_t rs_off = (uint16_t)(rs * 8);
                 uint16_t rd_off = (uint16_t)(rd * 8);
 
-                // low 32
-                emit_l32i(&ctx, 8, 11, rs_off);
-                emit_s32i(&ctx, 8, 11, rd_off);
+                // MOV from a register to itself is a true no-op: the full
+                // 64-bit Value (including its type tag) is already in place.
+                // Avoid four generated memory operations in this common case.
+                if (rd != rs) {
+                    // low 32
+                    emit_l32i(&ctx, 8, 6, rs_off);
+                    emit_s32i(&ctx, 8, 6, rd_off);
 
-                // high 32
-                emit_l32i(&ctx, 8, 11, (uint16_t)(rs_off + 4));
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd_off + 4));
+                    // high 32
+                    emit_l32i(&ctx, 8, 6, (uint16_t)(rs_off + 4));
+                    emit_s32i(&ctx, 8, 6, (uint16_t)(rd_off + 4));
+                }
                 break;
             }
 
@@ -3780,9 +3877,10 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs1 = *pc++;
                 uint8_t rs2 = *pc++;
                 
-                // Load rs1 into a8, rs2 into a9
-                emit_l32i(&ctx, 8, 11, (uint16_t)(rs1 * 8));   // a8 = v_regs[rs1].i32
-                emit_l32i(&ctx, 9, 11, (uint16_t)(rs2 * 8));   // a9 = v_regs[rs2].i32
+                // Resolve operands from the block-local vreg cache when possible.
+                XTENSA_VCACHE_LOAD(rs1, 8);
+                if (rs1 == rs2) emit_mov_n(&ctx, 9, 8);
+                else XTENSA_VCACHE_LOAD(rs2, 9);
                 
                 switch (op) {
                     case 0x20: // ADD.I32: a8 = a8 + a9
@@ -3837,7 +3935,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         
                         // Save v_regs pointer (a11) across windowed call.
                         // With CALLX8 window rotation, caller a6 becomes callee a14 (callee-saved), so it's safe.
-                        emit_mov_n(&ctx, 6, 11);  // a6 = v_regs
                         
                         // Arguments already in a8, a9; move to a10, a11
                         emit_mov_n(&ctx, 10, 8);  // a10 = a8 (rs1)
@@ -3857,13 +3954,12 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         emit_mov_n(&ctx, 8, 10);
                         
                         // Restore a11 back to v_regs pointer from a6
-                        emit_mov_n(&ctx, 11, 6);  // a11 = v_regs
                         break;
                     }
                 }
                 
-                // Store result to v_regs[rd]
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8));
+                if (op >= 0x20 && op <= 0x22) XTENSA_VCACHE_FINISH(rd, 8, vcache_next);
+                else emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
                 break;
             }
 
@@ -3877,9 +3973,10 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs1 = *pc++;
                 uint8_t rs2 = *pc++;
                 
-                // Load rs1 into a8, rs2 into a9
-                emit_l32i(&ctx, 8, 11, (uint16_t)(rs1 * 8));   // a8 = v_regs[rs1].i32
-                emit_l32i(&ctx, 9, 11, (uint16_t)(rs2 * 8));   // a9 = v_regs[rs2].i32
+                // Resolve operands from the block-local vreg cache when possible.
+                XTENSA_VCACHE_LOAD(rs1, 8);
+                if (rs1 == rs2) emit_mov_n(&ctx, 9, 8);
+                else XTENSA_VCACHE_LOAD(rs2, 9);
                 
                 // Xtensa bitwise instructions (3 bytes each):
                 // Format: RST with op2 field
@@ -3911,8 +4008,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         break;
                 }
                 
-                // Store result to v_regs[rd]
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8));
+                XTENSA_VCACHE_FINISH(rd, 8, vcache_next);
                 break;
             }
 
@@ -3923,7 +4019,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
                 
                 // Load rs into a8
-                emit_l32i(&ctx, 8, 11, (uint16_t)(rs * 8));   // a8 = v_regs[rs].i32
+                emit_l32i(&ctx, 8, 6, (uint16_t)(rs * 8));   // a8 = v_regs[rs].i32
                 
                 // Xtensa doesn't have a native NOT instruction.
                 // Implement NOT as XOR with -1 (all bits set):
@@ -3935,7 +4031,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_u8(&ctx, 0x30);
                 
                 // Store result to v_regs[rd]
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
                 break;
             }
 
@@ -3949,9 +4045,10 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs1 = *pc++;
                 uint8_t rs2 = *pc++;
                 
-                // Load rs1 (value to shift) into a8, rs2 (shift amount) into a9
-                emit_l32i(&ctx, 8, 11, (uint16_t)(rs1 * 8));   // a8 = v_regs[rs1].i32
-                emit_l32i(&ctx, 9, 11, (uint16_t)(rs2 * 8));   // a9 = v_regs[rs2].i32 (shift amount)
+                // Resolve shift operands from the block-local vreg cache.
+                XTENSA_VCACHE_LOAD(rs1, 8);
+                if (rs1 == rs2) emit_mov_n(&ctx, 9, 8);
+                else XTENSA_VCACHE_LOAD(rs2, 9);
                 
                 // Xtensa variable shift uses a two-step sequence:
                 //   1) set shift amount register via SSL/SSR
@@ -3998,8 +4095,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         break;
                 }
                 
-                // Store result to v_regs[rd]
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8));
+                XTENSA_VCACHE_FINISH(rd, 8, vcache_next);
                 break;
             }
 
@@ -4010,17 +4106,17 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
 
                 // Load 32 bits from v_regs[rs]
-                emit_l32i(&ctx, 8, 11, (uint16_t)(rs * 8));
+                emit_l32i(&ctx, 8, 6, (uint16_t)(rs * 8));
 
                 // Zero-extend 8-bit to 32-bit using EXTUI: extract 8 bits
                 emit_extui(&ctx, 8, 8, 0, 8);
 
                 // Store low32 to v_regs[rd]
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
 
                 // Zero high32
                 emit_movi_n(&ctx, 9, 0);
-                emit_s32i(&ctx, 9, 11, (uint16_t)(rd * 8 + 4));
+                emit_s32i(&ctx, 9, 6, (uint16_t)(rd * 8 + 4));
 
                 break;
             }
@@ -4031,7 +4127,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
                 
                 // Load 32 bits from v_regs[rs]
-                emit_l32i(&ctx, 8, 11, (uint16_t)(rs * 8));
+                emit_l32i(&ctx, 8, 6, (uint16_t)(rs * 8));
                 
                 // Zero-extend 16-bit to 32-bit using EXTUI: extract 16 bits from position 0
                 // EXTUI aR, aS, shift, width - extracts bits and zero-extends
@@ -4045,12 +4141,12 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_u8(&ctx, 0xF4);  // ((16-1) << 4) | 0x04
                 
                 // Store to v_regs[rd]
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
                 
                 // Clear high 32 bits (type field) - store 0 for I32 type
                 // Use a9 to avoid clobbering a8 (result)
                 emit_movi_n(&ctx, 9, 0);
-                emit_s32i(&ctx, 9, 11, (uint16_t)(rd * 8 + 4));
+                emit_s32i(&ctx, 9, 6, (uint16_t)(rd * 8 + 4));
                 
                 break;
             }
@@ -4061,18 +4157,18 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
 
                 // Load 32 bits from v_regs[rs]
-                emit_l32i(&ctx, 8, 11, (uint16_t)(rs * 8));
+                emit_l32i(&ctx, 8, 6, (uint16_t)(rs * 8));
 
                 // Sign-extend 8-bit to 32-bit: (val << 24) >> 24
                 emit_slli(&ctx, 8, 8, 24);
                 emit_srai(&ctx, 8, 8, 24);
 
                 // Store to v_regs[rd]
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
 
                 // Set type = ESPB_TYPE_I32 (value 1)
                 emit_movi_n(&ctx, 9, 1);
-                emit_s32i(&ctx, 9, 11, (uint16_t)(rd * 8 + 4));
+                emit_s32i(&ctx, 9, 6, (uint16_t)(rd * 8 + 4));
 
                 break;
             }
@@ -4083,18 +4179,18 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
 
                 // Load 32 bits from v_regs[rs]
-                emit_l32i(&ctx, 8, 11, (uint16_t)(rs * 8));
+                emit_l32i(&ctx, 8, 6, (uint16_t)(rs * 8));
 
                 // Sign-extend 8-bit to 32-bit: (val << 24) >> 24
                 emit_slli(&ctx, 8, 8, 24);
                 emit_srai(&ctx, 8, 8, 24);
 
                 // Store to v_regs[rd]
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
 
                 // Set type = ESPB_TYPE_I16 (value 2)
                 emit_movi_n(&ctx, 9, 2);
-                emit_s32i(&ctx, 9, 11, (uint16_t)(rd * 8 + 4));
+                emit_s32i(&ctx, 9, 6, (uint16_t)(rd * 8 + 4));
 
                 break;
             }
@@ -4105,20 +4201,20 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
 
                 // Load 32 bits from v_regs[rs]
-                emit_l32i(&ctx, 8, 11, (uint16_t)(rs * 8));
+                emit_l32i(&ctx, 8, 6, (uint16_t)(rs * 8));
 
                 // Sign-extend 8-bit to 32-bit: (val << 24) >> 24
                 emit_slli(&ctx, 8, 8, 24);
                 emit_srai(&ctx, 8, 8, 24);
 
                 // Store low 32 bits to v_regs[rd]
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
 
                 // Sign-extend into high 32 bits: srai a9, a8, 31
                 emit_u8(&ctx, 0x80);  // (as=8 << 4) | 0
                 emit_u8(&ctx, 0x9F);  // (at=9 << 4) | 0xF
                 emit_u8(&ctx, 0x31);  // opcode with sa=31
-                emit_s32i(&ctx, 9, 11, (uint16_t)(rd * 8 + 4));
+                emit_s32i(&ctx, 9, 6, (uint16_t)(rd * 8 + 4));
 
                 break;
             }
@@ -4129,18 +4225,18 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
 
                 // Load 32 bits from v_regs[rs]
-                emit_l32i(&ctx, 8, 11, (uint16_t)(rs * 8));
+                emit_l32i(&ctx, 8, 6, (uint16_t)(rs * 8));
 
                 // Sign-extend 16-bit to 32-bit: (val << 16) >> 16
                 emit_slli(&ctx, 8, 8, 16);
                 emit_srai(&ctx, 8, 8, 16);
 
                 // Store to v_regs[rd]
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
 
                 // Set type = ESPB_TYPE_I32 (value 1)
                 emit_movi_n(&ctx, 9, 1);
-                emit_s32i(&ctx, 9, 11, (uint16_t)(rd * 8 + 4));
+                emit_s32i(&ctx, 9, 6, (uint16_t)(rd * 8 + 4));
 
                 break;
             }
@@ -4151,20 +4247,20 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
 
                 // Load 32 bits from v_regs[rs]
-                emit_l32i(&ctx, 8, 11, (uint16_t)(rs * 8));
+                emit_l32i(&ctx, 8, 6, (uint16_t)(rs * 8));
 
                 // Sign-extend 16-bit to 32-bit: (val << 16) >> 16
                 emit_slli(&ctx, 8, 8, 16);
                 emit_srai(&ctx, 8, 8, 16);
 
                 // Store low 32 bits
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
 
                 // Sign-extend into high 32 bits: srai a9, a8, 31
                 emit_u8(&ctx, 0x80);  // (as=8 << 4) | 0
                 emit_u8(&ctx, 0x9F);  // (at=9 << 4) | 0xF
                 emit_u8(&ctx, 0x31);  // opcode with sa=31
-                emit_s32i(&ctx, 9, 11, (uint16_t)(rd * 8 + 4));
+                emit_s32i(&ctx, 9, 6, (uint16_t)(rd * 8 + 4));
 
                 break;
             }
@@ -4175,15 +4271,15 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
                 
                 // Load low 32 bits from v_regs[rs]
-                emit_l32i(&ctx, 8, 11, (uint16_t)(rs * 8));
+                emit_l32i(&ctx, 8, 6, (uint16_t)(rs * 8));
                 
                 // Store to low 32 bits of v_regs[rd]
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
                 
                 // Zero out high 32 bits of v_regs[rd]
                 // Use movi.n a8, 0 then s32i
                 emit_movi_n(&ctx, 8, 0);
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8 + 4));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8 + 4));
                 
                 break;
             }
@@ -4194,10 +4290,10 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
                 
                 // Load low 32 bits from v_regs[rs]
-                emit_l32i(&ctx, 8, 11, (uint16_t)(rs * 8));
+                emit_l32i(&ctx, 8, 6, (uint16_t)(rs * 8));
                 
                 // Store to low 32 bits of v_regs[rd]
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
                 
                 // Sign-extend: high 32 bits = (low32 >> 31) ? 0xFFFFFFFF : 0
                 // srai a9, a8, 31 (arithmetic shift right by 31 gives all sign bits)
@@ -4212,7 +4308,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_u8(&ctx, 0x31);  // opcode with sa encoded
                 
                 // Store sign-extended value to high 32 bits
-                emit_s32i(&ctx, 9, 11, (uint16_t)(rd * 8 + 4));
+                emit_s32i(&ctx, 9, 6, (uint16_t)(rd * 8 + 4));
                 
                 break;
             }
@@ -4228,7 +4324,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 // Store to low 32 bits of v_regs[rd]
                 emit_load_u32_to_a8(&ctx, &litpool, imm32);
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
                 break;
             }
 
@@ -4244,11 +4340,11 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 
                 // Load lo32 into a8 via literal pool and store to v_regs[rd].lo
                 emit_load_u32_to_a8(&ctx, &litpool, lo32);
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
                 
                 // Load hi32 into a8 via literal pool and store to v_regs[rd].hi
                 emit_load_u32_to_a8(&ctx, &litpool, hi32);
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8 + 4));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8 + 4));
                 
                 break;
             }
@@ -4278,11 +4374,9 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 }
                 if (!helper) { ctx.error = true; break; }
 
-                emit_mov_n(&ctx, 6, 11); // save v_regs
-
                 // a10 = r1 bits, a11 = r2 bits
-                emit_l32i(&ctx, 10, 11, (uint16_t)(r1 * 8));
-                emit_l32i(&ctx, 11, 11, (uint16_t)(r2 * 8));
+                emit_l32i(&ctx, 10, 6, (uint16_t)(r1 * 8));
+                emit_l32i(&ctx, 11, 6, (uint16_t)(r2 * 8));
 
                 emit_load_u32_to_a8(&ctx, &litpool, (uint32_t)(uintptr_t)helper);
                 emit_callx8_a8(&ctx);
@@ -4291,8 +4385,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8));
                 emit_movi_n(&ctx, 10, 0);
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8 + 4));
-
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -4304,9 +4396,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t r1 = *pc++;
 
                 void* helper = (op == 0x66) ? (void*)jit_helper_fabs_f32_bits : (void*)jit_helper_fsqrt_f32_bits;
-
-                emit_mov_n(&ctx, 6, 11);
-                emit_l32i(&ctx, 10, 11, (uint16_t)(r1 * 8));
+                emit_l32i(&ctx, 10, 6, (uint16_t)(r1 * 8));
 
                 emit_load_u32_to_a8(&ctx, &litpool, (uint32_t)(uintptr_t)helper);
                 emit_callx8_a8(&ctx);
@@ -4314,8 +4404,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8));
                 emit_movi_n(&ctx, 10, 0);
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8 + 4));
-
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -4326,10 +4414,9 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
 
                 // Save v_regs pointer in a6 across windowed call
-                emit_mov_n(&ctx, 6, 11);
 
                 // a10 = raw f32 bits (low32)
-                emit_l32i(&ctx, 10, 11, (uint16_t)(rs * 8));
+                emit_l32i(&ctx, 10, 6, (uint16_t)(rs * 8));
 
                 // call helper, returns uint64 bits in a10:a11
                 emit_load_u32_to_a8(&ctx, &litpool, (uint32_t)(uintptr_t)jit_helper_fpromote_f32_to_f64_bits);
@@ -4340,7 +4427,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 11, 6, (uint16_t)(rd * 8 + 4));
 
                 // restore v_regs pointer
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -4350,7 +4436,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
 
                 // Save v_regs pointer in a6 across windowed call
-                emit_mov_n(&ctx, 6, 11);
 
                 // a10:a11 = raw f64 bits
                 emit_l32i(&ctx, 10, 6, (uint16_t)(rs * 8));
@@ -4366,7 +4451,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8 + 4));
 
                 // restore v_regs pointer
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -4376,7 +4460,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
 
                 // Save v_regs pointer in a6 across windowed call
-                emit_mov_n(&ctx, 6, 11);
 
                 // a10 = raw f32 bits
                 emit_l32i(&ctx, 10, 6, (uint16_t)(rs * 8));
@@ -4391,7 +4474,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8 + 4));
 
                 // restore v_regs pointer
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -4401,7 +4483,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
 
                 // Save v_regs pointer in a6 across windowed call
-                emit_mov_n(&ctx, 6, 11);
 
                 // a10 = raw f32 bits
                 emit_l32i(&ctx, 10, 6, (uint16_t)(rs * 8));
@@ -4415,7 +4496,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 11, 6, (uint16_t)(rd * 8 + 4));
 
                 // restore v_regs pointer
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -4425,7 +4505,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
 
                 // Save v_regs pointer in a6 across windowed call
-                emit_mov_n(&ctx, 6, 11);
 
                 // a10:a11 = raw f64 bits
                 emit_l32i(&ctx, 10, 6, (uint16_t)(rs * 8));
@@ -4441,7 +4520,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8 + 4));
 
                 // restore v_regs pointer
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -4451,7 +4529,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
 
                 // Save v_regs pointer in a6 across windowed call
-                emit_mov_n(&ctx, 6, 11);
 
                 // a10:a11 = raw f64 bits
                 emit_l32i(&ctx, 10, 6, (uint16_t)(rs * 8));
@@ -4466,7 +4543,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 11, 6, (uint16_t)(rd * 8 + 4));
 
                 // restore v_regs pointer
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -4476,11 +4552,10 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
 
                 // Save v_regs pointer across call
-                emit_mov_n(&ctx, 6, 11);
 
                 // Load raw f64 bits into a10:a11
-                emit_l32i(&ctx, 10, 11, (uint16_t)(rs * 8));
-                emit_l32i(&ctx, 11, 11, (uint16_t)(rs * 8 + 4));
+                emit_l32i(&ctx, 10, 6, (uint16_t)(rs * 8));
+                emit_l32i(&ctx, 11, 6, (uint16_t)(rs * 8 + 4));
 
                 // Call helper -> returns int32 in a10
                 emit_load_u32_to_a8(&ctx, &litpool, (uint32_t)(uintptr_t)jit_helper_cvt_f64_i32_bits);
@@ -4492,7 +4567,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 11, 6, (uint16_t)(rd * 8 + 4));
 
                 // Restore v_regs
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -4502,11 +4576,10 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
 
                 // Save v_regs pointer across call
-                emit_mov_n(&ctx, 6, 11);
 
                 // Load raw f64 bits into a10:a11
-                emit_l32i(&ctx, 10, 11, (uint16_t)(rs * 8));
-                emit_l32i(&ctx, 11, 11, (uint16_t)(rs * 8 + 4));
+                emit_l32i(&ctx, 10, 6, (uint16_t)(rs * 8));
+                emit_l32i(&ctx, 11, 6, (uint16_t)(rs * 8 + 4));
 
                 // Call helper -> returns int64 in a10:a11
                 emit_load_u32_to_a8(&ctx, &litpool, (uint32_t)(uintptr_t)jit_helper_cvt_f64_i64);
@@ -4517,7 +4590,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 11, 6, (uint16_t)(rd * 8 + 4));
 
                 // Restore v_regs
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -4527,7 +4599,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
 
                 // Save v_regs pointer in a6 across windowed call
-                emit_mov_n(&ctx, 6, 11);
 
                 // a10 = raw f32 bits
                 emit_l32i(&ctx, 10, 6, (uint16_t)(rs * 8));
@@ -4542,7 +4613,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 11, 6, (uint16_t)(rd * 8 + 4));
 
                 // restore v_regs pointer
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -4552,7 +4622,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
 
                 // Save v_regs pointer in a6 across windowed call
-                emit_mov_n(&ctx, 6, 11);
 
                 // a10 = raw f32 bits
                 emit_l32i(&ctx, 10, 6, (uint16_t)(rs * 8));
@@ -4566,7 +4635,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 11, 6, (uint16_t)(rd * 8 + 4));
 
                 // restore v_regs pointer
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -4576,7 +4644,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
 
                 // Save v_regs pointer in a6 across windowed call
-                emit_mov_n(&ctx, 6, 11);
 
                 // a10 = raw u32 value
                 emit_l32i(&ctx, 10, 6, (uint16_t)(rs * 8));
@@ -4591,7 +4658,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8 + 4));
 
                 // restore v_regs pointer
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -4601,10 +4667,9 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
 
                 // Save v_regs pointer across call
-                emit_mov_n(&ctx, 6, 11);
 
                 // a10 = raw u32 value
-                emit_l32i(&ctx, 10, 11, (uint16_t)(rs * 8));
+                emit_l32i(&ctx, 10, 6, (uint16_t)(rs * 8));
 
                 // call helper, returns uint64 f64 bits in a10:a11
                 emit_load_u32_to_a8(&ctx, &litpool, (uint32_t)(uintptr_t)jit_helper_cvt_u32_f64_bits);
@@ -4615,7 +4680,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 11, 6, (uint16_t)(rd * 8 + 4));
 
                 // restore v_regs pointer
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -4625,7 +4689,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
 
                 // Save v_regs pointer across call
-                emit_mov_n(&ctx, 6, 11);
 
                 // a10:a11 = raw u64 value
                 emit_l32i(&ctx, 10, 6, (uint16_t)(rs * 8));
@@ -4641,7 +4704,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8 + 4));
 
                 // Restore v_regs
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -4651,7 +4713,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
 
                 // Save v_regs pointer across call
-                emit_mov_n(&ctx, 6, 11);
 
                 // a10 = raw i32 value
                 emit_l32i(&ctx, 10, 6, (uint16_t)(rs * 8));
@@ -4666,7 +4727,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8 + 4));
 
                 // Restore v_regs
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -4676,7 +4736,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
 
                 // Save v_regs pointer across call
-                emit_mov_n(&ctx, 6, 11);
 
                 // a10 = raw i32 value
                 emit_l32i(&ctx, 10, 6, (uint16_t)(rs * 8));
@@ -4690,7 +4749,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 11, 6, (uint16_t)(rd * 8 + 4));
 
                 // Restore v_regs
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
             
@@ -4702,7 +4760,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
                 
                 // Save v_regs pointer (a11) to a6
-                emit_mov_n(&ctx, 6, 11);  // a6 = v_regs
                 
                 // Load rs (64-bit) into a10:a11
                 emit_l32i(&ctx, 10, 6, (uint16_t)(rs * 8));      // a10 = v_regs[rs].lo
@@ -4719,7 +4776,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8 + 4));   // v_regs[rd].hi = 0
                 
                 // Restore v_regs pointer to a11
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
             
@@ -4736,7 +4792,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                                             : (void*)jit_helper_cvt_i64_f64_bits;
                 
                 // Save v_regs pointer (a11) to a6
-                emit_mov_n(&ctx, 6, 11);  // a6 = v_regs
                 
                 // Load rs (64-bit) into a10:a11
                 emit_l32i(&ctx, 10, 6, (uint16_t)(rs * 8));      // a10 = v_regs[rs].lo
@@ -4751,7 +4806,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 11, 6, (uint16_t)(rd * 8 + 4));   // v_regs[rd].hi = a11
                 
                 // Restore v_regs pointer to a11
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -4781,7 +4835,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Fast path: inline NOT.I64
                 if (op == 0x3E) {
                     // Use a6 as base for v_regs
-                    emit_mov_n(&ctx, 6, 11); // a6 = v_regs
 
                     // Load src
                     emit_l32i(&ctx, 8, 6, (uint16_t)(rs1 * 8));
@@ -4805,7 +4858,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     emit_s32i(&ctx, 9, 6, (uint16_t)(rd * 8 + 4));
 
                     // Restore v_regs pointer
-                    emit_mov_n(&ctx, 11, 6);
                     break;
                 }
 
@@ -4815,10 +4867,10 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     // Load operands directly from a11 (v_regs base):
                     // rs1 -> a8(lo), a9(hi)
                     // rs2 -> a10(lo), a12(hi)
-                    emit_l32i(&ctx, 8,  11, (uint16_t)(rs1 * 8));
-                    emit_l32i(&ctx, 9,  11, (uint16_t)(rs1 * 8 + 4));
-                    emit_l32i(&ctx, 10, 11, (uint16_t)(rs2 * 8));
-                    emit_l32i(&ctx, 12, 11, (uint16_t)(rs2 * 8 + 4));
+                    emit_l32i(&ctx, 8,  6, (uint16_t)(rs1 * 8));
+                    emit_l32i(&ctx, 9,  6, (uint16_t)(rs1 * 8 + 4));
+                    emit_l32i(&ctx, 10, 6, (uint16_t)(rs2 * 8));
+                    emit_l32i(&ctx, 12, 6, (uint16_t)(rs2 * 8 + 4));
 
                     // Preserve rs1.lo for carry check
                     emit_mov_n(&ctx, 13, 8); // a13 = rs1.lo
@@ -4839,8 +4891,8 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     uint32_t no_carry_target = (uint32_t)ctx.offset;
 
                     // Store result directly via a11
-                    emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8));
-                    emit_s32i(&ctx, 9, 11, (uint16_t)(rd * 8 + 4));
+                    emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
+                    emit_s32i(&ctx, 9, 6, (uint16_t)(rd * 8 + 4));
 
                     // Patch branch (flush first)
                     emit_flush_words(&ctx);
@@ -4855,10 +4907,10 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     // Load operands directly from a11 (v_regs base):
                     // rs1 -> a8(lo), a9(hi)
                     // rs2 -> a10(lo), a12(hi)
-                    emit_l32i(&ctx, 8,  11, (uint16_t)(rs1 * 8));
-                    emit_l32i(&ctx, 9,  11, (uint16_t)(rs1 * 8 + 4));
-                    emit_l32i(&ctx, 10, 11, (uint16_t)(rs2 * 8));
-                    emit_l32i(&ctx, 12, 11, (uint16_t)(rs2 * 8 + 4));
+                    emit_l32i(&ctx, 8,  6, (uint16_t)(rs1 * 8));
+                    emit_l32i(&ctx, 9,  6, (uint16_t)(rs1 * 8 + 4));
+                    emit_l32i(&ctx, 10, 6, (uint16_t)(rs2 * 8));
+                    emit_l32i(&ctx, 12, 6, (uint16_t)(rs2 * 8 + 4));
 
                     // Preserve rs1.lo for borrow check
                     emit_mov_n(&ctx, 13, 8); // a13 = rs1.lo
@@ -4883,8 +4935,8 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     uint32_t no_borrow_target = (uint32_t)ctx.offset;
 
                     // Store result directly via a11
-                    emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8));
-                    emit_s32i(&ctx, 9, 11, (uint16_t)(rd * 8 + 4));
+                    emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
+                    emit_s32i(&ctx, 9, 6, (uint16_t)(rd * 8 + 4));
 
                     // Patch branch (flush first)
                     emit_flush_words(&ctx);
@@ -4897,8 +4949,8 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // OPTIMIZED: use a11 directly as v_regs base
                 if (op == 0x38 || op == 0x39 || op == 0x3A) {
                     // lo
-                    emit_l32i(&ctx, 8, 11, (uint16_t)(rs1 * 8));      // a8 = rs1.lo
-                    emit_l32i(&ctx, 9, 11, (uint16_t)(rs2 * 8));      // a9 = rs2.lo
+                    emit_l32i(&ctx, 8, 6, (uint16_t)(rs1 * 8));      // a8 = rs1.lo
+                    emit_l32i(&ctx, 9, 6, (uint16_t)(rs2 * 8));      // a9 = rs2.lo
                     if (op == 0x38) {
                         // and a8, a8, a9 => bytes 90 88 10
                         emit_u8(&ctx, 0x90);
@@ -4915,11 +4967,11 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         emit_u8(&ctx, 0x88);
                         emit_u8(&ctx, 0x30);
                     }
-                    emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8));
+                    emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
 
                     // hi
-                    emit_l32i(&ctx, 8, 11, (uint16_t)(rs1 * 8 + 4));  // a8 = rs1.hi
-                    emit_l32i(&ctx, 9, 11, (uint16_t)(rs2 * 8 + 4));  // a9 = rs2.hi
+                    emit_l32i(&ctx, 8, 6, (uint16_t)(rs1 * 8 + 4));  // a8 = rs1.hi
+                    emit_l32i(&ctx, 9, 6, (uint16_t)(rs2 * 8 + 4));  // a9 = rs2.hi
                     if (op == 0x38) {
                         emit_u8(&ctx, 0x90);
                         emit_u8(&ctx, 0x88);
@@ -4933,7 +4985,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         emit_u8(&ctx, 0x88);
                         emit_u8(&ctx, 0x30);
                     }
-                    emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8 + 4));
+                    emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8 + 4));
 
                     break;
                 }
@@ -4966,7 +5018,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 if (!helper) { ctx.error = true; break; }
                 
                 // Save v_regs pointer (a11) to a6 (maps to callee a14, callee-saved)
-                emit_mov_n(&ctx, 6, 11);  // a6 = v_regs
                 
                 // Load rs1 into a10:a11 (64-bit value, lo in a10, hi in a11)
                 emit_l32i(&ctx, 10, 6, (uint16_t)(rs1 * 8));      // a10 = v_regs[rs1].lo
@@ -4991,7 +5042,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 11, 6, (uint16_t)(rd * 8 + 4));   // v_regs[rd].hi = a11
                 
                 // Restore v_regs pointer to a11 for subsequent opcodes
-                emit_mov_n(&ctx, 11, 6);  // a11 = v_regs
                 
                 break;
             }
@@ -5024,8 +5074,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 if (ctx.error) break;
 
                 // a10 = v_regs
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 10, 8);
+                emit_l32i(&ctx, 10, 1, 8);
 
                 // a11 = rd
                 if (rd <= 15) emit_movi_n(&ctx, 11, (int8_t)rd);
@@ -5045,8 +5094,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 // Re-load v_regs and set up args (callee a2..a7 <= caller a10..a15)
                 // NOTE: a8 is used as scratch in this sequence, so load helper address into a8 *after* args are ready.
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 10, 8); // a10 = v_regs
+                emit_l32i(&ctx, 10, 1, 8); // a10 = v_regs
 
                 // a11 = rd
                 if (rd <= 15) emit_movi_n(&ctx, 11, (int8_t)rd);
@@ -5071,8 +5119,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_callx8_a8(&ctx);
 
                 // Restore a11 back to v_regs pointer (ABI for rest of JIT assumes a11=v_regs)
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 11, 8);
+                emit_l32i(&ctx, 11, 1, 8);
                 break;
             }
 
@@ -5085,8 +5132,8 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t sh = imm & 63;
                 
                 // Load source 64-bit value: a8 = lo, a9 = hi
-                emit_l32i(&ctx, 8, 11, (uint16_t)(r1 * 8));      // a8 = v_regs[r1].lo
-                emit_l32i(&ctx, 9, 11, (uint16_t)(r1 * 8 + 4));  // a9 = v_regs[r1].hi
+                emit_l32i(&ctx, 8, 6, (uint16_t)(r1 * 8));      // a8 = v_regs[r1].lo
+                emit_l32i(&ctx, 9, 6, (uint16_t)(r1 * 8 + 4));  // a9 = v_regs[r1].hi
                 
                 if (sh == 0) {
                     // No shift - just copy
@@ -5157,8 +5204,8 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 }
                 
                 // Store result
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8));      // v_regs[rd].lo = a8
-                emit_s32i(&ctx, 9, 11, (uint16_t)(rd * 8 + 4));  // v_regs[rd].hi = a9
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));      // v_regs[rd].lo = a8
+                emit_s32i(&ctx, 9, 6, (uint16_t)(rd * 8 + 4));  // v_regs[rd].hi = a9
                 break;
             }
 
@@ -5176,16 +5223,16 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint16_t rd_off = (uint16_t)(rd * 8);
 
                 // a8 = v_regs[r1].low32
-                emit_l32i(&ctx, 8, 11, r1_off);
+                emit_l32i(&ctx, 8, 6, r1_off);
 
                 // a8 = a8 + imm8
                 emit_addi(&ctx, 8, 8, imm8);
 
                 // store result low32
-                emit_s32i(&ctx, 8, 11, rd_off);
+                emit_s32i(&ctx, 8, 6, rd_off);
                 // clear high32
                 emit_movi_n(&ctx, 8, 0);
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd_off + 4));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd_off + 4));
                 break;
             }
 
@@ -5203,16 +5250,16 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint16_t rd_off = (uint16_t)(rd * 8);
 
                 // a8 = v_regs[r1].low32
-                emit_l32i(&ctx, 8, 11, r1_off);
+                emit_l32i(&ctx, 8, 6, r1_off);
 
                 // a8 = a8 - imm8
                 emit_addi(&ctx, 8, 8, (int8_t)(-imm8));
 
                 // store result low32
-                emit_s32i(&ctx, 8, 11, rd_off);
+                emit_s32i(&ctx, 8, 6, rd_off);
                 // clear high32
                 emit_movi_n(&ctx, 8, 0);
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd_off + 4));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd_off + 4));
                 break;
             }
 
@@ -5230,7 +5277,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint16_t rd_off = (uint16_t)(rd * 8);
 
                 // a8 = v_regs[r1].low32
-                emit_l32i(&ctx, 8, 11, r1_off);
+                emit_l32i(&ctx, 8, 6, r1_off);
 
                 // a9 = imm32 (sign-extended from imm8)
                 emit_load_imm32(&ctx, &litpool, 9, (int32_t)imm8);
@@ -5241,10 +5288,10 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_u8(&ctx, 0x82);  // (op2 << 4) | 2 (mull)
 
                 // store result low32
-                emit_s32i(&ctx, 8, 11, rd_off);
+                emit_s32i(&ctx, 8, 6, rd_off);
                 // clear high32
                 emit_movi_n(&ctx, 8, 0);
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd_off + 4));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd_off + 4));
                 break;
             }
 
@@ -5262,12 +5309,11 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint16_t rd_off = (uint16_t)(rd * 8);
 
                 // a8 = v_regs[r1].low32
-                emit_l32i(&ctx, 8, 11, r1_off);
+                emit_l32i(&ctx, 8, 6, r1_off);
                 // a9 = imm32 (sign-extended)
                 emit_load_imm32(&ctx, &litpool, 9, (int32_t)imm8);
 
                 // Save v_regs pointer across helper call
-                emit_mov_n(&ctx, 6, 11);
 
                 // Move args into a10/a11
                 emit_mov_n(&ctx, 10, 8);
@@ -5279,13 +5325,12 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_mov_n(&ctx, 8, 10);
 
                 // Restore v_regs pointer
-                emit_mov_n(&ctx, 11, 6);
 
                 // store result low32
-                emit_s32i(&ctx, 8, 11, rd_off);
+                emit_s32i(&ctx, 8, 6, rd_off);
                 // clear high32
                 emit_movi_n(&ctx, 8, 0);
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd_off + 4));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd_off + 4));
                 break;
             }
 
@@ -5303,12 +5348,11 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint16_t rd_off = (uint16_t)(rd * 8);
 
                 // a8 = v_regs[r1].low32
-                emit_l32i(&ctx, 8, 11, r1_off);
+                emit_l32i(&ctx, 8, 6, r1_off);
                 // a9 = imm32 (zero-extended from imm8)
                 emit_load_imm32(&ctx, &litpool, 9, (uint32_t)(uint8_t)imm8);
 
                 // Save v_regs pointer across helper call
-                emit_mov_n(&ctx, 6, 11);
 
                 // Move args into a10/a11
                 emit_mov_n(&ctx, 10, 8);
@@ -5320,13 +5364,12 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_mov_n(&ctx, 8, 10);
 
                 // Restore v_regs pointer
-                emit_mov_n(&ctx, 11, 6);
 
                 // store result low32
-                emit_s32i(&ctx, 8, 11, rd_off);
+                emit_s32i(&ctx, 8, 6, rd_off);
                 // clear high32
                 emit_movi_n(&ctx, 8, 0);
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd_off + 4));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd_off + 4));
                 break;
             }
 
@@ -5344,12 +5387,11 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint16_t rd_off = (uint16_t)(rd * 8);
 
                 // a8 = v_regs[r1].low32
-                emit_l32i(&ctx, 8, 11, r1_off);
+                emit_l32i(&ctx, 8, 6, r1_off);
                 // a9 = imm32 (sign-extended from imm8)
                 emit_load_imm32(&ctx, &litpool, 9, (int32_t)imm8);
 
                 // Save v_regs pointer across helper call
-                emit_mov_n(&ctx, 6, 11);
 
                 // Move args into a10/a11
                 emit_mov_n(&ctx, 10, 8);
@@ -5361,13 +5403,12 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_mov_n(&ctx, 8, 10);
 
                 // Restore v_regs pointer
-                emit_mov_n(&ctx, 11, 6);
 
                 // store result low32
-                emit_s32i(&ctx, 8, 11, rd_off);
+                emit_s32i(&ctx, 8, 6, rd_off);
                 // clear high32
                 emit_movi_n(&ctx, 8, 0);
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd_off + 4));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd_off + 4));
                 break;
             }
 
@@ -5385,12 +5426,11 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint16_t rd_off = (uint16_t)(rd * 8);
 
                 // a8 = v_regs[r1].low32
-                emit_l32i(&ctx, 8, 11, r1_off);
+                emit_l32i(&ctx, 8, 6, r1_off);
                 // a9 = imm32 (zero-extended from imm8)
                 emit_load_imm32(&ctx, &litpool, 9, (uint32_t)(uint8_t)imm8);
 
                 // Save v_regs pointer across helper call
-                emit_mov_n(&ctx, 6, 11);
 
                 // Move args into a10/a11
                 emit_mov_n(&ctx, 10, 8);
@@ -5402,13 +5442,12 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_mov_n(&ctx, 8, 10);
 
                 // Restore v_regs pointer
-                emit_mov_n(&ctx, 11, 6);
 
                 // store result low32
-                emit_s32i(&ctx, 8, 11, rd_off);
+                emit_s32i(&ctx, 8, 6, rd_off);
                 // clear high32
                 emit_movi_n(&ctx, 8, 0);
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd_off + 4));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd_off + 4));
                 break;
             }
 
@@ -5426,16 +5465,16 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint16_t rd_off = (uint16_t)(rd * 8);
 
                 // a8 = v_regs[r1].low32
-                emit_l32i(&ctx, 8, 11, r1_off);
+                emit_l32i(&ctx, 8, 6, r1_off);
 
                 // a8 = a8 >> imm8 (arith)
                 emit_srai(&ctx, 8, 8, (uint8_t)(imm8 & 0x1F));
 
                 // store result low32
-                emit_s32i(&ctx, 8, 11, rd_off);
+                emit_s32i(&ctx, 8, 6, rd_off);
                 // clear high32
                 emit_movi_n(&ctx, 8, 0);
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd_off + 4));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd_off + 4));
                 break;
             }
 
@@ -5453,16 +5492,16 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint16_t rd_off = (uint16_t)(rd * 8);
 
                 // a8 = v_regs[r1].low32
-                emit_l32i(&ctx, 8, 11, r1_off);
+                emit_l32i(&ctx, 8, 6, r1_off);
 
                 // a8 = a8 >> imm8 (logical)
                 emit_srli(&ctx, 8, 8, (uint8_t)(imm8 & 0x1F));
 
                 // store result low32
-                emit_s32i(&ctx, 8, 11, rd_off);
+                emit_s32i(&ctx, 8, 6, rd_off);
                 // clear high32
                 emit_movi_n(&ctx, 8, 0);
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd_off + 4));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd_off + 4));
                 break;
             }
 
@@ -5480,7 +5519,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint16_t rd_off = (uint16_t)(rd * 8);
 
                 // a8 = v_regs[r1].low32
-                emit_l32i(&ctx, 8, 11, r1_off);
+                emit_l32i(&ctx, 8, 6, r1_off);
 
                 // a9 = imm32 (sign-extended from imm8)
                 emit_load_imm32(&ctx, &litpool, 9, (int32_t)imm8);
@@ -5491,10 +5530,10 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_u8(&ctx, 0x10);  // (op2 << 4) | 0 where op2=1 (AND)
 
                 // store result low32
-                emit_s32i(&ctx, 8, 11, rd_off);
+                emit_s32i(&ctx, 8, 6, rd_off);
                 // clear high32
                 emit_movi_n(&ctx, 8, 0);
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd_off + 4));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd_off + 4));
                 break;
             }
 
@@ -5512,7 +5551,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint16_t rd_off = (uint16_t)(rd * 8);
 
                 // a8 = v_regs[r1].low32
-                emit_l32i(&ctx, 8, 11, r1_off);
+                emit_l32i(&ctx, 8, 6, r1_off);
 
                 // a9 = imm32 (sign-extended from imm8)
                 emit_load_imm32(&ctx, &litpool, 9, (int32_t)imm8);
@@ -5523,10 +5562,10 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_u8(&ctx, 0x20);  // (op2 << 4) | 0 where op2=2 (OR)
 
                 // store result low32
-                emit_s32i(&ctx, 8, 11, rd_off);
+                emit_s32i(&ctx, 8, 6, rd_off);
                 // clear high32
                 emit_movi_n(&ctx, 8, 0);
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd_off + 4));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd_off + 4));
                 break;
             }
 
@@ -5544,7 +5583,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint16_t rd_off = (uint16_t)(rd * 8);
 
                 // a8 = v_regs[r1].low32
-                emit_l32i(&ctx, 8, 11, r1_off);
+                emit_l32i(&ctx, 8, 6, r1_off);
 
                 // a9 = imm32 (sign-extended from imm8)
                 emit_load_imm32(&ctx, &litpool, 9, (int32_t)imm8);
@@ -5555,10 +5594,10 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_u8(&ctx, 0x30);  // (op2 << 4) | 0 where op2=3 (XOR)
 
                 // store result low32
-                emit_s32i(&ctx, 8, 11, rd_off);
+                emit_s32i(&ctx, 8, 6, rd_off);
                 // clear high32
                 emit_movi_n(&ctx, 8, 0);
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd_off + 4));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd_off + 4));
                 break;
             }
 
@@ -5576,8 +5615,8 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint16_t rd_off = (uint16_t)(rd * 8);
 
                 // rs -> a8(lo), a9(hi)
-                emit_l32i(&ctx, 8, 11, r1_off);
-                emit_l32i(&ctx, 9, 11, (uint16_t)(r1_off + 4));
+                emit_l32i(&ctx, 8, 6, r1_off);
+                emit_l32i(&ctx, 9, 6, (uint16_t)(r1_off + 4));
 
                 // a10 = imm8 (sign-extended), a13 = imm_hi (sign bit)
                 emit_movi(&ctx, 10, (int)imm8);
@@ -5598,8 +5637,8 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 patch_bgeu_at(ctx.buffer, bgeu_pos, (int32_t)no_carry_target);
 
                 // store result
-                emit_s32i(&ctx, 8, 11, rd_off);
-                emit_s32i(&ctx, 9, 11, (uint16_t)(rd_off + 4));
+                emit_s32i(&ctx, 8, 6, rd_off);
+                emit_s32i(&ctx, 9, 6, (uint16_t)(rd_off + 4));
                 break;
             }
 
@@ -5616,7 +5655,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint16_t rd_off = (uint16_t)(rd * 8);
 
                 // Inline compare using a8/a9 branch forms (same style as 0xC1..0xC9)
-                emit_mov_n(&ctx, 6, 11); // a6 = v_regs base
 
                 emit_l32i(&ctx, 8, 6, (uint16_t)(r1 * 8));
                 emit_l32i(&ctx, 9, 6, (uint16_t)(r2 * 8));
@@ -5641,8 +5679,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_flush_words(&ctx);
                 patch_bcc_a8_a9_at(ctx.buffer, br_pos, (int32_t)set1_pos);
                 patch_j_at(ctx.buffer, j_end, (int32_t)(end_pos - (j_end + 3u)));
-
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -5664,7 +5700,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 // Inline compare using a8/a9 branch forms. Result is stored as Value:
                 // low32 = 0/1, high32 = 0
-                emit_mov_n(&ctx, 6, 11); // a6 = v_regs base
 
                 emit_l32i(&ctx, 8, 6, (uint16_t)(r1 * 8));
                 emit_l32i(&ctx, 9, 6, (uint16_t)(r2 * 8));
@@ -5713,8 +5748,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_flush_words(&ctx);
                 patch_bcc_a8_a9_at(ctx.buffer, br_pos, (int32_t)set1_pos);
                 patch_j_at(ctx.buffer, j_end, (int32_t)(end_pos - (j_end + 3u)));
-
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -5731,7 +5764,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Keep helper fallback for unaligned offsets.
                 if ((off16 & 3) == 0) {
                     // a6 = v_regs (save for restore)
-                    emit_mov_n(&ctx, 6, 11);
 
                     // a8 = base pointer (low32) from v_regs[ra]
                     emit_l32i(&ctx, 8, 6, (uint16_t)(ra * 8));
@@ -5755,7 +5787,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     emit_s32i(&ctx, 9, 8, 0);
 
                     // restore v_regs pointer
-                    emit_mov_n(&ctx, 11, 6);
                     break;
                 }
 
@@ -5763,8 +5794,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Call helper: espb_jit_xtensa_store_i32(v_regs, rs, ra, offset)
                 // Windowed ABI mapping: callee a2..a7 <= caller a10..a15
                 // a10 = v_regs
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 10, 8);
+                emit_l32i(&ctx, 10, 1, 8);
 
                 // a11 = rs
                 if (rs <= 15) emit_movi_n(&ctx, 11, (int8_t)rs);
@@ -5781,8 +5811,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_call_helper(&ctx, &litpool, (void*)&espb_jit_xtensa_store_i32);
 
                 // Restore a11 back to v_regs pointer (ABI for rest of JIT assumes a11=v_regs)
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 11, 8);
+                emit_l32i(&ctx, 11, 1, 8);
                 break;
             }
 
@@ -5798,7 +5827,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // - aligned => inline s32i
                 // - unaligned => helper memcpy semantics
                 if ((off16 & 3) == 0) {
-                    emit_mov_n(&ctx, 6, 11); // a6 = v_regs (save for restore)
 
                     // a8 = base pointer from v_regs[ra]
                     emit_l32i(&ctx, 8, 6, (uint16_t)(ra * 8));
@@ -5818,14 +5846,11 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     // f32 is stored in low 32 bits of v_regs[rs]
                     emit_l32i(&ctx, 9, 6, (uint16_t)(rs * 8));
                     emit_s32i(&ctx, 9, 8, 0);
-
-                    emit_mov_n(&ctx, 11, 6);
                     break;
                 }
 
                 // Unaligned -> same helper as STORE.I32
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 10, 8);
+                emit_l32i(&ctx, 10, 1, 8);
 
                 if (rs <= 15) emit_movi_n(&ctx, 11, (int8_t)rs);
                 else { emit_load_u32_to_a8(&ctx, &litpool, rs); emit_mov_n(&ctx, 11, 8); }
@@ -5838,8 +5863,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 emit_call_helper(&ctx, &litpool, (void*)&espb_jit_xtensa_store_i32);
 
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 11, 8);
+                emit_l32i(&ctx, 11, 1, 8);
                 break;
             }
 
@@ -5855,7 +5879,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // - aligned => inline two s32i
                 // - unaligned => helper memcpy semantics (reuse store_i64)
                 if ((off16 & 3) == 0) {
-                    emit_mov_n(&ctx, 6, 11); // a6 = v_regs (save for restore)
 
                     // a8 = base pointer
                     emit_l32i(&ctx, 8, 6, (uint16_t)(ra * 8));
@@ -5879,14 +5902,11 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     // store two words
                     emit_s32i(&ctx, 9, 8, 0);
                     emit_s32i(&ctx, 10, 8, 4);
-
-                    emit_mov_n(&ctx, 11, 6);
                     break;
                 }
 
                 // Fallback to memcpy semantics via store_i64 helper
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 10, 8);
+                emit_l32i(&ctx, 10, 1, 8);
 
                 if (rs <= 15) emit_movi_n(&ctx, 11, (int8_t)rs);
                 else { emit_load_u32_to_a8(&ctx, &litpool, rs); emit_mov_n(&ctx, 11, 8); }
@@ -5899,8 +5919,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 emit_call_helper(&ctx, &litpool, (void*)&espb_jit_xtensa_store_i64);
 
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 11, 8);
+                emit_l32i(&ctx, 11, 1, 8);
                 break;
             }
 
@@ -5915,7 +5934,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // PTR is 4 bytes on 32-bit architecture, same as I32
                 // For aligned offsets, use inline s32i
                 // For unaligned, use byte-by-byte store via helper or memcpy approach
-                emit_mov_n(&ctx, 6, 11);  // a6 = v_regs
 
                 // a8 = base pointer from v_regs[ra].ptr
                 emit_l32i(&ctx, 8, 6, (uint16_t)(ra * 8));
@@ -5949,8 +5967,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     emit_srli(&ctx, 10, 9, 24);
                     emit_s8i(&ctx, 10, 8, 3);
                 }
-
-                emit_mov_n(&ctx, 11, 6);  // restore v_regs to a11
                 break;
             }
 
@@ -5963,7 +5979,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 pc += sizeof(off16);
 
                 // Inline load signed byte
-                emit_mov_n(&ctx, 6, 11);  // a6 = v_regs
                 emit_l32i(&ctx, 8, 6, (uint16_t)(ra * 8));  // a8 = v_regs[ra].ptr (base address)
 
                 // Add offset to base address
@@ -5991,8 +6006,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Store type (high word = 0 for i32)
                 emit_movi_n(&ctx, 10, 0);
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8 + 4));
-
-                emit_mov_n(&ctx, 11, 6);  // restore a11 = v_regs
                 break;
             }
 
@@ -6005,7 +6018,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 pc += sizeof(off16);
 
                 // Inline load unsigned byte (no sign-extend needed)
-                emit_mov_n(&ctx, 6, 11);  // a6 = v_regs
                 emit_l32i(&ctx, 8, 6, (uint16_t)(ra * 8));  // a8 = v_regs[ra].ptr
 
                 if (off16 != 0) {
@@ -6028,8 +6040,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Store type ESPB_TYPE_I32
                 emit_movi_n(&ctx, 10, 1);
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8 + 4));
-
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -6042,7 +6052,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 pc += sizeof(off16);
 
                 // Inline load signed 16-bit
-                emit_mov_n(&ctx, 6, 11);  // a6 = v_regs
                 emit_l32i(&ctx, 8, 6, (uint16_t)(ra * 8));  // a8 = v_regs[ra].ptr
 
                 if (off16 != 0) {
@@ -6075,8 +6084,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Store type ESPB_TYPE_I32
                 emit_movi_n(&ctx, 10, 1);
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8 + 4));
-
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -6089,7 +6096,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 pc += sizeof(off16);
 
                 // Inline load unsigned 16-bit
-                emit_mov_n(&ctx, 6, 11);  // a6 = v_regs
                 emit_l32i(&ctx, 8, 6, (uint16_t)(ra * 8));  // a8 = v_regs[ra].ptr
 
                 if (off16 != 0) {
@@ -6119,8 +6125,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Store type ESPB_TYPE_I32
                 emit_movi_n(&ctx, 10, 1);
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8 + 4));
-
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -6133,7 +6137,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 pc += sizeof(off16);
 
                 // Inline load bool (load byte and normalize to 0/1)
-                emit_mov_n(&ctx, 6, 11);  // a6 = v_regs
                 emit_l32i(&ctx, 8, 6, (uint16_t)(ra * 8));  // a8 = v_regs[ra].ptr (base address)
 
                 // Add offset to base address
@@ -6172,8 +6175,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Store type (high word = 0 for bool/i32)
                 emit_movi_n(&ctx, 10, 0);
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8 + 4));
-
-                emit_mov_n(&ctx, 11, 6);  // restore a11 = v_regs
                 break;
             }
 
@@ -6190,7 +6191,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Keep helper fallback for unaligned offsets.
                 if ((off16 & 3) == 0) {
                     // a6 = v_regs (save for restore)
-                    emit_mov_n(&ctx, 6, 11);
 
                     // a8 = base pointer (low32) from v_regs[ra]
                     emit_l32i(&ctx, 8, 6, (uint16_t)(ra * 8));
@@ -6216,7 +6216,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     emit_s32i(&ctx, 10, 8, 4);
 
                     // restore v_regs pointer
-                    emit_mov_n(&ctx, 11, 6);
                     break;
                 }
 
@@ -6224,8 +6223,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Call helper: espb_jit_xtensa_store_i64(v_regs, rs, ra, offset)
                 // Windowed ABI mapping: callee a2..a7 <= caller a10..a15
                 // a10 = v_regs
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 10, 8);
+                emit_l32i(&ctx, 10, 1, 8);
 
                 // a11 = rs
                 if (rs <= 15) emit_movi_n(&ctx, 11, (int8_t)rs);
@@ -6242,8 +6240,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_call_helper(&ctx, &litpool, (void*)&espb_jit_xtensa_store_i64);
 
                 // Restore a11 back to v_regs pointer (ABI for rest of JIT assumes a11=v_regs)
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 11, 8);
+                emit_l32i(&ctx, 11, 1, 8);
                 break;
             }
 
@@ -6259,7 +6256,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // but Xtensa l32i requires word alignment. Keep helper fallback for unaligned offsets.
                 if ((off16 & 3) == 0) {
                     // a6 = v_regs (callee-saved across windowed calls)
-                    emit_mov_n(&ctx, 6, 11);
 
                     // a8 = V_PTR(v_regs[ra]) (low32)
                     emit_l32i(&ctx, 8, 6, (uint16_t)(ra * 8));
@@ -6286,7 +6282,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     emit_s32i(&ctx, 9, 6, (uint16_t)(rd_off + 4));
 
                     // restore v_regs pointer
-                    emit_mov_n(&ctx, 11, 6);
                     break;
                 }
 
@@ -6294,8 +6289,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Call helper: espb_jit_xtensa_load_i32(v_regs, rd, ra, offset)
                 // Windowed ABI mapping: callee a2..a7 <= caller a10..a15
                 // a10 = v_regs
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 10, 8);
+                emit_l32i(&ctx, 10, 1, 8);
 
                 // a11 = rd
                 if (rd <= 15) emit_movi_n(&ctx, 11, (int8_t)rd);
@@ -6312,8 +6306,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_call_helper(&ctx, &litpool, (void*)&espb_jit_xtensa_load_i32);
 
                 // Restore a11 back to v_regs pointer (ABI for rest of JIT assumes a11=v_regs)
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 11, 8);
+                emit_l32i(&ctx, 11, 1, 8);
                 break;
             }
 
@@ -6329,7 +6322,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // - aligned => inline l32i
                 // - unaligned => helper memcpy semantics
                 if ((off16 & 3) == 0) {
-                    emit_mov_n(&ctx, 6, 11); // a6 = v_regs
                     emit_l32i(&ctx, 8, 6, (uint16_t)(ra * 8)); // a8 = base pointer
 
                     if (off16 != 0) {
@@ -6348,14 +6340,11 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     emit_s32i(&ctx, 9, 6, rd_off); // store to low32
                     emit_movi_n(&ctx, 9, 0);
                     emit_s32i(&ctx, 9, 6, (uint16_t)(rd_off + 4));
-
-                    emit_mov_n(&ctx, 11, 6);
                     break;
                 }
 
                 // Unaligned => reuse the same helper as LOAD.I32
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 10, 8);
+                emit_l32i(&ctx, 10, 1, 8);
 
                 if (rd <= 15) emit_movi_n(&ctx, 11, (int8_t)rd);
                 else { emit_load_u32_to_a8(&ctx, &litpool, rd); emit_mov_n(&ctx, 11, 8); }
@@ -6368,8 +6357,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 emit_call_helper(&ctx, &litpool, (void*)&espb_jit_xtensa_load_i32);
 
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 11, 8);
+                emit_l32i(&ctx, 11, 1, 8);
                 break;
             }
 
@@ -6386,7 +6374,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // We keep helper fallback for unaligned offsets.
                 if ((off16 & 3) == 0) {
                     // a6 = v_regs
-                    emit_mov_n(&ctx, 6, 11);
 
                     // a8 = base pointer (low32) from v_regs[ra]
                     emit_l32i(&ctx, 8, 6, (uint16_t)(ra * 8));
@@ -6412,7 +6399,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     emit_s32i(&ctx, 10, 6, (uint16_t)(rd_off + 4));
 
                     // restore v_regs pointer
-                    emit_mov_n(&ctx, 11, 6);
                     break;
                 }
 
@@ -6420,8 +6406,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Call helper: espb_jit_xtensa_load_i64(v_regs, rd, ra, offset)
                 // Windowed ABI mapping: callee a2..a7 <= caller a10..a15
                 // a10 = v_regs
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 10, 8);
+                emit_l32i(&ctx, 10, 1, 8);
 
                 // a11 = rd
                 if (rd <= 15) emit_movi_n(&ctx, 11, (int8_t)rd);
@@ -6438,8 +6423,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_call_helper(&ctx, &litpool, (void*)&espb_jit_xtensa_load_i64);
 
                 // Restore a11 back to v_regs pointer (ABI for rest of JIT assumes a11=v_regs)
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 11, 8);
+                emit_l32i(&ctx, 11, 1, 8);
                 break;
             }
 
@@ -6455,7 +6439,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // - aligned => inline two l32i
                 // - unaligned => helper memcpy semantics (reuse load_i64)
                 if ((off16 & 3) == 0) {
-                    emit_mov_n(&ctx, 6, 11); // a6 = v_regs
 
                     emit_l32i(&ctx, 8, 6, (uint16_t)(ra * 8));
 
@@ -6475,14 +6458,11 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     uint16_t rd_off = (uint16_t)(rd * 8);
                     emit_s32i(&ctx, 9, 6, rd_off);
                     emit_s32i(&ctx, 10, 6, (uint16_t)(rd_off + 4));
-
-                    emit_mov_n(&ctx, 11, 6);
                     break;
                 }
 
                 // Unaligned -> reuse load_i64 helper (memcpy 8 bytes)
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 10, 8);
+                emit_l32i(&ctx, 10, 1, 8);
 
                 if (rd <= 15) emit_movi_n(&ctx, 11, (int8_t)rd);
                 else { emit_load_u32_to_a8(&ctx, &litpool, rd); emit_mov_n(&ctx, 11, 8); }
@@ -6495,8 +6475,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 emit_call_helper(&ctx, &litpool, (void*)&espb_jit_xtensa_load_i64);
 
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 11, 8);
+                emit_l32i(&ctx, 11, 1, 8);
                 break;
             }
 
@@ -6518,7 +6497,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Fast path: inline EQ/NE for I64 (very common in control flow)
                 if (op == 0xCA || op == 0xCB) {
                     uint16_t rd_off = (uint16_t)(rd * 8);
-                    emit_mov_n(&ctx, 6, 11); // a6 = v_regs base
 
                     // Compare low32
                     emit_l32i(&ctx, 8, 6, (uint16_t)(r1 * 8));
@@ -6548,7 +6526,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         emit_flush_words(&ctx);
                         patch_bcc_a8_a9_at(ctx.buffer, br_lo_ne, (int32_t)end_pos);
                         patch_bcc_a8_a9_at(ctx.buffer, br_hi_ne, (int32_t)end_pos);
-                        emit_mov_n(&ctx, 11, 6);
                         break;
                     } else {
                         // NE: if (lo !=) -> true; else if (hi !=) -> true; else false
@@ -6572,7 +6549,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         patch_bcc_a8_a9_at(ctx.buffer, br_lo_ne, (int32_t)set1_pos);
                         patch_bcc_a8_a9_at(ctx.buffer, br_hi_ne, (int32_t)set1_pos);
                         patch_j_at(ctx.buffer, j_end, (int32_t)(end_pos - (j_end + 3u)));
-                        emit_mov_n(&ctx, 11, 6);
                         break;
                     }
                 }
@@ -6580,8 +6556,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Slow path: call helper for other I64 comparisons
                 // Windowed ABI mapping: callee a2..a7 <= caller a10..a15
                 // a10 = v_regs
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 10, 8);
+                emit_l32i(&ctx, 10, 1, 8);
 
                 // a11 = opcode (use l32r for values > 95 as movi.n has limited range -32..95)
                 if (op <= 95) {
@@ -6606,8 +6581,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_call_helper(&ctx, &litpool, (void*)&espb_jit_xtensa_cmp_i64);
 
                 // Restore a11 back to v_regs pointer
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 11, 8);
+                emit_l32i(&ctx, 11, 1, 8);
                 break;
             }
 
@@ -6634,8 +6608,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 }
                 if (ctx.error) break;
 
-                emit_mov_n(&ctx, 6, 11); // save v_regs
-
                 emit_l32i(&ctx, 10, 6, (uint16_t)(r1 * 8));
                 emit_l32i(&ctx, 11, 6, (uint16_t)(r2 * 8));
 
@@ -6644,8 +6616,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8));
                 emit_movi_n(&ctx, 10, 0);
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8 + 4));
-
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -6672,8 +6642,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 }
                 if (ctx.error) break;
 
-                emit_mov_n(&ctx, 6, 11); // save v_regs
-
                 emit_l32i(&ctx, 10, 6, (uint16_t)(r1 * 8));
                 emit_l32i(&ctx, 11, 6, (uint16_t)(r1 * 8 + 4));
                 emit_l32i(&ctx, 12, 6, (uint16_t)(r2 * 8));
@@ -6684,8 +6652,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8));
                 emit_movi_n(&ctx, 10, 0);
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8 + 4));
-
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -6695,10 +6661,10 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
 
                 // PTR is stored as low32 address, high32 must be 0
-                emit_l32i(&ctx, 8, 11, (uint16_t)(rs * 8));        // a8 = v_regs[rs].lo
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8));        // v_regs[rd].lo = a8
+                emit_l32i(&ctx, 8, 6, (uint16_t)(rs * 8));        // a8 = v_regs[rs].lo
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));        // v_regs[rd].lo = a8
                 emit_movi_n(&ctx, 8, 0);
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8 + 4));    // v_regs[rd].hi = 0
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8 + 4));    // v_regs[rd].hi = 0
                 break;
             }
 
@@ -6718,8 +6684,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Helper copies full Value slot.
                 if (op == 0xD6) {
                     // a10 = v_regs
-                    emit_l32i(&ctx, 8, 1, 8);
-                    emit_mov_n(&ctx, 10, 8);
+                    emit_l32i(&ctx, 10, 1, 8);
 
                     // a11 = rd
                     if (rd <= 15) emit_movi_n(&ctx, 11, (int8_t)rd);
@@ -6742,8 +6707,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     emit_callx8_a8(&ctx);
 
                     // Restore a11 back to v_regs
-                    emit_l32i(&ctx, 8, 1, 8);
-                    emit_mov_n(&ctx, 11, 8);
+                    emit_l32i(&ctx, 11, 1, 8);
                     break;
                 }
 
@@ -6754,7 +6718,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 // Inline select: load cond.i32, branch, copy 8 bytes
                 // Do NOT rely on a11 always being v_regs here; load stable v_regs pointer from stack slot +8.
-                emit_l32i(&ctx, 6, 1, 8); // a6 = saved v_regs
 
                 // a8 = cond low32
                 emit_l32i(&ctx, 8, 6, cond_off);
@@ -6786,8 +6749,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     patch_beqz_n_a8_at(ctx.buffer, br_false, delta);
                 }
                 patch_j_at(ctx.buffer, j_end, (int32_t)(end_pos - (j_end + 3u)));
-
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -6815,8 +6776,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_call_helper(&ctx, &litpool, (void*)&jit_call_espb_function_xtensa);
 
                 // Restore a11 back to v_regs pointer
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 11, 8);
+                emit_l32i(&ctx, 11, 1, 8);
                 break;
             }
 
@@ -6837,7 +6797,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Windowed ABI: callee a2..a7 <= caller a10..a15
 
                 // Preserve v_regs pointer
-                emit_mov_n(&ctx, 6, 11);
 
                 // a10 = instance (from stack slot 4)
                 emit_l32i(&ctx, 10, 1, 4);
@@ -6875,7 +6834,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_call_helper(&ctx, &litpool, (void*)&espb_jit_call_indirect);
 
                 // Restore a11 back to v_regs pointer
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -6892,7 +6850,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Windowed ABI: callee a2..a7 <= caller a10..a15
 
                 // Preserve v_regs pointer
-                emit_mov_n(&ctx, 6, 11);
 
                 // a10 = instance (from stack slot 4)
                 emit_l32i(&ctx, 10, 1, 4);
@@ -6930,7 +6887,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_call_helper(&ctx, &litpool, (void*)&espb_jit_call_indirect_ptr);
 
                 // Restore a11 back to v_regs pointer
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -7133,15 +7089,12 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 // rd (i32) = (int32_t)rs (i64)
                 // In practice: take low32 and clear high32 for cleanliness.
-                emit_mov_n(&ctx, 6, 11); // a6 = v_regs
 
                 emit_l32i(&ctx, 8, 6, (uint16_t)(rs * 8)); // low32
                 emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
 
                 emit_movi_n(&ctx, 9, 0);
                 emit_s32i(&ctx, 9, 6, (uint16_t)(rd * 8 + 4));
-
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -7151,7 +7104,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;
 
                 // Inline zero-extend: v_regs[rd].i16 = (uint8_t)v_regs[rs].i32
-                emit_mov_n(&ctx, 6, 11);
 
                 // Load v_regs[rs].i32 (low word) into a8
                 emit_l32i(&ctx, 8, 6, (uint16_t)(rs * 8));
@@ -7165,8 +7117,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Store type = ESPB_TYPE_I16 (value 2)
                 emit_movi_n(&ctx, 9, 2);
                 emit_s32i(&ctx, 9, 6, (uint16_t)(rd * 8 + 4));
-
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -7177,7 +7127,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 // Inline zero-extend: v_regs[rd].i32 = (uint8_t)v_regs[rs].i32
                 // a6 = v_regs
-                emit_mov_n(&ctx, 6, 11);
                 
                 // Load v_regs[rs].i32 (low word) into a8
                 emit_l32i(&ctx, 8, 6, (uint16_t)(rs * 8));
@@ -7193,8 +7142,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Store type = ESPB_TYPE_I32 (value 1)
                 emit_movi_n(&ctx, 9, 1);
                 emit_s32i(&ctx, 9, 6, (uint16_t)(rd * 8 + 4));
-                
-                emit_mov_n(&ctx, 11, 6);  // restore a11 = v_regs
                 break;
             }
 
@@ -7206,7 +7153,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // v_regs[rd].ptr = &v_regs[rs]
                 // a11 = v_regs pointer
                 // Calculate address of v_regs[rs]: v_regs + rs*8
-                emit_mov_n(&ctx, 6, 11);  // a6 = v_regs
                 
                 uint32_t rs_offset = rs * 8;
                 if (rs_offset <= 255) {
@@ -7222,8 +7168,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Clear high 32 bits of v_regs[rd]
                 emit_movi_n(&ctx, 9, 0);
                 emit_s32i(&ctx, 9, 6, (uint16_t)(rd * 8 + 4));
-                
-                emit_mov_n(&ctx, 11, 6);  // restore a11 = v_regs
                 break;
             }
 
@@ -7236,16 +7180,15 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Call helper: espb_runtime_alloca(instance, exec_ctx, regs, num_vregs, rd, rs_size, align)
                 // NOTE: current JIT entrypoint signature doesn't provide ExecutionContext, so we pass NULL.
 
-                // a10 = instance
-                emit_l32i(&ctx, 8, 1, 4);
-                emit_mov_n(&ctx, 10, 8);
+                // a10 = instance. Load directly into the ABI argument register;
+                // the previous a8 + MOV.N sequence emitted two instructions.
+                emit_l32i(&ctx, 10, 1, 4);
 
                 // a11 = exec_ctx (NULL)
                 emit_movi_n(&ctx, 11, 0);
 
                 // a12 = regs (v_regs)
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 12, 8);
+                emit_l32i(&ctx, 12, 1, 8);
 
                 // a13 = effective_vregs = max(num_vregs, rd+1, rs_size+1)
                 // Необходимо т.к. LLVM может генерировать регистры выше num_virtual_regs из заголовка.
@@ -7317,16 +7260,14 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // espb_jit_call_import(instance, import_idx, v_regs, num_vregs, has_var, num_args, arg_types_ptr)
 
                 // a10 = instance
-                emit_l32i(&ctx, 8, 1, 4);
-                emit_mov_n(&ctx, 10, 8);
+                emit_l32i(&ctx, 10, 1, 4);
 
                 // a11 = import_idx
                 if (import_idx <= 15) emit_movi_n(&ctx, 11, (int8_t)import_idx);
                 else { emit_load_u32_to_a8(&ctx, &litpool, import_idx); emit_mov_n(&ctx, 11, 8); }
 
                 // a12 = v_regs
-                emit_l32i(&ctx, 8, 1, 8);
-                emit_mov_n(&ctx, 12, 8);
+                emit_l32i(&ctx, 12, 1, 8);
 
                 // a13 = num_vregs
                 if (num_vregs <= 15) emit_movi_n(&ctx, 13, (int8_t)num_vregs);
@@ -7396,7 +7337,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 if (!helper) { ctx.error = true; break; }
                 
                 // Save v_regs pointer (a11) across windowed call in a6 (maps to callee a14, callee-saved)
-                emit_mov_n(&ctx, 6, 11);  // a6 = v_regs
                 
                 // Windowed ABI: callx8 rotates window by 8.
                 // Caller's a10:a11 become callee's a2:a3 (first u64 arg)
@@ -7425,7 +7365,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 11, 6, (uint16_t)(rd * 8 + 4));   // v_regs[rd].hi = a11
                 
                 // Restore v_regs pointer to a11 for subsequent opcodes
-                emit_mov_n(&ctx, 11, 6);  // a11 = v_regs
                 break;
             }
 
@@ -7441,7 +7380,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 void* helper = (op == 0x6C) ? (void*)jit_helper_fmin_f64_store : (void*)jit_helper_fmax_f64_store;
                 
                 // Save v_regs to a6 FIRST before we overwrite a11
-                emit_mov_n(&ctx, 6, 11);
                 
                 emit_mov_n(&ctx, 10, 11);   // a10 = v_regs
                 
@@ -7472,7 +7410,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_callx8_a8(&ctx);
                 
                 // Restore v_regs pointer to a11
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -7485,7 +7422,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Args: a10=v_regs, a11=rd, a12=rs
                 
                 // Save v_regs to a6 FIRST before we overwrite a11
-                emit_mov_n(&ctx, 6, 11);
                 
                 emit_mov_n(&ctx, 10, 11);   // a10 = v_regs
                 
@@ -7509,7 +7445,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_callx8_a8(&ctx);
                 
                 // Restore v_regs pointer to a11
-                emit_mov_n(&ctx, 11, 6);
                 
                 break;
             }
@@ -7522,8 +7457,8 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 void* helper = (void*)jit_helper_fsqrt_f64_bits;
 
                 emit_s32i(&ctx, 11, 1, 48);
-                emit_l32i(&ctx, 10, 11, (uint16_t)(rs1 * 8));
-                emit_l32i(&ctx, 11, 11, (uint16_t)(rs1 * 8 + 4));
+                emit_l32i(&ctx, 10, 6, (uint16_t)(rs1 * 8));
+                emit_l32i(&ctx, 11, 6, (uint16_t)(rs1 * 8 + 4));
 
                 emit_load_u32_to_a8(&ctx, &litpool, (uint32_t)(uintptr_t)helper);
                 emit_callx8_a8(&ctx);
@@ -7545,7 +7480,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 pc += sizeof(off16);
 
                 // a6 = v_regs (save for restore)
-                emit_mov_n(&ctx, 6, 11);
                 // a8 = base pointer from v_regs[ra]
                 emit_l32i(&ctx, 8, 6, (uint16_t)(ra * 8));
 
@@ -7566,7 +7500,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Store byte
                 emit_s8i(&ctx, 9, 8, 0);
                 // restore v_regs pointer
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -7580,7 +7513,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 pc += sizeof(off16);
 
                 // a6 = v_regs (save for restore)
-                emit_mov_n(&ctx, 6, 11);
                 // a8 = base pointer from v_regs[ra]
                 emit_l32i(&ctx, 8, 6, (uint16_t)(ra * 8));
 
@@ -7607,7 +7539,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // s8i a10, a8, 1  - store high byte
                 emit_s8i(&ctx, 10, 8, 1);
                 // restore v_regs pointer
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -7620,7 +7551,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 pc += sizeof(off16);
 
                 // a6 = v_regs (save for restore)
-                emit_mov_n(&ctx, 6, 11);
                 // a7 = base pointer from v_regs[ra] (use a7 to preserve across normalization)
                 emit_l32i(&ctx, 7, 6, (uint16_t)(ra * 8));
 
@@ -7646,7 +7576,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Store normalized bool (a10) to address in a7
                 emit_s8i(&ctx, 10, 7, 0);
                 // restore v_regs pointer
-                emit_mov_n(&ctx, 11, 6);
 
                 emit_flush_words(&ctx);
                 {
@@ -7673,7 +7602,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         void* helper = (void*)jit_helper_memory_init;
 
                         // Preserve v_regs in a6
-                        emit_mov_n(&ctx, 6, 11);
 
                         // a10 = instance
                         emit_l32i(&ctx, 10, 1, 4);
@@ -7690,7 +7618,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         emit_call_helper(&ctx, &litpool, helper);
 
                         // Restore v_regs pointer
-                        emit_mov_n(&ctx, 11, 6);
                         break;
                     }
 
@@ -7700,14 +7627,11 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         memcpy(&data_seg_idx, pc, sizeof(data_seg_idx)); pc += sizeof(data_seg_idx);
 
                         void* helper = (void*)jit_helper_data_drop;
-
-                        emit_mov_n(&ctx, 6, 11);
                         emit_l32i(&ctx, 10, 1, 4); // a10 = instance
                         emit_load_u32_to_a8(&ctx, &litpool, data_seg_idx);
                         emit_mov_n(&ctx, 11, 8);
 
                         emit_call_helper(&ctx, &litpool, helper);
-                        emit_mov_n(&ctx, 11, 6);
                         break;
                     }
 
@@ -7727,8 +7651,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         uint8_t rn = *pc++;
 
                         void* helper = (void*)jit_helper_table_init;
-
-                        emit_mov_n(&ctx, 6, 11);
                         emit_l32i(&ctx, 10, 1, 4); // a10 = instance
                         emit_load_u32_to_a8(&ctx, &litpool, table_idx);
                         emit_mov_n(&ctx, 11, 8);
@@ -7739,7 +7661,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         emit_l32i(&ctx, 15, 6, (uint16_t)(rn * 8));
 
                         emit_call_helper(&ctx, &litpool, helper);
-                        emit_mov_n(&ctx, 11, 6);
                         break;
                     }
 
@@ -7748,14 +7669,11 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         uint8_t rd = *pc++;
                         uint8_t rval = *pc++;
                         uint8_t rn = *pc++;
-
-                        emit_mov_n(&ctx, 6, 11);
                         emit_l32i(&ctx, 10, 6, (uint16_t)(rd * 8));
                         emit_l32i(&ctx, 11, 6, (uint16_t)(rval * 8));
                         emit_l32i(&ctx, 12, 6, (uint16_t)(rn * 8));
 
                         emit_call_helper(&ctx, &litpool, (void*)&memset);
-                        emit_mov_n(&ctx, 11, 6);
                         break;
                     }
 
@@ -7764,14 +7682,11 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         uint8_t rd = *pc++;
                         uint8_t rs = *pc++;
                         uint8_t rn = *pc++;
-
-                        emit_mov_n(&ctx, 6, 11);
                         emit_l32i(&ctx, 10, 6, (uint16_t)(rd * 8));
                         emit_l32i(&ctx, 11, 6, (uint16_t)(rs * 8));
                         emit_l32i(&ctx, 12, 6, (uint16_t)(rn * 8));
 
                         emit_call_helper(&ctx, &litpool, (void*)&memmove);
-                        emit_mov_n(&ctx, 11, 6);
                         break;
                     }
 
@@ -7780,8 +7695,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         uint8_t rd = *pc++;
                         uint8_t rptr = *pc++;
                         uint8_t rsize = *pc++;
-
-                        emit_mov_n(&ctx, 6, 11);
                         emit_l32i(&ctx, 10, 1, 4); // instance
                         emit_l32i(&ctx, 11, 6, (uint16_t)(rptr * 8));
                         emit_l32i(&ctx, 12, 6, (uint16_t)(rsize * 8));
@@ -7790,7 +7703,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                         emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8));
                         emit_s32i(&ctx, 0, 6, (uint16_t)(rd * 8 + 4));
-                        emit_mov_n(&ctx, 11, 6);
                         break;
                     }
 
@@ -7801,7 +7713,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         uint8_t rsize = *pc++;
 
                         // total = rcount * rsize (use 0x22 mull sequence from MUL.I32)
-                        emit_mov_n(&ctx, 6, 11);
                         emit_l32i(&ctx, 8, 6, (uint16_t)(rcount * 8));
                         emit_l32i(&ctx, 9, 6, (uint16_t)(rsize * 8));
                         emit_u8(&ctx, 0x90);  // (at << 4) | 0, at=a9
@@ -7823,7 +7734,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         // store result pointer from a8
                         emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
                         emit_s32i(&ctx, 0, 6, (uint16_t)(rd * 8 + 4));
-                        emit_mov_n(&ctx, 11, 6);
                         break;
                     }
 
@@ -7834,8 +7744,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         uint8_t rd = *pc++;
                         uint8_t rs = *pc++;
                         uint8_t rn = *pc++;
-
-                        emit_mov_n(&ctx, 6, 11);
                         emit_l32i(&ctx, 10, 1, 4);
                         emit_load_u32_to_a8(&ctx, &litpool, dst_table_idx);
                         emit_mov_n(&ctx, 11, 8);
@@ -7846,7 +7754,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         emit_l32i(&ctx, 15, 6, (uint16_t)(rn * 8));
 
                         emit_call_helper(&ctx, &litpool, (void*)jit_helper_table_copy);
-                        emit_mov_n(&ctx, 11, 6);
                         break;
                     }
 
@@ -7856,8 +7763,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         uint8_t rd = *pc++;
                         uint8_t rval = *pc++;
                         uint8_t rn = *pc++;
-
-                        emit_mov_n(&ctx, 6, 11);
                         emit_l32i(&ctx, 10, 1, 4);
                         emit_load_u32_to_a8(&ctx, &litpool, table_idx);
                         emit_mov_n(&ctx, 11, 8);
@@ -7866,7 +7771,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         emit_l32i(&ctx, 14, 6, (uint16_t)(rn * 8));
 
                         emit_call_helper(&ctx, &litpool, (void*)jit_helper_table_fill);
-                        emit_mov_n(&ctx, 11, 6);
                         break;
                     }
 
@@ -7874,14 +7778,11 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         if (pc + 2 > end) { ctx.error = true; break; }
                         uint8_t rd = *pc++;
                         uint8_t table_idx = *pc++;
-
-                        emit_mov_n(&ctx, 6, 11);
                         emit_l32i(&ctx, 10, 1, 4);
                         emit_call_helper(&ctx, &litpool, (void*)jit_helper_table_size);
 
                         emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8));
                         emit_s32i(&ctx, 0, 6, (uint16_t)(rd * 8 + 4));
-                        emit_mov_n(&ctx, 11, 6);
                         (void)table_idx;
                         break;
                     }
@@ -7898,7 +7799,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         emit_mov_n(&ctx, 7, 8);              // a7 = helper address (preserve)
                         
                         // Now setup arguments - no flush can happen here
-                        emit_l32i(&ctx, 6, 1, 8);            // a6 = v_regs (from stack)
                         emit_l32i(&ctx, 10, 1, 4);           // a10 = instance
                         emit_l32i(&ctx, 11, 6, (uint16_t)(rp * 8)); // a11 = ptr
                         
@@ -7907,7 +7807,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         emit_callx8_a8(&ctx);
                         
                         // Restore a11 = v_regs
-                        emit_mov_n(&ctx, 11, 6);
                         break;
                     }
 
@@ -7916,8 +7815,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         uint8_t rd = *pc++;
                         uint8_t table_idx = *pc++;
                         uint8_t rs = *pc++;
-
-                        emit_mov_n(&ctx, 6, 11);
                         emit_l32i(&ctx, 10, 1, 4);
                         emit_load_u32_to_a8(&ctx, &litpool, table_idx);
                         emit_mov_n(&ctx, 11, 8);
@@ -7926,7 +7823,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                         emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8));
                         emit_s32i(&ctx, 0, 6, (uint16_t)(rd * 8 + 4));
-                        emit_mov_n(&ctx, 11, 6);
                         break;
                     }
 
@@ -7935,15 +7831,12 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         uint8_t table_idx = *pc++;
                         uint8_t rd = *pc++;
                         uint8_t rval = *pc++;
-
-                        emit_mov_n(&ctx, 6, 11);
                         emit_l32i(&ctx, 10, 1, 4);
                         emit_load_u32_to_a8(&ctx, &litpool, table_idx);
                         emit_mov_n(&ctx, 11, 8);
                         emit_l32i(&ctx, 12, 6, (uint16_t)(rd * 8));
                         emit_l32i(&ctx, 13, 6, (uint16_t)(rval * 8));
                         emit_call_helper(&ctx, &litpool, (void*)jit_helper_table_set);
-                        emit_mov_n(&ctx, 11, 6);
                         break;
                     }
 
@@ -7951,8 +7844,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         if (pc + 2 > end) { ctx.error = true; break; }
                         uint8_t rd = *pc++;
                         uint8_t rs = *pc++;
-
-                        emit_mov_n(&ctx, 6, 11);
                         emit_l32i(&ctx, 10, 1, 4);
                         emit_l32i(&ctx, 11, 6, (uint16_t)(rs * 8));
                         emit_call_helper(&ctx, &litpool, (void*)&espb_heap_malloc);
@@ -7960,7 +7851,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         // Store result (in a10) to v_regs[rd]
                         emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8));
                         emit_s32i(&ctx, 0, 6, (uint16_t)(rd * 8 + 4));
-                        emit_mov_n(&ctx, 11, 6);
                         break;
                     }
 
@@ -7980,12 +7870,12 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 // PTRTOINT simply copies the 32-bit pointer value to I32
                 // Load lower 32 bits (pointer) from v_regs[rs]
-                emit_l32i(&ctx, 8, 11, (uint16_t)(rs * 8));   // a8 = v_regs[rs].ptr
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8));   // v_regs[rd] = a8
+                emit_l32i(&ctx, 8, 6, (uint16_t)(rs * 8));   // a8 = v_regs[rs].ptr
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));   // v_regs[rd] = a8
 
                 // Clear upper 32 bits
                 emit_movi_n(&ctx, 8, 0);
-                emit_s32i(&ctx, 8, 11, (uint16_t)(rd * 8 + 4));
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8 + 4));
                 break;
             }
 
@@ -8013,7 +7903,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 }
 
                 // Preserve v_regs in a6
-                emit_mov_n(&ctx, 6, 11);
 
                 // a10 = address (v_regs[ra].ptr)
                 emit_l32i(&ctx, 10, 6, (uint16_t)(ra * 8));
@@ -8029,7 +7918,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8 + 4));  // Clear high word
 
                 // Restore v_regs
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -8041,7 +7929,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rdes = *pc++;
 
                 // Preserve v_regs in a6
-                emit_mov_n(&ctx, 6, 11);
 
                 // For cmpxchg we need to pass expected as pointer, so store it on stack first
                 emit_l32i(&ctx, 8, 6, (uint16_t)(rexp * 8));   // a8 = expected value
@@ -8062,8 +7949,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
                 emit_movi_n(&ctx, 8, 0);
                 emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8 + 4));
-
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -8071,8 +7956,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 if (pc + 2 > end) { ctx.error = true; break; }
                 uint8_t rd = *pc++;
                 uint8_t ra = *pc++;
-
-                emit_mov_n(&ctx, 6, 11);
 
                 // a10 = address (v_regs[ra].ptr)
                 emit_l32i(&ctx, 10, 6, (uint16_t)(ra * 8));
@@ -8083,8 +7966,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8));
                 emit_movi_n(&ctx, 8, 0);
                 emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8 + 4));
-
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -8093,16 +7974,12 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rs = *pc++;  // value register (first in bytecode)
                 uint8_t ra = *pc++;  // address register (second in bytecode)
 
-                emit_mov_n(&ctx, 6, 11);
-
                 // a10 = address (v_regs[ra].ptr)
                 emit_l32i(&ctx, 10, 6, (uint16_t)(ra * 8));
                 // a11 = value (v_regs[rs].i32)
                 emit_l32i(&ctx, 11, 6, (uint16_t)(rs * 8));
 
                 emit_call_helper(&ctx, &litpool, (void*)jit_xtensa_atomic_store_4);
-
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -8111,8 +7988,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 if (pc + 2 > end) { ctx.error = true; break; }
                 uint8_t rd = *pc++;
                 uint8_t ra = *pc++;
-
-                emit_mov_n(&ctx, 6, 11);
 
                 // a10 = address (v_regs[ra].ptr)
                 emit_l32i(&ctx, 10, 6, (uint16_t)(ra * 8));
@@ -8123,8 +7998,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Store 64-bit result (a10:a11) to v_regs[rd]
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8));      // low 32
                 emit_s32i(&ctx, 11, 6, (uint16_t)(rd * 8 + 4));  // high 32
-
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -8132,8 +8005,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 if (pc + 2 > end) { ctx.error = true; break; }
                 uint8_t rs = *pc++;  // value register (first in bytecode)
                 uint8_t ra = *pc++;  // address register (second in bytecode)
-
-                emit_mov_n(&ctx, 6, 11);
 
                 // a10 = address (v_regs[ra].ptr)
                 emit_l32i(&ctx, 10, 6, (uint16_t)(ra * 8));
@@ -8144,15 +8015,11 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 // Call wrapper: void jit_xtensa_atomic_store_8(volatile void* ptr, uint64_t val)
                 emit_call_helper(&ctx, &litpool, (void*)jit_xtensa_atomic_store_8);
-
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
             case 0xEE: { // ATOMIC.FENCE
-                emit_mov_n(&ctx, 6, 11);
                 emit_call_helper(&ctx, &litpool, (void*)jit_helper_atomic_fence);
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -8178,8 +8045,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     case 0xF5: helper = (void*)jit_xtensa_atomic_exchange_8; break;
                 }
 
-                emit_mov_n(&ctx, 6, 11);
-
                 // a10 = address (v_regs[ra].ptr)
                 emit_l32i(&ctx, 10, 6, (uint16_t)(ra * 8));
                 // For Xtensa windowed ABI, 64-bit arg after 32-bit ptr must be aligned to even register pair
@@ -8192,8 +8057,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Store 64-bit result to v_regs[rd]
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8));
                 emit_s32i(&ctx, 11, 6, (uint16_t)(rd * 8 + 4));
-
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -8203,8 +8066,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t ra = *pc++;
                 uint8_t rexp = *pc++;
                 uint8_t rdes = *pc++;
-
-                emit_mov_n(&ctx, 6, 11);
 
                 // For cmpxchg we need to pass expected as pointer, so store it on stack first
                 // Stack layout: [a1+0..7] = expected value (8 bytes)
@@ -8233,8 +8094,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_l32i(&ctx, 9, 1, 4);   // high from stack
                 emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
                 emit_s32i(&ctx, 9, 6, (uint16_t)(rd * 8 + 4));
-
-                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
@@ -8243,7 +8102,23 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 ctx.error = true;
                 break;
         }
+
+        if (opcode_count[op] != UINT16_MAX) opcode_count[op]++;
+        uint32_t load_delta = ctx.emitted_loads - op_loads_before;
+        uint32_t store_delta = ctx.emitted_stores - op_stores_before;
+        uint32_t next_loads = (uint32_t)opcode_loads[op] + load_delta;
+        uint32_t next_stores = (uint32_t)opcode_stores[op] + store_delta;
+        opcode_loads[op] = (uint16_t)(next_loads > UINT16_MAX ? UINT16_MAX : next_loads);
+        opcode_stores[op] = (uint16_t)(next_stores > UINT16_MAX ? UINT16_MAX : next_stores);
     }
+
+    // Commit the final straight-line ALU block before the epilogue/fixups.
+    XTENSA_VCACHE_FLUSH();
+#undef XTENSA_VCACHE_FINISH
+#undef XTENSA_VCACHE_FLUSH
+#undef XTENSA_VCACHE_STORE
+#undef XTENSA_VCACHE_LOAD
+#undef XTENSA_VCACHE_FIND
 
     // Ensure all bytes are committed before final fixups
     emit_flush_words(&ctx);
@@ -8381,6 +8256,21 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
     heap_caps_free(fixups);
     heap_caps_free(bc_to_native);
+
+    ESP_LOGI(TAG, "[jit-codegen] func=%u code_bytes=%u l32i=%u s32i=%u vcache_hits=%u vcache_spills=%u vcache_coalesced=%u",
+             (unsigned)func_idx, (unsigned)ctx.offset, (unsigned)ctx.emitted_loads,
+             (unsigned)ctx.emitted_stores, (unsigned)vcache_hits,
+             (unsigned)vcache_spills, (unsigned)vcache_coalesced_writes);
+    for (uint32_t opcode = 0; opcode < 256; ++opcode) {
+        if (opcode_count[opcode] != 0 &&
+            (opcode_loads[opcode] != 0 || opcode_stores[opcode] != 0)) {
+            ESP_LOGI(TAG, "[jit-opstat] func=%u op=0x%02X count=%u l32i=%u s32i=%u",
+                     (unsigned)func_idx, (unsigned)opcode,
+                     (unsigned)opcode_count[opcode],
+                     (unsigned)opcode_loads[opcode],
+                     (unsigned)opcode_stores[opcode]);
+        }
+    }
 
     *out_code = buffer;
     *out_size = ctx.offset;

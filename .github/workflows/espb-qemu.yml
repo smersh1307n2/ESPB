@@ -1,0 +1,129 @@
+name: ESPB_WORK dual-mode QEMU tests
+
+on:
+  push:
+    branches:
+      - ESPB_WORK
+    paths:
+      - 'components/espb/**'
+      - 'modules/**/*.espb'
+      - 'main/test.espb'
+      - 'qemu/**'
+      - 'tools/qemu/**'
+      - '.github/workflows/espb-qemu.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qemu:
+    name: QEMU / ${{ matrix.target }}
+    runs-on: ubuntu-22.04
+    container:
+      image: espressif/idf:v5.4.1
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [esp32, esp32c3]
+    steps:
+      - name: Checkout ESPB_WORK
+        uses: actions/checkout@v4
+        with:
+          ref: ESPB_WORK
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install Espressif QEMU
+        shell: bash
+        run: |
+          python "$IDF_PATH/tools/idf_tools.py" install qemu-xtensa qemu-riscv32
+          . "$IDF_PATH/export.sh"
+          qemu-system-xtensa --version
+          qemu-system-riscv32 --version
+
+      - name: Build dual-mode firmware
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          idf.py -C qemu set-target "${{ matrix.target }}"
+          idf.py -C qemu build
+
+      - name: Execute interpreter and HOT/JIT suites
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          set +e
+          timeout --signal=INT --kill-after=5s 60s idf.py -C qemu qemu > qemu.log 2>&1
+          qemu_status=$?
+          set -e
+          cat qemu.log
+
+          if [ "$qemu_status" -ne 0 ] && [ "$qemu_status" -ne 124 ] && [ "$qemu_status" -ne 130 ]; then
+            echo "QEMU exited unexpectedly: $qemu_status"
+            exit "$qemu_status"
+          fi
+          if grep -E -m1 "Guru Meditation Error|panic'ed|LoadProhibited|StoreProhibited|Load access fault|Store access fault" qemu.log; then
+            echo "ESPB runtime panic detected"
+            exit 1
+          fi
+          if grep -E -m1 "\\[ESPB_TEST\\] (load_failed|warmup_failed|call_failed)=" qemu.log; then
+            echo "ESPB module execution failed"
+            exit 1
+          fi
+          grep -F -- "--- ESPB dual-mode QEMU tests finished ---" qemu.log
+
+          expected_modules=$(grep -Eo "\\[ESPB_TEST\\] module_count=[0-9]+" qemu.log | tail -n 1 | cut -d= -f2)
+          actual_modules=$(grep -c "^\\[ESPB_TEST\\] module=" qemu.log || true)
+          completed_modules=$(grep -c "^\\[ESPB_TEST\\] module_done=" qemu.log || true)
+          if [ -z "$expected_modules" ] || [ "$expected_modules" -lt 2 ] || [ "$actual_modules" -ne "$expected_modules" ] || [ "$completed_modules" -ne "$expected_modules" ]; then
+            echo "Module lifecycle mismatch: expected=$expected_modules started=$actual_modules completed=$completed_modules"
+            exit 1
+          fi
+
+          interpreter_modules=$(grep -c "^\\[ESPB_TEST\\] module=interp__" qemu.log || true)
+          jit_modules=$(grep -c "^\\[ESPB_TEST\\] module=jit__" qemu.log || true)
+          if [ "$interpreter_modules" -lt 1 ] || [ "$jit_modules" -lt 1 ] || [ "$interpreter_modules" -ne "$jit_modules" ]; then
+            echo "Expected paired interpreter/JIT modules: interpreter=$interpreter_modules jit=$jit_modules"
+            exit 1
+          fi
+
+          awk '
+            /^\\[ESPB_TEST\\] module=/ {
+              if (active && mode == "jit" && !compiled) {
+                print "HOT/JIT module did not compile: " module_name > "/dev/stderr"
+                failed = 1
+              }
+              active = 1
+              module_name = $0
+              mode = ($0 ~ /module=jit__/) ? "jit" : "interpreter"
+              compiled = 0
+            }
+            /^\\[JIT\\] Compiled HOT function/ {
+              if (active && mode == "jit") compiled = 1
+              if (active && mode == "interpreter") {
+                print "Interpreter-only module unexpectedly compiled JIT: " module_name > "/dev/stderr"
+                failed = 1
+              }
+            }
+            /^\\[ESPB_TEST\\] module_done=/ {
+              if (active && mode == "jit" && !compiled) {
+                print "HOT/JIT module did not compile: " module_name > "/dev/stderr"
+                failed = 1
+              }
+              active = 0
+            }
+            END { exit failed }
+          ' qemu.log
+
+          expected_samples=$((expected_modules * 5))
+          actual_samples=$(grep -Ec "\\[ESPB_BENCH\\] module=.*sample_[0-4]_us=[1-9][0-9]* cycles_start=[0-9]+ cycles_end=[0-9]+ cycles_delta=[1-9][0-9]*" qemu.log || true)
+          if [ "$actual_samples" -ne "$expected_samples" ]; then
+            echo "Benchmark sample count mismatch: expected=$expected_samples actual=$actual_samples"
+            exit 1
+          fi
+          median_count=$(grep -Ec "\\[ESPB_BENCH\\] module=.*app_main_median_us=[1-9][0-9]* app_main_median_cycles=[1-9][0-9]*" qemu.log || true)
+          if [ "$median_count" -ne "$expected_modules" ]; then
+            echo "Expected one numeric median per module ($expected_modules), found $median_count"
+            exit 1
+          fi

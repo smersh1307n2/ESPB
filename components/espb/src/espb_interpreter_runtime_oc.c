@@ -59,40 +59,34 @@
 static const char *TAG = "espb_runtime_oc";
 
 #if CONFIG_ESPB_JIT_ENABLED
-// Локальный лимит аргументов для helper'ов (не хотим тянуть лишние зависимости в заголовки).
-// Должен быть >= реального максимума, который поддерживает ваш ABI. 16 достаточно для большинства случаев.
+// Локальный лимит fallback-буфера. Обычный путь передаёт locals напрямую.
 #ifndef ESPB_JIT_HELPER_ARGS_MAX
 #define ESPB_JIT_HELPER_ARGS_MAX 16
 #endif
 
-// --- Cold-path helpers для JIT, чтобы не раздувать hot-loop интерпретатора ---
+// Общая точка вызова уже скомпилированной функции. execute_jit_code копирует
+// аргументы в собственный набор виртуальных регистров, поэтому исходный locals
+// можно безопасно передавать напрямую без промежуточного Value[].
 __attribute__((noinline, cold))
-static bool espb_try_call_jit_for_call(
+static bool espb_execute_jit_callee(
     EspbInstance *instance,
     ExecutionContext *exec_ctx,
     uint32_t num_imported_funcs,
     uint16_t num_virtual_regs,
-    uint16_t local_func_idx_to_call,
+    uint32_t local_func_idx_to_call,
     const EspbFuncSignature *callee_sig,
-    Value *locals
+    Value *locals,
+    const Value *call_args,
+    bool indirect
 ) {
-    Value temp_args[ESPB_JIT_HELPER_ARGS_MAX];
-    uint32_t num_args = MIN(callee_sig->num_params, ESPB_JIT_HELPER_ARGS_MAX);
-    for (uint32_t i = 0; i < num_args; i++) {
-        if (i < num_virtual_regs) {
-            temp_args[i] = locals[i];
-        } else {
-            memset(&temp_args[i], 0, sizeof(Value));
-        }
-    }
+    const uint32_t global_func_idx = local_func_idx_to_call + num_imported_funcs;
+    Value jit_result = {0};
+    const EspbResult call_res =
+        espb_execute_function(instance, exec_ctx, global_func_idx, call_args, &jit_result);
 
-    uint32_t global_func_idx = local_func_idx_to_call + num_imported_funcs;
-    Value jit_result;
-    memset(&jit_result, 0, sizeof(Value));
-
-    EspbResult call_res = espb_execute_function(instance, exec_ctx, global_func_idx, temp_args, &jit_result);
     if (call_res != ESPB_OK) {
-        ESP_LOGE(TAG, "JIT call failed for function #%u: %d", local_func_idx_to_call, call_res);
+        ESP_LOGE(TAG, "JIT %s call failed for function #%u: %d",
+                 indirect ? "indirect" : "", (unsigned)local_func_idx_to_call, call_res);
         return false;
     }
 
@@ -102,19 +96,22 @@ static bool espb_try_call_jit_for_call(
     return true;
 }
 
+// Редкий защитный путь для некорректной/нестандартной сигнатуры: сохраняем
+// прежнее zero-padding поведение, не раздувая стек обычного JIT-call пути.
 __attribute__((noinline, cold))
-static bool espb_try_call_jit_for_call_indirect(
+static bool espb_execute_jit_callee_padded(
     EspbInstance *instance,
     ExecutionContext *exec_ctx,
     uint32_t num_imported_funcs,
     uint16_t num_virtual_regs,
     uint32_t local_func_idx_to_call,
     const EspbFuncSignature *callee_sig,
-    Value *locals
+    Value *locals,
+    bool indirect
 ) {
     Value temp_args[ESPB_JIT_HELPER_ARGS_MAX];
-    uint32_t num_args = MIN(callee_sig->num_params, ESPB_JIT_HELPER_ARGS_MAX);
-    for (uint32_t i = 0; i < num_args; i++) {
+    const uint32_t num_args = MIN(callee_sig->num_params, ESPB_JIT_HELPER_ARGS_MAX);
+    for (uint32_t i = 0; i < num_args; ++i) {
         if (i < num_virtual_regs) {
             temp_args[i] = locals[i];
         } else {
@@ -122,20 +119,57 @@ static bool espb_try_call_jit_for_call_indirect(
         }
     }
 
-    uint32_t global_func_idx = local_func_idx_to_call + num_imported_funcs;
-    Value jit_result;
-    memset(&jit_result, 0, sizeof(Value));
+    return espb_execute_jit_callee(instance, exec_ctx, num_imported_funcs,
+                                   num_virtual_regs, local_func_idx_to_call,
+                                   callee_sig, locals, temp_args, indirect);
+}
 
-    EspbResult call_res = espb_execute_function(instance, exec_ctx, global_func_idx, temp_args, &jit_result);
-    if (call_res != ESPB_OK) {
-        ESP_LOGE(TAG, "JIT CALL_INDIRECT failed for function #%u: %d", local_func_idx_to_call, call_res);
-        return false;
+static bool espb_try_call_jit_common(
+    EspbInstance *instance,
+    ExecutionContext *exec_ctx,
+    uint32_t num_imported_funcs,
+    uint16_t num_virtual_regs,
+    uint32_t local_func_idx_to_call,
+    const EspbFuncSignature *callee_sig,
+    Value *locals,
+    bool indirect
+) {
+    // В штатном модуле параметры функции уже находятся в начале locals.
+    // Избегаем промежуточного массива и дополнительного копирования аргументов.
+    if (__builtin_expect(callee_sig->num_params <= ESPB_JIT_HELPER_ARGS_MAX &&
+                         callee_sig->num_params <= num_virtual_regs, 1)) {
+        return espb_execute_jit_callee(instance, exec_ctx, num_imported_funcs,
+                                       num_virtual_regs, local_func_idx_to_call,
+                                       callee_sig, locals, locals, indirect);
     }
 
-    if (callee_sig->num_returns > 0 && num_virtual_regs > 0) {
-        locals[0] = jit_result;
-    }
-    return true;
+    return espb_execute_jit_callee_padded(instance, exec_ctx, num_imported_funcs,
+                                          num_virtual_regs, local_func_idx_to_call,
+                                          callee_sig, locals, indirect);
+}
+
+__attribute__((noinline, cold))
+static bool espb_try_call_jit_for_call(
+    EspbInstance *instance, ExecutionContext *exec_ctx,
+    uint32_t num_imported_funcs, uint16_t num_virtual_regs,
+    uint16_t local_func_idx_to_call, const EspbFuncSignature *callee_sig,
+    Value *locals
+) {
+    return espb_try_call_jit_common(instance, exec_ctx, num_imported_funcs,
+                                    num_virtual_regs, local_func_idx_to_call,
+                                    callee_sig, locals, false);
+}
+
+__attribute__((noinline, cold))
+static bool espb_try_call_jit_for_call_indirect(
+    EspbInstance *instance, ExecutionContext *exec_ctx,
+    uint32_t num_imported_funcs, uint16_t num_virtual_regs,
+    uint32_t local_func_idx_to_call, const EspbFuncSignature *callee_sig,
+    Value *locals
+) {
+    return espb_try_call_jit_common(instance, exec_ctx, num_imported_funcs,
+                                    num_virtual_regs, local_func_idx_to_call,
+                                    callee_sig, locals, true);
 }
 #endif
 

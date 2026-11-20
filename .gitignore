@@ -1,0 +1,4 @@
+/qemu/build/
+/qemu/sdkconfig
+/qemu/sdkconfig.old
+/qemu/.generated/
