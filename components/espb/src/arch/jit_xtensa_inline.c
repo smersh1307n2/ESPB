@@ -3235,13 +3235,17 @@ EspbResult espb_jit_compile_function_xtensa_inline(
     };
     uint32_t vcache_clock = 0, vcache_hits = 0, vcache_spills = 0, vcache_coalesced_writes = 0;
 
-    // Cache only the straight-line prefix before the first decoded branch.
-    // Detect control flow in the real decoder below, not by scanning raw bytes:
-    // immediates and register operands may coincidentally equal branch opcodes.
-    // On the first branch, flush all dirty entries and permanently disable the
-    // cache for the remainder of this function. This keeps all branch targets
-    // coherent without needing a separate bytecode-length decoder.
+    // Branch-free function-local I32 cache. Keep the conservative raw-byte
+    // scan until a complete instruction-boundary decoder is available: enabling
+    // caching in a prefix is unsafe when a later branch can target that prefix.
+    // False positives only disable the optimization; they do not affect results.
     bool vcache_function_safe = true;
+    for (const uint8_t *scan = code; scan < code + code_size; ++scan) {
+        if (*scan == 0x02 || *scan == 0x03 || *scan == 0x04) {
+            vcache_function_safe = false;
+            break;
+        }
+    }
 #define XTENSA_VCACHE_FIND(v, result) do { \
         (result) = -1; \
         for (int _i = 0; _i < 4; ++_i) { \
@@ -3297,14 +3301,8 @@ EspbResult espb_jit_compile_function_xtensa_inline(
         last_op = *pc;
         last_off = (size_t)(pc - start);
         uint8_t op = *pc++;
-        // The opcode is decoded here, so operand/immediate bytes cannot trigger
-        // false branch detection. A branch ends the cacheable straight-line prefix.
-        if (op == 0x02 || op == 0x03 || op == 0x04) {
-            XTENSA_VCACHE_FLUSH();
-            vcache_function_safe = false;
-        }
-        // Every branch target enters with coherent v_regs. Helper/division
-        // opcodes are also barriers and never see dirty cache entries.
+        // Flush before recording native-address mapping: every branch target enters
+        // with coherent v_regs. Helper/division opcodes never see a dirty cache.
         const bool vcacheable = vcache_function_safe &&
             ((op >= 0x20 && op <= 0x22) || (op >= 0x28 && op <= 0x2D));
         const bool vcache_next = vcacheable && ((size_t)(end - pc) >= 4) &&
