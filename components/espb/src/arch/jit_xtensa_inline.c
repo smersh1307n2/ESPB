@@ -3233,6 +3233,18 @@ EspbResult espb_jit_compile_function_xtensa_inline(
         { 0, 12, false, false, 0 }, { 0, 13, false, false, 0 }
     };
     uint32_t vcache_clock = 0, vcache_hits = 0, vcache_spills = 0, vcache_coalesced_writes = 0;
+
+    // Without a complete CFG/liveness pass, do not cache across functions that
+    // contain control-flow opcodes. The conservative byte scan may disable the
+    // optimization on an immediate containing 0x02/0x03/0x04, but cannot enable
+    // it incorrectly; branch-free functions remain eligible.
+    bool vcache_function_safe = true;
+    for (const uint8_t *scan = code; scan < code + code_size; ++scan) {
+        if (*scan == 0x02 || *scan == 0x03 || *scan == 0x04) {
+            vcache_function_safe = false;
+            break;
+        }
+    }
 #define XTENSA_VCACHE_FIND(v, result) do { \
         (result) = -1; \
         for (int _i = 0; _i < 2; ++_i) { \
@@ -3288,7 +3300,8 @@ EspbResult espb_jit_compile_function_xtensa_inline(
         uint8_t op = *pc++;
         // Flush before recording native-address mapping: every branch target enters
         // with coherent v_regs. Helper/division opcodes never see a dirty cache.
-        const bool vcacheable = ((op >= 0x20 && op <= 0x22) || (op >= 0x28 && op <= 0x2D));
+        const bool vcacheable = vcache_function_safe &&
+            ((op >= 0x20 && op <= 0x22) || (op >= 0x28 && op <= 0x2D));
         const bool vcache_next = vcacheable && ((size_t)(end - pc) >= 4) &&
             (((pc[3] >= 0x20 && pc[3] <= 0x22) || (pc[3] >= 0x28 && pc[3] <= 0x2D)));
         if (!vcacheable) XTENSA_VCACHE_FLUSH();
