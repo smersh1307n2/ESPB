@@ -99,7 +99,7 @@ jobs:
               mode = ($0 ~ /module=jit__/) ? "jit" : "interpreter"
               compiled = 0
             }
-            index($0, "[JIT] Compiled HOT function") == 1 {
+            (index($0, "[JIT] Compiled HOT function") == 1 || index($0, "Precompiled HOT function #") > 0) {
               if (active && mode == "jit") compiled = 1
               if (active && mode == "interpreter") {
                 print "Interpreter-only module unexpectedly compiled JIT: " module_name > "/dev/stderr"
