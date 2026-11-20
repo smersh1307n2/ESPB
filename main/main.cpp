@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include "espb_api.h"
+#include "espb_embedded_modules.h"
 #include "esp_timer.h"
 #include "esp_cpu.h"
 #include <esp_log.h>
@@ -7,10 +8,6 @@
 
 #include "espb_fast_symbols.h"
 
-
-// External symbols for accessing embedded test.espb file
-extern const uint8_t test_espb_start[] asm("_binary_test_espb_start");
-extern const uint8_t test_espb_end[]   asm("_binary_test_espb_end");
 
 static const char *TAG = "main";
 // --- Host-like callback helpers ---
@@ -83,9 +80,13 @@ extern "C" void app_main(void)
     espb_handle_t espb_handle = NULL;
     EspbResult result;
 
-    // 1. Load module
-    const size_t espb_size = test_espb_end - test_espb_start;
-    result = espb_load_module(test_espb_start, espb_size, &espb_handle);
+    // Load and execute every test*.espb embedded by the component CMake file.
+    for (size_t module_index = 0; module_index < espb_embedded_module_count; ++module_index) {
+        const EspbEmbeddedModule &module = espb_embedded_modules[module_index];
+        printf("\\n[ESPB_TEST] module=%s size=%u\\n", module.name, (unsigned)module.size);
+        espb_handle = NULL;
+        const size_t espb_size = module.size;
+        result = espb_load_module(module.data, espb_size, &espb_handle);
     if (result != ESPB_OK) {
         printf("Failed to load ESPB module, error: %d\n", result);
         return;
