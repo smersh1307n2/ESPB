@@ -1,13 +1,15 @@
 # Build paired copies of every test module: interpreter-only and HOT/JIT.
-file(GLOB ESPB_SOURCE_MODULES CONFIGURE_DEPENDS "${CMAKE_CURRENT_LIST_DIR}/test*.espb")
+file(GLOB ESPB_SOURCE_MODULES "${CMAKE_CURRENT_LIST_DIR}/test*.espb")
 if(NOT ESPB_SOURCE_MODULES)
     message(FATAL_ERROR "No test*.espb source modules found in main/")
 endif()
 
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
+if(NOT PYTHON)
+    find_program(PYTHON NAMES python3 python REQUIRED)
+endif()
 set(ESPB_GENERATED_DIR "${CMAKE_CURRENT_LIST_DIR}/.qemu-generated")
 execute_process(
-    COMMAND "${Python3_EXECUTABLE}"
+    COMMAND "${PYTHON}"
             "${CMAKE_CURRENT_LIST_DIR}/../tools/qemu/prepare_dual_corpus.py"
             --input-dir "${CMAKE_CURRENT_LIST_DIR}"
             --output-dir "${ESPB_GENERATED_DIR}"
