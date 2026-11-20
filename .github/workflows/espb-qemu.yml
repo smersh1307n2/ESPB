@@ -59,6 +59,23 @@ jobs:
           set -e
           cat qemu.log
 
+          # Resolve Xtensa/RISC-V panic PCs against the exact firmware ELF.
+          if grep -Eq "Guru Meditation Error|panic'ed|LoadProhibited|StoreProhibited|Load access fault|Store access fault" qemu.log; then
+            if [ "${{ matrix.target }}" = "esp32" ]; then
+              addr2line_name="xtensa-esp-elf-addr2line"
+            else
+              addr2line_name="riscv32-esp-elf-addr2line"
+            fi
+            addr2line_tool=$(find "$IDF_TOOLS_PATH/tools" -type f -name "$addr2line_name" -perm -u+x 2>/dev/null | head -n 1)
+            firmware_elf=$(find qemu/build -maxdepth 1 -type f -name "*.elf" | head -n 1)
+            if [ -n "$addr2line_tool" ] && [ -n "$firmware_elf" ]; then
+              echo "ESPB_PANIC_SYMBOLS target=${{ matrix.target }} elf=$firmware_elf"
+              "$addr2line_tool" -pfiaC -e "$firmware_elf" 0x4008def9 0x400db15e 0x4008e063 0x400d8c95 0x400d8d2d 0x400d8b3a 0x400d8534 0x4012bea3 0x400863c5 || true
+            else
+              echo "ESPB_PANIC_SYMBOLS unavailable: tool=$addr2line_tool elf=$firmware_elf"
+            fi
+          fi
+
           if [ "$qemu_status" -ne 0 ] && [ "$qemu_status" -ne 124 ] && [ "$qemu_status" -ne 130 ]; then
             echo "QEMU exited unexpectedly: $qemu_status"
             exit "$qemu_status"
