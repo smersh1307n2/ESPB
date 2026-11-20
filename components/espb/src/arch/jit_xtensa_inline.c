@@ -3225,9 +3225,9 @@ EspbResult espb_jit_compile_function_xtensa_inline(
     uint16_t opcode_loads[256] = {0};
     uint16_t opcode_stores[256] = {0};
 
-    // Conservative two-entry I32 vreg cache, live only across adjacent native
+    // Four-entry I32 vreg cache, live only across adjacent branch-free native
     // Xtensa ALU bytecodes. Every other opcode is a coherence/control-flow barrier.
-    // a12/a13 are saved by the prologue and restored by the epilogue.
+    // a12-a15 are saved by the prologue and restored by the epilogue.
     typedef struct { uint8_t vreg, phys; bool valid, dirty; uint32_t stamp; } XtensaVregCacheSlot;
     XtensaVregCacheSlot vcache[4] = {
         { 0, 12, false, false, 0 }, { 0, 13, false, false, 0 },
