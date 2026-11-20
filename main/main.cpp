@@ -83,7 +83,7 @@ extern "C" void app_main(void)
     // Load and execute every test*.espb embedded by the component CMake file.
     for (size_t module_index = 0; module_index < espb_embedded_module_count; ++module_index) {
         const EspbEmbeddedModule &module = espb_embedded_modules[module_index];
-        printf("\\n[ESPB_TEST] module=%s size=%u\\n", module.name, (unsigned)module.size);
+        printf("\n[ESPB_TEST] module=%s size=%u\n", module.name, (unsigned)module.size);
         espb_handle = NULL;
         const size_t espb_size = module.size;
         result = espb_load_module(module.data, espb_size, &espb_handle);
@@ -170,7 +170,8 @@ extern "C" void app_main(void)
     // The embedded test.espb exports app_main; it does not export a
     // separate "test" function. Keep the smoke test aligned with the
     // module's actual public interface.
-    espb_unload_module(espb_handle);
+        espb_unload_module(espb_handle);
+    }
 
     printf("\n--- ESPB API Demo Finished ---\n");
 }
