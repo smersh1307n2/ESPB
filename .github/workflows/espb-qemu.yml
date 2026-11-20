@@ -64,29 +64,30 @@ jobs:
           fi
           grep -F -- "Result is CORRECT." qemu.log
           grep -F -- "--- ESPB API Demo Finished ---" qemu.log
-          # Every module discovered by CMake must be visited by the runtime loop.
+          # Every embedded module must be visited and unloaded sequentially.
           expected_modules=$(grep -Eo "\\[ESPB_TEST\\] module_count=[0-9]+" qemu.log | tail -n 1 | cut -d= -f2)
           actual_modules=$(grep -c "^\\[ESPB_TEST\\] module=" qemu.log || true)
-          if [ -z "$expected_modules" ] || [ "$expected_modules" -lt 1 ] || [ "$actual_modules" -ne "$expected_modules" ]; then
-            echo "Embedded module count mismatch: expected=$expected_modules actual=$actual_modules"
+          completed_modules=$(grep -c "^\\[ESPB_TEST\\] module_done=" qemu.log || true)
+          if [ -z "$expected_modules" ] || [ "$expected_modules" -lt 1 ] || [ "$actual_modules" -ne "$expected_modules" ] || [ "$completed_modules" -ne "$expected_modules" ]; then
+            echo "Embedded module lifecycle mismatch: expected=$expected_modules started=$actual_modules completed=$completed_modules"
             exit 1
           fi
-          # Require five numeric samples and one numeric median; a completion
-          # marker alone must not turn an incomplete benchmark into a pass.
-          for sample in 0 1 2 3 4; do
-            if ! grep -Eq "sample_${sample}_us=[1-9][0-9]* cycles_start=[0-9]+ cycles_end=[0-9]+ cycles_delta=[1-9][0-9]*" qemu.log; then
-              echo "Missing or invalid benchmark sample ${sample}"
-              exit 1
-            fi
-          done
+          # Each module receives five measured calls; validate all samples and
+          # require one median per module, rather than a single global median.
+          expected_samples=$((expected_modules * 5))
+          actual_samples=$(grep -Ec "sample_[0-4]_us=[1-9][0-9]* cycles_start=[0-9]+ cycles_end=[0-9]+ cycles_delta=[1-9][0-9]*" qemu.log || true)
+          if [ "$actual_samples" -ne "$expected_samples" ]; then
+            echo "Benchmark sample count mismatch: expected=$expected_samples actual=$actual_samples"
+            exit 1
+          fi
           median_count=$(grep -Ec "app_main_median_us=[1-9][0-9]*([[:space:]]|$)" qemu.log || true)
-          if [ "$median_count" -ne 1 ]; then
-            echo "Expected exactly one numeric microsecond median, found $median_count"
+          if [ "$median_count" -ne "$expected_modules" ]; then
+            echo "Expected one numeric microsecond median per module ($expected_modules), found $median_count"
             exit 1
           fi
           cycle_median_count=$(grep -Ec "app_main_median_cycles=[1-9][0-9]*([[:space:]]|$)" qemu.log || true)
-          if [ "$cycle_median_count" -ne 1 ]; then
-            echo "Expected exactly one numeric cycle median, found $cycle_median_count"
+          if [ "$cycle_median_count" -ne "$expected_modules" ]; then
+            echo "Expected one numeric cycle median per module ($expected_modules), found $cycle_median_count"
             exit 1
           fi
 

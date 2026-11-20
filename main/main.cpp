@@ -172,6 +172,7 @@ extern "C" void app_main(void)
     // separate "test" function. Keep the smoke test aligned with the
     // module's actual public interface.
         espb_unload_module(espb_handle);
+        printf("[ESPB_TEST] module_done=%s\n", module.name);
     }
 
     printf("\n--- ESPB API Demo Finished ---\n");
