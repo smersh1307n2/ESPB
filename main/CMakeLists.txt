@@ -1,5 +1,5 @@
 # Embed every test*.espb placed in this component directory.
-file(GLOB ESPB_TEST_MODULES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/test*.espb")
+file(GLOB ESPB_TEST_MODULES "${CMAKE_CURRENT_SOURCE_DIR}/test*.espb")
 if(NOT ESPB_TEST_MODULES)
     message(FATAL_ERROR "No test*.espb modules found in main/")
 endif()
