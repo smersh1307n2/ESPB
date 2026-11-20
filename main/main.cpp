@@ -59,6 +59,13 @@ static const EspbSymbol custom_symbols[] = {
 static const EspbSymbolFast my_custom_fast_table[] = {
 #include "symbols/custom_fast.sym"
 };
+
+// The QEMU corpus contains a legacy named import of printf (module_num=0).
+// idf_fast is index-based and does not satisfy this name-based import.
+static const EspbSymbol qemu_named_symbols[] = {
+    {"printf", (const void*)&printf},
+    ESP_ELFSYM_END
+};
 //*/
 
 
@@ -75,6 +82,7 @@ extern "C" void app_main(void)
     // Use only if you compile modules with --custom-fast flag
     // NOTE: idf_fast table is automatically registered in init_cpp_symbols()
     espb_register_custom_index_symbol_table(my_custom_fast_table);
+    espb_register_symbol_table(0, qemu_named_symbols);
 
 
     espb_handle_t espb_handle = NULL;
