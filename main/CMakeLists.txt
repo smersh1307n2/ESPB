@@ -31,7 +31,7 @@ foreach(ESPB_FILE IN LISTS ESPB_TEST_MODULES)
         "extern const uint8_t ${ESPB_START}[] asm(\"${ESPB_START}\");\n"
         "extern const uint8_t ${ESPB_END}[] asm(\"${ESPB_END}\");\n")
     string(APPEND ESPB_MODULE_ENTRIES
-        "{\" ${ESPB_NAME}\", ${ESPB_START}, (size_t)(${ESPB_END} - ${ESPB_START})},\n")
+        "{\"${ESPB_NAME}\", ${ESPB_START}, (size_t)(${ESPB_END} - ${ESPB_START})},\n")
 endforeach()
 file(APPEND "${ESPB_MODULE_SOURCE}"
     "const EspbEmbeddedModule espb_embedded_modules[] = {\n${ESPB_MODULE_ENTRIES}};\n"
