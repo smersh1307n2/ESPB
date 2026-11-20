@@ -21,7 +21,9 @@ else()
     find_program(ESPB_PYTHON NAMES python3 python REQUIRED)
 endif()
 
-set(ESPB_GENERATED_DIR "${CMAKE_CURRENT_LIST_DIR}/.generated")
+# EMBED_FILES is intentionally given basenames: ESP-IDF linker symbols are
+# stable and match _binary_<basename>_{start,end}. Generated files stay ignored.
+set(ESPB_GENERATED_DIR "${CMAKE_CURRENT_LIST_DIR}")
 execute_process(
     COMMAND "${ESPB_PYTHON}"
             "${ESPB_REPO_ROOT}/tools/qemu/prepare_dual_corpus.py"
@@ -62,8 +64,7 @@ set(ESPB_MODULE_ENTRIES "")
 set(ESPB_EMBED_FILES "")
 foreach(ESPB_FILE IN LISTS ESPB_TEST_MODULES)
     get_filename_component(ESPB_NAME "${ESPB_FILE}" NAME)
-    set(ESPB_EMBED_PATH ".generated/${ESPB_NAME}")
-    list(APPEND ESPB_EMBED_FILES "${ESPB_EMBED_PATH}")
+    list(APPEND ESPB_EMBED_FILES "${ESPB_NAME}")
     string(REPLACE "." "_" ESPB_SYMBOL_SUFFIX "${ESPB_NAME}")
     set(ESPB_START "_binary_${ESPB_SYMBOL_SUFFIX}_start")
     set(ESPB_END "_binary_${ESPB_SYMBOL_SUFFIX}_end")

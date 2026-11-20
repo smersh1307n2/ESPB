@@ -83,8 +83,9 @@ def main() -> int:
         parser.error("input module basenames must be unique")
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    for stale in args.output_dir.glob("*.espb"):
-        stale.unlink()
+    for pattern in ("interp__*.espb", "jit__*.espb"):
+        for stale in args.output_dir.glob(pattern):
+            stale.unlink()
 
     total_bodies = 0
     for source_path in inputs:
