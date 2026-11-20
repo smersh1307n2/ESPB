@@ -2874,16 +2874,17 @@ static void emit_load_imm32(XtensaJitContext* ctx, XtensaLiteralPool* pool, uint
 
 // Load v_regs[rd] into register ar
 static void emit_load_vreg(XtensaJitContext* ctx, uint8_t ar, uint8_t rd) {
-    // IMPORTANT: In our call path, arguments are observed in a10/a11 on entry
-    // (see crash dump: A10=instance, A11=v_regs). a3 may be used as call target.
+    // a6 is the stable v_regs base for inline code. a11 is caller-saved and
+    // may be overwritten by CALLX8 helpers (for example DIVU/REMU).
     uint16_t offset = rd * 8;
-    emit_l32i(ctx, ar, 11, offset);  // a11 = v_regs base
+    emit_l32i(ctx, ar, 6, offset);
 }
 
 // Store register ar into v_regs[rd]
 static void emit_store_vreg(XtensaJitContext* ctx, uint8_t ar, uint8_t rd) {
+    // Keep the same stable base used by the other inline opcode emitters.
     uint16_t offset = rd * 8;
-    emit_s32i(ctx, ar, 11, offset);  // a11 = v_regs base
+    emit_s32i(ctx, ar, 6, offset);
 }
 
 // ===== Debug helpers (opcode profiler) =====
