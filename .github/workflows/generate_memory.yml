@@ -37,9 +37,9 @@ jobs:
           cd projects/ESP32_PRJ_TO_LLVM
           . "$IDF_PATH/export.sh"
           python scripts/build_bitcode.py "examples/03_memory"
-          test -s "llvm_output/memory_memory.bc"
+          test -s "llvm_output/03_03_memory_memory.bc"
           mkdir -p "$GITHUB_WORKSPACE/.work"
-          cp "llvm_output/memory_memory.bc" "$GITHUB_WORKSPACE/.work/03_memory_memory.bc"
+          cp "llvm_output/03_03_memory_memory.bc" "$GITHUB_WORKSPACE/.work/03_03_memory_memory.bc"
       - name: Translate BC to ESPB (quota-aware key rotation)
         env:
           ESPB_TRANSLATOR_KEYS: ${{ secrets.ESPB_TRANSLATOR_KEYS }}
@@ -49,7 +49,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python .github/scripts/translate_bc.py ".work/03_memory_memory.bc" ".work/03_memory_memory.espb"
+          python .github/scripts/translate_bc.py ".work/03_03_memory_memory.bc" ".work/03_memory_memory.espb"
           test -s ".work/03_memory_memory.espb"
       - name: Commit generated module
         shell: bash
