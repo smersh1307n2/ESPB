@@ -3219,14 +3219,6 @@ EspbResult espb_jit_compile_function_xtensa_inline(
     uint8_t last_op = 0x00;
     size_t last_off = 0;
 
-    // Record the first byte that conservatively disabled caching. This is
-    // diagnostic only; the scan never changes bytecode execution semantics.
-    if (!vcache_function_safe) {
-        ESP_LOGI(TAG, "[vcache-scan] disabled_at=%u byte=0x%02X code_bytes=%u",
-                 (unsigned)vcache_scan_blocked_at, (unsigned)vcache_scan_blocked_byte,
-                 (unsigned)code_size);
-    }
-
     // Compile-time per-opcode accounting. This measures which bytecode
     // operations cause vreg memory traffic without touching generated code.
     uint16_t opcode_count[256] = {0};
@@ -3257,6 +3249,13 @@ EspbResult espb_jit_compile_function_xtensa_inline(
             vcache_scan_blocked_byte = *scan;
             break;
         }
+    }
+
+    // Report the first conservative blocker after its state has been initialized.
+    if (!vcache_function_safe) {
+        ESP_LOGI(TAG, "[vcache-scan] disabled_at=%u byte=0x%02X code_bytes=%u",
+                 (unsigned)vcache_scan_blocked_at, (unsigned)vcache_scan_blocked_byte,
+                 (unsigned)code_size);
     }
 #define XTENSA_VCACHE_FIND(v, result) do { \
         (result) = -1; \
