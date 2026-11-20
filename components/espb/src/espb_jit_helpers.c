@@ -18,14 +18,31 @@
 #include "espb_jit_helpers.h"
 
 #include "espb_runtime_alloca.h"
+#include "esp_log.h"
+
+static const char *TAG = "espb_jit_alloca";
 
 // JIT helper for ALLOCA opcode (0x8F).
 // Shared implementation lives in espb_runtime_alloca.c.
 void espb_jit_alloca_ex(EspbInstance *instance, Value *v_regs, uint16_t num_regs_allocated,
                         uint8_t rd, uint8_t rs_size, uint8_t align)
 {
-    if (!instance || !v_regs) return;
-    (void)espb_runtime_alloca(instance, NULL, v_regs, num_regs_allocated, rd, rs_size, align);
+    ESP_LOGI(TAG, "args instance=%p regs=%p count=%u rd=%u rs=%u align=%u",
+             (void *)instance, (void *)v_regs, (unsigned)num_regs_allocated,
+             (unsigned)rd, (unsigned)rs_size, (unsigned)align);
+    if (!instance || !v_regs) {
+        ESP_LOGE(TAG, "null JIT ALLOCA argument");
+        return;
+    }
+    if (rd >= num_regs_allocated || rs_size >= num_regs_allocated) {
+        ESP_LOGE(TAG, "register bounds failure: rd=%u rs=%u count=%u",
+                 (unsigned)rd, (unsigned)rs_size, (unsigned)num_regs_allocated);
+        return;
+    }
+    ESP_LOGI(TAG, "size=%u", (unsigned)V_I32(v_regs[rs_size]));
+    EspbResult result = espb_runtime_alloca(instance, NULL, v_regs,
+                                            num_regs_allocated, rd, rs_size, align);
+    ESP_LOGI(TAG, "result=%d allocated=%p", (int)result, V_PTR(v_regs[rd]));
 }
 
 void espb_jit_alloca(EspbInstance *instance, Value *v_regs, uint8_t rd, uint8_t rs_size, uint8_t align) {
