@@ -37,9 +37,9 @@ jobs:
           cd projects/ESP32_PRJ_TO_LLVM
           . "$IDF_PATH/export.sh"
           python scripts/build_bitcode.py "examples/02_control_flow"
-          test -s "llvm_output/02_02_control_flow_control_flow.bc"
+          test -s "llvm_output/02_control_flow_control_flow.bc"
           mkdir -p "$GITHUB_WORKSPACE/.work"
-          cp "llvm_output/02_02_control_flow_control_flow.bc" "$GITHUB_WORKSPACE/.work/02_02_control_flow_control_flow.bc"
+          cp "llvm_output/02_control_flow_control_flow.bc" "$GITHUB_WORKSPACE/.work/02_control_flow_control_flow.bc"
       - name: Translate BC to ESPB (quota-aware key rotation)
         env:
           ESPB_TRANSLATOR_KEYS: ${{ secrets.ESPB_TRANSLATOR_KEYS }}
@@ -49,7 +49,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python .github/scripts/translate_bc.py ".work/02_02_control_flow_control_flow.bc" ".work/02_control_flow_control_flow.espb"
+          python .github/scripts/translate_bc.py ".work/02_control_flow_control_flow.bc" ".work/02_control_flow_control_flow.espb"
           test -s ".work/02_control_flow_control_flow.espb"
       - name: Commit generated module
         shell: bash
