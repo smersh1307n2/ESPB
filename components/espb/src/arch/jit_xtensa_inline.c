@@ -3758,13 +3758,18 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint16_t rs_off = (uint16_t)(rs * 8);
                 uint16_t rd_off = (uint16_t)(rd * 8);
 
-                // low 32
-                emit_l32i(&ctx, 8, 6, rs_off);
-                emit_s32i(&ctx, 8, 6, rd_off);
+                // MOV from a register to itself is a true no-op: the full
+                // 64-bit Value (including its type tag) is already in place.
+                // Avoid four generated memory operations in this common case.
+                if (rd != rs) {
+                    // low 32
+                    emit_l32i(&ctx, 8, 6, rs_off);
+                    emit_s32i(&ctx, 8, 6, rd_off);
 
-                // high 32
-                emit_l32i(&ctx, 8, 6, (uint16_t)(rs_off + 4));
-                emit_s32i(&ctx, 8, 6, (uint16_t)(rd_off + 4));
+                    // high 32
+                    emit_l32i(&ctx, 8, 6, (uint16_t)(rs_off + 4));
+                    emit_s32i(&ctx, 8, 6, (uint16_t)(rd_off + 4));
+                }
                 break;
             }
 
