@@ -794,17 +794,24 @@ static void jit_call_espb_function_xtensa(EspbInstance* instance, uint32_t local
             callee_regs[i] = v_regs[i];
         }
 
-        ESP_LOGI(TAG, "[jit-call-debug] enter local=%u global=%u instance=%p caller_regs=%p jit=%p args=%u needed=%u callee_regs=%p arg0=0x%08x",
-                 (unsigned)local_func_idx, (unsigned)global_func_idx,
-                 (void *)instance, (void *)v_regs, (void *)jit_func,
-                 (unsigned)num_args, (unsigned)needed_regs, (void *)callee_regs,
-                 num_args ? (unsigned)V_U32(callee_regs[0]) : 0u);
+        static uint32_t debug_call_logs = 0;
+        const bool trace_call = (global_func_idx < 4u) && (debug_call_logs < 100u);
+        if (trace_call) {
+            debug_call_logs++;
+            ESP_LOGI(TAG, "[jit-call-debug] enter local=%u global=%u instance=%p caller_regs=%p jit=%p args=%u needed=%u callee_regs=%p arg0=0x%08x",
+                     (unsigned)local_func_idx, (unsigned)global_func_idx,
+                     (void *)instance, (void *)v_regs, (void *)jit_func,
+                     (unsigned)num_args, (unsigned)needed_regs, (void *)callee_regs,
+                     num_args ? (unsigned)V_U32(callee_regs[0]) : 0u);
+        }
 
         jit_func(instance, callee_regs);
 
-        ESP_LOGI(TAG, "[jit-call-debug] return local=%u result0=0x%08x",
-                 (unsigned)local_func_idx,
-                 sig->num_returns ? (unsigned)V_U32(callee_regs[0]) : 0u);
+        if (trace_call) {
+            ESP_LOGI(TAG, "[jit-call-debug] return local=%u result0=0x%08x",
+                     (unsigned)local_func_idx,
+                     sig->num_returns ? (unsigned)V_U32(callee_regs[0]) : 0u);
+        }
 
         // Copy return value back
         if (sig->num_returns > 0) {
