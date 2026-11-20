@@ -62,12 +62,13 @@ static bool expect_i32(espb_handle_t handle, const char *function_name,
 
 static bool run_semantic_checks(espb_handle_t handle, const char *module_name)
 {
+    const char *mode = strstr(module_name, "jit__") != NULL ? "jit" : "interpreter";
     if (strstr(module_name, "test_01_integer") != NULL) {
         const Value chain_args[] = { ESPB_U32(1112) };
         const Value signed_args[] = { ESPB_I32(1112), ESPB_I32(0) };
         const bool chain_ok = expect_u32(handle, "espb_integer_chain", chain_args, 1, 1110154669u, "integer_chain");
         const bool signed_ok = expect_i32(handle, "espb_integer_signed", signed_args, 2, 7784, "integer_signed");
-        printf("[ESPB_ASSERT] integer=%s\\n", chain_ok && signed_ok ? "PASS" : "FAIL");
+        printf("[ESPB_ASSERT] integer=%s mode=%s\\n", chain_ok && signed_ok ? "PASS" : "FAIL", mode);
         return chain_ok && signed_ok;
     }
 
@@ -76,7 +77,7 @@ static bool run_semantic_checks(espb_handle_t handle, const char *module_name)
         const Value nested_args[] = { ESPB_U32(1112) };
         const bool loop_ok = expect_u32(handle, "espb_branch_loop", loop_args, 1, 249u, "branch_loop");
         const bool nested_ok = expect_u32(handle, "espb_nested_branch", nested_args, 1, 165u, "nested_branch");
-        printf("[ESPB_ASSERT] control_flow=%s\\n", loop_ok && nested_ok ? "PASS" : "FAIL");
+        printf("[ESPB_ASSERT] control_flow=%s mode=%s\\n", loop_ok && nested_ok ? "PASS" : "FAIL", mode);
         return loop_ok && nested_ok;
     }
 
@@ -90,15 +91,15 @@ static bool run_semantic_checks(espb_handle_t handle, const char *module_name)
         const EspbResult checksum_rc = espb_call_function_sync(handle, "espb_array_checksum", checksum_args, 2, &checksum);
         const uint32_t actual = V_U32(checksum);
         const bool ok = transform_rc == ESPB_OK && checksum_rc == ESPB_OK && actual == 2623u;
-        printf("[ESPB_ASSERT] memory=%s checksum=%u expected=2623 transform_rc=%d checksum_rc=%d\\n",
-               ok ? "PASS" : "FAIL", (unsigned)actual, (int)transform_rc, (int)checksum_rc);
+        printf("[ESPB_ASSERT] memory=%s mode=%s checksum=%u expected=2623 transform_rc=%d checksum_rc=%d\\n",
+               ok ? "PASS" : "FAIL", mode, (unsigned)actual, (int)transform_rc, (int)checksum_rc);
         return ok;
     }
 
     if (strstr(module_name, "test_04_calls") != NULL) {
         const Value args[] = { ESPB_U32(1112), ESPB_U32(12) };
         const bool ok = expect_u32(handle, "espb_call_chain", args, 2, 3794755490u, "call_chain");
-        printf("[ESPB_ASSERT] calls=%s\\n", ok ? "PASS" : "FAIL");
+        printf("[ESPB_ASSERT] calls=%s mode=%s\\n", ok ? "PASS" : "FAIL", mode);
         return ok;
     }
 

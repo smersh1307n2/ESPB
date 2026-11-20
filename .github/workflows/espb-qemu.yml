@@ -134,12 +134,14 @@ jobs:
           ' qemu.log
 
           for family in integer control_flow memory calls; do
-            pass_count=$(grep -F -c "[ESPB_ASSERT] ${family}=PASS" qemu.log || true)
-            fail_count=$(grep -F -c "[ESPB_ASSERT] ${family}=FAIL" qemu.log || true)
-            if [ "$pass_count" -ne 2 ] || [ "$fail_count" -ne 0 ]; then
-              echo "Semantic assertion mismatch for $family: PASS=$pass_count FAIL=$fail_count (expected two PASS, zero FAIL)"
-              exit 1
-            fi
+            for mode in interpreter jit; do
+              pass_count=$(grep -F -c "[ESPB_ASSERT] ${family}=PASS mode=${mode}" qemu.log || true)
+              fail_count=$(grep -F -c "[ESPB_ASSERT] ${family}=FAIL mode=${mode}" qemu.log || true)
+              if [ "$pass_count" -ne 1 ] || [ "$fail_count" -ne 0 ]; then
+                echo "Semantic assertion mismatch for $family/$mode: PASS=$pass_count FAIL=$fail_count (expected one PASS, zero FAIL)"
+                exit 1
+              fi
+            done
           done
 
           fibonacci_pass_count=$(grep -F -c "Result is CORRECT." qemu.log || true)
