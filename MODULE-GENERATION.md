@@ -26,7 +26,7 @@ key-three
 
 Add further keys by adding further lines to this single secret; no workflow edit is required. The value is never printed. A key is skipped only when the API reports quota exhaustion / rate limiting; other failures stop the job so they are not hidden.
 
-GitHub Actions does not expose a way for a workflow to enumerate arbitrary secret names. Therefore the aggregate secret is the supported extensible mechanism; separate secrets such as `ESPB_API_KEY_2` cannot be discovered automatically.
+For compatibility, if `ESPB_TRANSLATOR_KEYS` is empty, the workflows also read the existing `ESPB_API_KEY`, `ESPB_API_KEY_1`, and `ESPB_API_KEY_2` secrets. GitHub Actions cannot enumerate arbitrary secret names, so future numbered secrets must be copied into the aggregate list (or explicitly wired into the workflows).
 
 ## Run
 
