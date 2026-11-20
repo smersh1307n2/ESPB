@@ -795,7 +795,9 @@ static void jit_call_espb_function_xtensa(EspbInstance* instance, uint32_t local
         }
 
         static uint32_t debug_call_logs = 0;
-        const bool trace_call = (global_func_idx < 4u) && (debug_call_logs < 100u);
+        const bool trace_call = (instance != NULL && instance->module != NULL &&
+                                 instance->module->num_imported_funcs == 0u &&
+                                 debug_call_logs < 100u);
         if (trace_call) {
             debug_call_logs++;
             ESP_LOGI(TAG, "[jit-call-debug] enter local=%u global=%u instance=%p caller_regs=%p jit=%p args=%u needed=%u callee_regs=%p arg0=0x%08x",
