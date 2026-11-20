@@ -6,6 +6,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: espb-work-module-commit
+  cancel-in-progress: false
+
 jobs:
   generate:
     runs-on: ubuntu-latest
@@ -39,6 +43,9 @@ jobs:
       - name: Translate BC to ESPB (quota-aware key rotation)
         env:
           ESPB_TRANSLATOR_KEYS: ${{ secrets.ESPB_TRANSLATOR_KEYS }}
+          ESPB_API_KEY: ${{ secrets.ESPB_API_KEY }}
+          ESPB_API_KEY_1: ${{ secrets.ESPB_API_KEY_1 }}
+          ESPB_API_KEY_2: ${{ secrets.ESPB_API_KEY_2 }}
         shell: bash
         run: |
           set -euo pipefail

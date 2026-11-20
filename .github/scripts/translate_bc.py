@@ -4,7 +4,6 @@ import base64
 import json
 import os
 import sys
-import time
 import urllib.error
 import urllib.request
 
@@ -29,9 +28,16 @@ with open(source, "rb") as f:
         }
     }
 
-keys = [k.strip() for k in os.environ.get("ESPB_TRANSLATOR_KEYS", "").splitlines() if k.strip()]
+# Prefer the unlimited newline-separated aggregate secret. Fall back to the
+# three legacy secrets already used by the standalone bitcode workflow.
+aggregate = os.environ.get("ESPB_TRANSLATOR_KEYS", "")
+keys = [k.strip() for k in aggregate.splitlines() if k.strip()]
 if not keys:
-    raise SystemExit("ESPB_TRANSLATOR_KEYS is empty. Configure it as a newline-separated repository secret.")
+    keys = [os.environ.get(name, "").strip() for name in
+            ("ESPB_API_KEY", "ESPB_API_KEY_1", "ESPB_API_KEY_2")]
+    keys = [key for key in keys if key]
+if not keys:
+    raise SystemExit("No ESPB API keys configured. Set ESPB_TRANSLATOR_KEYS or the legacy ESPB_API_KEY secrets.")
 
 url = os.environ.get("ESPB_API_URL", "http://espb.runasp.net/api/v1/translate")
 body = json.dumps(payload).encode("utf-8")
@@ -48,8 +54,7 @@ for slot, key in enumerate(keys, 1):
             result = json.loads(raw)
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace")
-        is_quota = exc.code == 429 or any(marker in raw.lower() for marker in quota_markers)
-        if is_quota:
+        if exc.code == 429 or any(marker in raw.lower() for marker in quota_markers):
             print(f"Key slot {slot}: quota exhausted; trying next key.")
             continue
         raise SystemExit(f"Translation HTTP {exc.code}: {raw[:2000]}")
@@ -66,8 +71,7 @@ for slot, key in enumerate(keys, 1):
         break
 
     error = str(result.get("errorMessage", result))
-    lower = error.lower()
-    if any(marker in lower for marker in quota_markers):
+    if any(marker in error.lower() for marker in quota_markers):
         print(f"Key slot {slot}: quota exhausted; trying next key.")
         continue
     raise SystemExit("Translation failed: " + error[:2000])
