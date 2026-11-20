@@ -46,18 +46,15 @@ jobs:
         run: |
           . "$IDF_PATH/export.sh"
           set +e
-          timeout --signal=INT --kill-after=5s 45s idf.py qemu > qemu.log 2>&1
+          timeout --signal=INT --kill-after=5s 60s idf.py qemu > qemu.log 2>&1
           qemu_status=$?
           set -e
           cat qemu.log
 
-          # The demo firmware is expected to keep the FreeRTOS scheduler alive.
-          # A timeout is therefore normal; the UART completion marker is the test.
           if [ "$qemu_status" -ne 0 ] && [ "$qemu_status" -ne 124 ] && [ "$qemu_status" -ne 130 ]; then
             echo "QEMU exited unexpectedly: $qemu_status"
             exit "$qemu_status"
           fi
-
           if grep -E -m1 "Guru Meditation Error|panic'ed|LoadProhibited|StoreProhibited|Load access fault|Store access fault" qemu.log; then
             echo "ESPB runtime panic detected"
             exit 1
@@ -68,16 +65,50 @@ jobs:
           fi
           grep -F -- "Result is CORRECT." qemu.log
           grep -F -- "--- ESPB API Demo Finished ---" qemu.log
-          # Every embedded module must be visited and unloaded sequentially.
+
           expected_modules=$(grep -Eo "\\[ESPB_TEST\\] module_count=[0-9]+" qemu.log | tail -n 1 | cut -d= -f2)
           actual_modules=$(grep -c "^\\[ESPB_TEST\\] module=" qemu.log || true)
           completed_modules=$(grep -c "^\\[ESPB_TEST\\] module_done=" qemu.log || true)
-          if [ -z "$expected_modules" ] || [ "$expected_modules" -lt 1 ] || [ "$actual_modules" -ne "$expected_modules" ] || [ "$completed_modules" -ne "$expected_modules" ]; then
+          if [ -z "$expected_modules" ] || [ "$expected_modules" -lt 2 ] || [ "$actual_modules" -ne "$expected_modules" ] || [ "$completed_modules" -ne "$expected_modules" ]; then
             echo "Embedded module lifecycle mismatch: expected=$expected_modules started=$actual_modules completed=$completed_modules"
             exit 1
           fi
-          # Each module receives five measured calls; validate all samples and
-          # require one median per module, rather than a single global median.
+
+          interpreter_modules=$(grep -c "^\\[ESPB_TEST\\] module=interp__" qemu.log || true)
+          jit_modules=$(grep -c "^\\[ESPB_TEST\\] module=jit__" qemu.log || true)
+          if [ "$interpreter_modules" -lt 1 ] || [ "$jit_modules" -lt 1 ] || [ "$interpreter_modules" -ne "$jit_modules" ]; then
+            echo "Expected equal non-zero interpreter/JIT module sets: interpreter=$interpreter_modules jit=$jit_modules"
+            exit 1
+          fi
+
+          awk '
+            /^\[ESPB_TEST\] module=/ {
+              if (active && mode == "jit" && !compiled) {
+                print "HOT/JIT module did not compile: " module_name > "/dev/stderr"
+                failed = 1
+              }
+              active = 1
+              module_name = $0
+              mode = ($0 ~ /module=jit__/) ? "jit" : "interpreter"
+              compiled = 0
+            }
+            /^\[JIT\] Compiled HOT function/ {
+              if (active && mode == "jit") compiled = 1
+              if (active && mode == "interpreter") {
+                print "Interpreter-only module unexpectedly compiled JIT: " module_name > "/dev/stderr"
+                failed = 1
+              }
+            }
+            /^\[ESPB_TEST\] module_done=/ {
+              if (active && mode == "jit" && !compiled) {
+                print "HOT/JIT module did not compile: " module_name > "/dev/stderr"
+                failed = 1
+              }
+              active = 0
+            }
+            END { exit failed }
+          ' qemu.log
+
           expected_samples=$((expected_modules * 5))
           actual_samples=$(grep -Ec "sample_[0-4]_us=[1-9][0-9]* cycles_start=[0-9]+ cycles_end=[0-9]+ cycles_delta=[1-9][0-9]*" qemu.log || true)
           if [ "$actual_samples" -ne "$expected_samples" ]; then
@@ -95,4 +126,4 @@ jobs:
             exit 1
           fi
 
-# Push-triggered smoke test; kept isolated on the experiment branch.
+# Push-triggered dual-mode QEMU suite on the isolated experiment branch.
