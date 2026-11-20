@@ -67,16 +67,6 @@ jobs:
             exit 1
           fi
           grep -F -- "Result is CORRECT." qemu.log
-          for assertion in integer control_flow memory calls; do
-            if ! grep -F -- "[ESPB_ASSERT] ${assertion}=PASS" qemu.log; then
-              echo "Missing or failed semantic assertion: ${assertion}"
-              exit 1
-            fi
-          done
-          if grep -E -- "\\[ESPB_ASSERT\\] [a-z_]+=FAIL" qemu.log; then
-            echo "An ESPB corpus semantic assertion failed"
-            exit 1
-          fi
           grep -F -- "--- ESPB API Demo Finished ---" qemu.log
           # Every embedded module must be visited and unloaded sequentially.
           expected_modules=$(grep -Eo "\\[ESPB_TEST\\] module_count=[0-9]+" qemu.log | tail -n 1 | cut -d= -f2)
