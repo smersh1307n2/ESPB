@@ -107,31 +107,46 @@ jobs:
 
           awk '
             index($0, "[ESPB_TEST] module=") == 1 {
-              if (active && mode == "jit" && !compiled) {
-                print "HOT/JIT module did not compile: " module_name > "/dev/stderr"
+              if (active && mode == "jit" && compiled_count != 3) {
+                print "HOT/JIT module compiled " compiled_count " of 3 functions: " module_name > "/dev/stderr"
                 failed = 1
               }
               active = 1
               module_name = $0
               mode = ($0 ~ /module=jit__/) ? "jit" : "interpreter"
-              compiled = 0
+              compiled_count = 0
             }
             (index($0, "[JIT] Compiled HOT function") == 1 || index($0, "Precompiled HOT function #") > 0) {
-              if (active && mode == "jit") compiled = 1
+              if (active && mode == "jit") compiled_count++
               if (active && mode == "interpreter") {
                 print "Interpreter-only module unexpectedly compiled JIT: " module_name > "/dev/stderr"
                 failed = 1
               }
             }
             index($0, "[ESPB_TEST] module_done=") == 1 {
-              if (active && mode == "jit" && !compiled) {
-                print "HOT/JIT module did not compile: " module_name > "/dev/stderr"
+              if (active && mode == "jit" && compiled_count != 3) {
+                print "HOT/JIT module compiled " compiled_count " of 3 functions: " module_name > "/dev/stderr"
                 failed = 1
               }
               active = 0
             }
             END { exit failed }
           ' qemu.log
+
+          for family in integer control_flow memory calls; do
+            pass_count=$(grep -F -c "[ESPB_ASSERT] ${family}=PASS" qemu.log || true)
+            fail_count=$(grep -F -c "[ESPB_ASSERT] ${family}=FAIL" qemu.log || true)
+            if [ "$pass_count" -ne 2 ] || [ "$fail_count" -ne 0 ]; then
+              echo "Semantic assertion mismatch for $family: PASS=$pass_count FAIL=$fail_count (expected two PASS, zero FAIL)"
+              exit 1
+            fi
+          done
+
+          fibonacci_pass_count=$(grep -F -c "Result is CORRECT." qemu.log || true)
+          if [ "$fibonacci_pass_count" -lt 12 ]; then
+            echo "Expected interpreter and JIT Fibonacci checks (12 calls), found $fibonacci_pass_count"
+            exit 1
+          fi
 
           expected_samples=$((expected_modules * 5))
           actual_samples=$(grep -Ec "\\[ESPB_BENCH\\] module=.*sample_[0-4]_us=[1-9][0-9]* cycles_start=[0-9]+ cycles_end=[0-9]+ cycles_delta=[1-9][0-9]*" qemu.log || true)
