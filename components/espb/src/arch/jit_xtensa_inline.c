@@ -2935,7 +2935,7 @@ static uint32_t espb_jit_xtensa_debug_op_len(uint8_t o, const uint8_t* p, const 
         case 0x9E: return 1 + 1 + 1;       // SEXT.I8.I64 (rd,rs)
         case 0x9F: return 1 + 1 + 1;       // SEXT.I16.I32 (rd,rs)
         case 0xA0: return 1 + 1 + 1;       // SEXT.I16.I64 (rd,rs)
-        case 0x21: return 1;               // RET
+        case 0x21: return 1 + 3;           // SUB.I32 (rd,rs1,rs2); not RET
         case 0x30: return 1 + 3;           // ADD.I64 (rd,rs1,rs2)
         case 0x33: return 1 + 3;           // DIVS.I64 (rd,rs1,rs2)
         case 0x34: return 1 + 3;           // REMS.I64 (rd,rs1,rs2)
