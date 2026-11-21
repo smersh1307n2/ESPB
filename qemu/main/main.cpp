@@ -256,20 +256,6 @@ extern "C" void app_main(void)
         const bool jit_mode = module.name[0] == 'j' && module.name[1] == 'i' && module.name[2] == 't' && module.name[3] == '_';
         printf("[ESPB_TEST] module=%s size=%u\n", module.name, (unsigned)module.size);
 
-#if defined(CONFIG_IDF_TARGET_ESP32)
-        /*
-         * Xtensa Interpreter supports the atomic opcodes, but the Xtensa JIT
-         * backend has no 0xD7..0xDF / 0xEC..0xF6 atomic emitters yet. Keep the
-         * interpreter semantic test; skip only the unsupported JIT twin.
-         */
-        if (jit_mode && strstr(module.name, "08_atomics") != NULL) {
-            printf("[ESPB_TEST] jit_skipped_unsupported=%s reason=xtensa_jit_has_no_atomic_handlers\n",
-                   module.name);
-            printf("[ESPB_TEST] module_done=%s mode=jit_skipped\n", module.name);
-            continue;
-        }
-#endif
-
         const uint32_t heap_before_load = esp_get_free_heap_size();
         const uint32_t min_heap_before = esp_get_minimum_free_heap_size();
         const UBaseType_t stack_hwm_before = uxTaskGetStackHighWaterMark(NULL);
