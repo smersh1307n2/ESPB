@@ -1381,6 +1381,12 @@ void jit_call_espb_function(EspbInstance* instance, uint32_t local_func_idx, Val
     EspbFuncSignature* sig = &module->signatures[sig_idx];
     uint8_t num_args = sig->num_params;
     if (num_args > 8) num_args = 8; // Ограничиваем первыми 8 аргументами
+    const bool trace_i32_calls = (local_func_idx == 1u || local_func_idx == 2u) && num_args == 2u;
+    if (trace_i32_calls) {
+        printf("[JIT_CALL_ARGS] idx=%u a0=%08" PRIx32 " a1=%08" PRIx32 " regs=%p\\n",
+               (unsigned)local_func_idx, (uint32_t)V_I32(v_regs[0]),
+               (uint32_t)V_I32(v_regs[1]), (void *)v_regs);
+    }
 
     EspbFunctionBody *callee_body = &((EspbModule*)module)->function_bodies[local_func_idx];
     
@@ -1443,6 +1449,11 @@ void jit_call_espb_function(EspbInstance* instance, uint32_t local_func_idx, Val
         }
 
         jit_func(instance, callee_regs);
+        if (trace_i32_calls) {
+            printf("[JIT_CALL_RET] idx=%u ret=%08" PRIx32 " regs=%p\\n",
+                   (unsigned)local_func_idx, (uint32_t)V_I32(callee_regs[0]),
+                   (void *)callee_regs);
+        }
 
         if (sig->num_returns > 0) {
             v_regs[0] = callee_regs[0];
