@@ -269,6 +269,11 @@ extern "C" void app_main(void)
             size_t jit_code_bytes = 0;
             for (uint32_t i = 0; i < handle->module->num_functions; ++i) {
                 EspbFunctionBody *body = &handle->module->function_bodies[i];
+                const uint16_t declared_regs = body->header.num_virtual_regs;
+                const uint16_t max_used_regs = (uint16_t)body->header.max_reg_used + 1u;
+                printf("[ESPB_FRAME] module=%s function=%u vregs=%u max_reg_used=%u frame_size=%u\\n",
+                       module.name, (unsigned)i, (unsigned)declared_regs,
+                       (unsigned)body->header.max_reg_used, (unsigned)body->header.frame_size);
                 if (body->header.flags & ESPB_FUNC_FLAG_HOT) {
                     ++hot_count;
                     if (body->is_jit_compiled && body->jit_code) {

@@ -177,3 +177,31 @@ jobs:
             echo "Memory metric count mismatch: expected=$expected_modules actual=$memory_count"
             exit 1
           fi
+
+          awk -v expected="$expected_modules" '
+            /^\\[ESPB_MEM\\]/ {
+              before=ready=exec_heap=after=0
+              for (i = 1; i <= NF; i++) {
+                split($i, kv, "=")
+                if (kv[1] == "heap_before") before = kv[2] + 0
+                else if (kv[1] == "heap_ready") ready = kv[2] + 0
+                else if (kv[1] == "heap_after_exec") exec_heap = kv[2] + 0
+                else if (kv[1] == "heap_after_unload") after = kv[2] + 0
+              }
+              if (before > 0 && after + 512 < before) {
+                printf "Heap recovery regression: before=%u after_unload=%u\\n", before, after
+                exit 1
+              }
+              if (ready > 0 && exec_heap + 512 < ready) {
+                printf "Heap growth during execution: ready=%u after_exec=%u\\n", ready, exec_heap
+                exit 1
+              }
+              count++
+            }
+            END {
+              if (count != expected) {
+                printf "Heap metric records mismatch: expected=%u actual=%u\\n", expected, count
+                exit 1
+              }
+            }
+          ' qemu.log
