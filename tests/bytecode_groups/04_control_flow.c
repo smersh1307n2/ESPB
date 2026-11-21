@@ -42,6 +42,6 @@ JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
 {
     int ok = branch_switch(2) == 13 && branch_switch(-1) == -1 &&
              branch_switch(9) == 19 && loop_mix(10) == 25 &&
-             nested_loop() == 9 && (text == text) && (user_data == user_data);
+             nested_loop() == 9;
     printf("[ESPB_GROUP] control_flow=%s arg=%ld\n", ok ? "PASS" : "FAIL", (long)arg);
 }
