@@ -2,7 +2,6 @@
 """Build each compact opcode-group C file into its own LLVM bitcode module."""
 from __future__ import annotations
 
-import argparse
 import os
 import shutil
 import subprocess
@@ -16,6 +15,8 @@ EXAMPLE_NAME = "opcode_groups_build"
 
 
 def main() -> int:
+    import argparse
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", required=True, type=Path)
     args = parser.parse_args()
@@ -28,6 +29,19 @@ def main() -> int:
         raise SystemExit(f"Refusing to overwrite existing directory: {build_example}")
 
     build_example.mkdir(parents=True)
+    wrapper = ROOT / ".work" / "clang-group-wrapper"
+    wrapper.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / "tools" / "bytecode_groups" / "clang_group_wrapper.py", wrapper)
+    wrapper.chmod(0o755)
+
+    real_clang = os.environ.get("ESPB_CLANG") or shutil.which("clang")
+    if not real_clang:
+        raise SystemExit("ESPB_CLANG is not set and clang was not found on PATH")
+
+    env = os.environ.copy()
+    env["ESPB_REAL_CLANG"] = str(Path(real_clang).resolve())
+    env["ESPB_CLANG"] = str(wrapper.resolve())
+
     try:
         for source in sources:
             shutil.copy2(source, build_example / source.name)
@@ -36,7 +50,7 @@ def main() -> int:
         subprocess.run(
             [sys.executable, str(build_script), f"examples/{EXAMPLE_NAME}"],
             cwd=SUBMODULE,
-            env=os.environ.copy(),
+            env=env,
             check=True,
         )
 
@@ -55,7 +69,4 @@ def main() -> int:
         return 0
     finally:
         shutil.rmtree(build_example, ignore_errors=True)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
+        wrapper.unlink(missing_ok=True)

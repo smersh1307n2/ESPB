@@ -13,6 +13,7 @@ TOOLS_DIR = REPO_ROOT / "tools" / "bytecode_groups"
 sys.path.insert(0, str(TOOLS_DIR))
 
 from corpus_manifest import ManifestError, create_manifest, verify_manifest  # noqa: E402
+from clang_group_wrapper import ATOMIC_MARCH, adjust_clang_args  # noqa: E402
 from make_interpreter_variant import (  # noqa: E402
     CODE_SECTION_ID,
     HEADER,
@@ -217,6 +218,32 @@ class CorpusManifestTests(unittest.TestCase):
                     "ESPB_WORK",
                     expected_run_id=12346,
                 )
+
+
+
+class CompilerWrapperTests(unittest.TestCase):
+    def test_rv32_a_extension_is_scoped_to_atomic_group_only(self) -> None:
+        base = [
+            "--target=riscv32-esp-elf",
+            "-march=rv32imc_zicsr_zifencei",
+            "/tmp/opcode_groups_build_08_atomics.c",
+            "-emit-llvm",
+        ]
+        adjusted, changed = adjust_clang_args(base)
+        self.assertTrue(changed)
+        self.assertIn(ATOMIC_MARCH, adjusted)
+        self.assertNotIn("-march=rv32imc_zicsr_zifencei", adjusted)
+        self.assertEqual(sum(arg.startswith("-march=") for arg in adjusted), 1)
+
+        normal = [
+            "--target=riscv32-esp-elf",
+            "-march=rv32imc_zicsr_zifencei",
+            "/tmp/opcode_groups_build_07_calls_callbacks.c",
+            "-emit-llvm",
+        ]
+        unchanged, changed = adjust_clang_args(normal)
+        self.assertFalse(changed)
+        self.assertEqual(unchanged, normal)
 
 
 class WorkflowContractTests(unittest.TestCase):
