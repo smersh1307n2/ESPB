@@ -56,6 +56,7 @@ EspbResult espb_load_module(const uint8_t *espb_data, size_t espb_size, espb_han
     espb_handle_t handle = (espb_handle_t)malloc(sizeof(struct espb_module_handle_t));
     if (!handle) {
         espb_free_instance(instance);
+        espb_free_module(module);
         return ESPB_ERR_MEMORY_ALLOC;
     }
 
@@ -70,8 +71,9 @@ EspbResult espb_load_module(const uint8_t *espb_data, size_t espb_size, espb_han
 void espb_unload_module(espb_handle_t handle) {
     if (handle) {
         printf("--- ESPB Unloading Module ---\n");
+        // The API handle owns both the instance and parsed module metadata.
         espb_free_instance(handle->instance);
-        // espb_free_module вызывается внутри espb_free_instance
+        espb_free_module(handle->module);
         free(handle);
         printf("--- ESPB Module Unloaded ---\n");
     }
