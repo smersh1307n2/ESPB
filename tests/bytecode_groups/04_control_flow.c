@@ -40,8 +40,15 @@ JIT_HOT static int32_t nested_loop(void)
 
 JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
 {
-    int ok = branch_switch(2) == 13 && branch_switch(-1) == -1 &&
-             branch_switch(9) == 19 && loop_mix(10) == 25 &&
-             nested_loop() == 9;
+    const int32_t switch_two = branch_switch(2);
+    const int32_t switch_negative = branch_switch(-1);
+    const int32_t switch_default = branch_switch(9);
+    const int32_t mixed_loop = loop_mix(10);
+    const int32_t nested = nested_loop();
+    int ok = switch_two == 13 && switch_negative == -1 &&
+             switch_default == 19 && mixed_loop == 25 && nested == 9;
+    printf("[ESPB_DETAIL] control switch2=%ld switchneg=%ld switchdefault=%ld loop=%ld nested=%ld\n",
+           (long)switch_two, (long)switch_negative, (long)switch_default,
+           (long)mixed_loop, (long)nested);
     printf("[ESPB_GROUP] control_flow=%s arg=%ld\n", ok ? "PASS" : "FAIL", (long)arg);
 }
