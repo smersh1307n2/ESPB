@@ -56,7 +56,7 @@ jobs:
       - name: Run fast host-side unit tests
         run: python -m unittest discover -s tests/host_tools -p "test_*.py" -v
 
-      - name: Select the latest compatible successful bitcode artifact
+      - name: Select compatible bitcode and previous paired artifacts
         id: bitcode
         shell: bash
         env:
@@ -70,11 +70,16 @@ jobs:
           import json
           import os
           import subprocess
+          import urllib.error
           import urllib.request
 
           repository = os.environ["GITHUB_REPOSITORY"]
           token = os.environ["GITHUB_TOKEN"]
           expected_sha = os.environ["EXPECTED_SOURCE_SHA"]
+          translator_path = "projects/ESP32_PRJ_TO_LLVM"
+          current_translator = subprocess.check_output(
+              ["git", "-C", translator_path, "rev-parse", "HEAD"], text=True
+          ).strip()
           api = f"https://api.github.com/repos/{repository}"
 
           def get_json(url):
@@ -89,64 +94,108 @@ jobs:
               with urllib.request.urlopen(request, timeout=30) as response:
                   return json.load(response)
 
+          def is_ancestor(source_sha):
+              return subprocess.run(
+                  ["git", "merge-base", "--is-ancestor", source_sha, expected_sha],
+                  check=False,
+              ).returncode == 0
+
+          def submodule_sha(source_sha):
+              line = subprocess.check_output(
+                  ["git", "ls-tree", source_sha, translator_path], text=True
+              ).strip()
+              fields = line.split()
+              return fields[2] if len(fields) >= 3 and fields[0] == "160000" else None
+
           runs = get_json(
               f"{api}/actions/runs?branch=ESPB_WORK&per_page=100"
           ).get("workflow_runs", [])
-          candidates = [
-              run for run in runs
-              if run.get("path") == ".github/workflows/build_opcode_groups.yml"
-              and run.get("head_branch") == "ESPB_WORK"
-              and run.get("status") == "completed"
-              and run.get("conclusion") == "success"
-          ]
-          candidates.sort(key=lambda run: run.get("created_at", ""), reverse=True)
 
-          for run in candidates:
-              source_sha = run.get("head_sha", "")
-              ancestor = subprocess.run(
-                  ["git", "merge-base", "--is-ancestor", source_sha, expected_sha],
-                  check=False,
+          def successful(run, workflow_path):
+              return (
+                  run.get("path") == workflow_path
+                  and run.get("head_branch") == "ESPB_WORK"
+                  and run.get("status") == "completed"
+                  and run.get("conclusion") == "success"
+                  and bool(run.get("head_sha"))
+                  and is_ancestor(run["head_sha"])
               )
-              if ancestor.returncode != 0:
-                  continue
 
+          def artifact_for(run, name):
+              try:
+                  artifacts = get_json(run["artifacts_url"]).get("artifacts", [])
+              except (KeyError, urllib.error.HTTPError, urllib.error.URLError):
+                  return False
+              return any(
+                  item.get("name") == name and not item.get("expired", False)
+                  for item in artifacts
+              )
+
+          bitcode_candidates = [
+              run for run in runs
+              if successful(run, ".github/workflows/build_opcode_groups.yml")
+          ]
+          bitcode_candidates.sort(
+              key=lambda run: run.get("created_at", ""), reverse=True
+          )
+
+          selected_bitcode = None
+          for run in bitcode_candidates:
+              source_sha = run["head_sha"]
               source_diff = subprocess.run(
                   [
                       "git", "diff", "--quiet", source_sha, expected_sha, "--",
                       "tests/bytecode_groups",
-                      "projects/ESP32_PRJ_TO_LLVM",
+                      translator_path,
                   ],
                   check=False,
               )
               if source_diff.returncode != 0:
                   continue
+              if artifact_for(run, "espb-opcode-groups-bc"):
+                  selected_bitcode = run
+                  break
 
-              try:
-                  artifacts = get_json(run["artifacts_url"]).get("artifacts", [])
-              except (KeyError, urllib.error.HTTPError):
-                  continue
-              matching = [
-                  item for item in artifacts
-                  if item.get("name") == "espb-opcode-groups-bc"
-                  and not item.get("expired", False)
-              ]
-              if not matching:
-                  continue
-
-              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-                  output.write(f"run_id={run['id']}\n")
-                  output.write(f"source_sha={source_sha}\n")
-              print(
-                  f"Selected bitcode artifact run={run['id']} "
-                  f"source={source_sha}"
-              )
-              break
-          else:
+          if selected_bitcode is None:
               print(
                   "::error::No successful bitcode artifact matches the current "
                   "test sources and translator submodule."
               )
               raise SystemExit(1)
+
+          paired_candidates = [
+              run for run in runs
+              if successful(run, ".github/workflows/build_opcode_groups_espb.yml")
+              and submodule_sha(run["head_sha"]) == current_translator
+          ]
+          paired_candidates.sort(
+              key=lambda run: run.get("created_at", ""), reverse=True
+          )
+
+          selected_pair = None
+          for run in paired_candidates:
+              if artifact_for(run, "espb-opcode-groups-paired"):
+                  selected_pair = run
+                  break
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"run_id={selected_bitcode['id']}\n")
+              output.write(f"source_sha={selected_bitcode['head_sha']}\n")
+              output.write(
+                  f"previous_pair_run_id={selected_pair['id'] if selected_pair else ''}\n"
+              )
+
+          print(
+              f"Selected bitcode run={selected_bitcode['id']} "
+              f"source={selected_bitcode['head_sha']}"
+          )
+          if selected_pair:
+              print(
+                  f"Selected previous paired run={selected_pair['id']} "
+                  f"source={selected_pair['head_sha']}"
+              )
+          else:
+              print("No compatible previous paired artifact; all groups will translate.")
           PY
 
       - name: Download the already-validated LLVM bitcode corpus
@@ -156,6 +205,28 @@ jobs:
           path: .work/bytecode_groups
           run-id: ${{ steps.bitcode.outputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download previous paired corpus for content-addressed reuse
+        if: steps.bitcode.outputs.previous_pair_run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: espb-opcode-groups-paired
+          path: .work/previous
+          run-id: ${{ steps.bitcode.outputs.previous_pair_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Reuse unchanged paired modules by bitcode SHA-256
+        if: steps.bitcode.outputs.previous_pair_run_id != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          python .github/scripts/reuse_paired_groups.py \
+            --previous-root "$GITHUB_WORKSPACE/.work/previous" \
+            --bitcode-dir "$GITHUB_WORKSPACE/.work/bytecode_groups" \
+            --paired-dir "$GITHUB_WORKSPACE/.work/paired" \
+            --repository "$GITHUB_REPOSITORY" \
+            --branch "$GITHUB_REF_NAME" \
+            --translator-commit "$(git -C projects/ESP32_PRJ_TO_LLVM rev-parse HEAD)"
 
       - name: Verify the downloaded bitcode set
         shell: bash
@@ -194,6 +265,11 @@ jobs:
             stem="$(basename "$bitcode" .bc)"
             jit_module=".work/paired/$stem.jit.espb"
             interpreter_module=".work/paired/$stem.interpreter.espb"
+            if [[ -s "$jit_module" && -s "$interpreter_module" ]]; then
+              echo "TRANSLATION_REUSED group=$stem"
+              continue
+            fi
+            echo "TRANSLATION_REQUIRED group=$stem"
             python .github/scripts/translate_bc.py "$bitcode" "$jit_module"
             test -s "$jit_module"
             python tools/bytecode_groups/make_interpreter_variant.py "$jit_module" "$interpreter_module"
