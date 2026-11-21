@@ -132,8 +132,6 @@ jobs:
       - name: Verify corpus provenance and source compatibility
         shell: bash
         env:
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git config --global --add safe.directory "$GITHUB_WORKSPACE/projects/ESP32_PRJ_TO_LLVM"
           PAIRED_RUN_ID: ${{ steps.paired_run.outputs.run_id }}
           PAIRED_SOURCE_SHA: ${{ steps.paired_run.outputs.source_sha }}
         run: |
