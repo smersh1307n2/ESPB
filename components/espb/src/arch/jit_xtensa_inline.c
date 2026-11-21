@@ -745,14 +745,9 @@ static void jit_call_espb_function_xtensa(EspbInstance* instance, uint32_t local
         return;
     }
     
+    // The compiled-JIT fast path does not need an ExecutionContext.
+    // Allocate the thread-local context only for interpreter/dispatcher fallback.
     static __thread ExecutionContext* temp_exec_ctx = NULL;
-    if (!temp_exec_ctx) {
-        temp_exec_ctx = init_execution_context();
-        if (!temp_exec_ctx) {
-            ESP_LOGE(TAG, "Failed to create ExecutionContext for CALL");
-            return;
-        }
-    }
     
     const EspbModule* module = instance->module;
     if (local_func_idx >= module->num_functions) return;
@@ -830,6 +825,13 @@ static void jit_call_espb_function_xtensa(EspbInstance* instance, uint32_t local
 slow_path:
     // SLOW PATH: function not JIT-compiled, use dispatcher (respects HOT flag)
     ;
+    if (!temp_exec_ctx) {
+        temp_exec_ctx = init_execution_context();
+        if (!temp_exec_ctx) {
+            ESP_LOGE(TAG, "Failed to create ExecutionContext for CALL");
+            return;
+        }
+    }
     Value args[8];
     for (uint8_t i = 0; i < num_args && i < 8; i++) {
         args[i] = v_regs[i];

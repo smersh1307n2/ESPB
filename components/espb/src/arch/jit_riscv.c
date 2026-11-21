@@ -1361,17 +1361,10 @@ void jit_call_espb_function(EspbInstance* instance, uint32_t local_func_idx, Val
         return;
     }
     
-    // ОПТИМИЗАЦИЯ #4: Используем thread-local storage для ExecutionContext
-    // чтобы избежать создания нового контекста при каждом вызове
+    // The compiled-JIT fast path does not need an ExecutionContext.
+    // Keep the thread-local context lazy for interpreter/dispatcher fallback only.
     static __thread ExecutionContext* temp_exec_ctx = NULL;
-    if (!temp_exec_ctx) {
-        temp_exec_ctx = init_execution_context();
-        if (!temp_exec_ctx) {
-            printf("[jit] ERROR: Failed to create ExecutionContext\n");
-            return;
-        }
-    }
-    
+
     const EspbModule* module = instance->module;
     
     // Проверяем валидность локального индекса
@@ -1403,6 +1396,13 @@ void jit_call_espb_function(EspbInstance* instance, uint32_t local_func_idx, Val
         
         Value result;
         memset(&result, 0, sizeof(result));
+        if (!temp_exec_ctx) {
+            temp_exec_ctx = init_execution_context();
+            if (!temp_exec_ctx) {
+                printf("[jit] ERROR: Failed to create ExecutionContext\\n");
+                return;
+            }
+        }
         espb_call_function(instance, temp_exec_ctx, global_func_idx, args, &result);
         
         if (sig->num_returns > 0) {
@@ -1434,9 +1434,13 @@ void jit_call_espb_function(EspbInstance* instance, uint32_t local_func_idx, Val
         if (zero_regs < num_args) zero_regs = num_args;
         if (zero_regs == 0) zero_regs = 1;
 
-        memset(callee_regs, 0, (size_t)zero_regs * sizeof(Value));
+        // Argument registers are overwritten below; clear only the unused tail.
         for (uint8_t i = 0; i < num_args; i++) {
             callee_regs[i] = v_regs[i];
+        }
+        if (zero_regs > num_args) {
+            memset(callee_regs + num_args, 0,
+                   (size_t)(zero_regs - num_args) * sizeof(Value));
         }
 
         jit_func(instance, callee_regs);
@@ -1451,7 +1455,16 @@ slow_path:
         ;
     }
 
-    // SLOW PATH: функция ещё не скомпилирована — используем диспетчер (компиляция + вызов)
+    // SLOW PATH: initialize fallback context only when the fast path was unavailable.
+    if (!temp_exec_ctx) {
+        temp_exec_ctx = init_execution_context();
+        if (!temp_exec_ctx) {
+            printf("[jit] ERROR: Failed to create ExecutionContext\\n");
+            return;
+        }
+    }
+
+    // SLOW PATH: use dispatcher (compilation + call).
     Value args[8];
     for (uint8_t i = 0; i < num_args; i++) {
         args[i] = v_regs[i];
