@@ -6,6 +6,10 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "tools" / "bytecode_groups"))
+from translator_keys import collect_translator_keys
 
 if len(sys.argv) != 3:
     raise SystemExit("usage: translate_bc.py input.bc output.espb")
@@ -28,10 +32,9 @@ with open(source, "rb") as f:
         }
     }
 
-# Prefer the unlimited newline-separated aggregate secret. Fall back to all
-# supported numbered slots so newly added keys are not silently ignored.
-aggregate = os.environ.get("ESPB_TRANSLATOR_KEYS", "")
-keys = [k.strip() for k in aggregate.splitlines() if k.strip()]
+# Combine aggregate and numbered secrets. This ensures newly added numbered
+# slots are not hidden when an older aggregate secret is also configured.
+keys = collect_translator_keys(os.environ)
 if not keys:
     key_names = ("ESPB_API_KEY",) + tuple(
         f"ESPB_API_KEY_{index}" for index in range(1, 10)
