@@ -26,6 +26,6 @@ JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
 {
     int32_t a = atomic_i32();
     int64_t b = atomic_i64();
-    int ok = a == 53 && b == 1077 && (text == text) && (user_data == user_data);
+    int ok = a == 53 && b == 1077;
     printf("[ESPB_GROUP] atomics=%s arg=%ld\n", ok ? "PASS" : "FAIL", (long)arg);
 }
