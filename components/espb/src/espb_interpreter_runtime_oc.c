@@ -2809,6 +2809,10 @@ op_0x3E: { // NOT.I64 (unary)
                         ESP_LOGD(TAG, "STORE.I32 R%u(%ld) -> abs[%p]", rs, (long)val32, (void*)target_addr);
 #endif
                     }
+                    if (ra == 38) {
+                        ESP_LOGW(TAG, "[ATOMIC_TRACE] STORE.I32 rs=%u ra=%u addr=%p value=%" PRId32,
+                                 rs, ra, (void*)ra_addr, val32);
+                    }
                     DISPATCH();
                 }
                 // op_0x75 has been removed and is now unhandled
@@ -4376,6 +4380,10 @@ op_0xD6: // SELECT.PTR
                         // This is unsafe, but we assume the bytecode knows what it's doing.
                         memcpy(&V_I32(locals[rd]), (void*)target_addr, sizeof(int32_t));
                         SET_TYPE(locals[rd], ESPB_TYPE_I32);
+                    }
+                    if (ra == 38) {
+                        ESP_LOGW(TAG, "[ATOMIC_TRACE] LOAD.I32 rd=%u ra=%u addr=%p offset=%d value=%" PRId32,
+                                 rd, ra, (void*)ra_addr, offset, V_I32(locals[rd]));
                     }
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "LOAD.I32 R%u <- mem[R%u(0x%x)+%d] = %" PRId32, rd, ra, (unsigned int)ra_addr, V_I32(locals[rd]));
