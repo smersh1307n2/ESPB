@@ -15,6 +15,8 @@ sys.path.insert(0, str(TOOLS_DIR))
 from corpus_manifest import ManifestError, create_manifest, verify_manifest  # noqa: E402
 from clang_group_wrapper import ATOMIC_MARCH, FLOAT_OPTIONS, adjust_clang_args  # noqa: E402
 from translator_keys import collect_translator_keys  # noqa: E402
+sys.path.insert(0, str(REPO_ROOT / ".github" / "scripts"))
+from reuse_paired_groups import ReuseError, reuse_unchanged_pairs  # noqa: E402
 from make_interpreter_variant import (  # noqa: E402
     CODE_SECTION_ID,
     HEADER,
@@ -220,6 +222,151 @@ class CorpusManifestTests(unittest.TestCase):
                     expected_run_id=12346,
                 )
 
+
+
+class PairedReuseTests(unittest.TestCase):
+    def _write(self, path: Path, data: bytes) -> str:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        import hashlib
+        return hashlib.sha256(data).hexdigest()
+
+    def test_reuses_only_modules_with_identical_bitcode_hash(self) -> None:
+        import json
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            previous = root / "previous"
+            bitcode = root / "current_bc"
+            paired = root / "new_paired"
+            bitcode.mkdir()
+
+            old_a_bc = b"unchanged bitcode A"
+            old_b_bc = b"old bitcode B"
+            a_jit = b"JIT A"
+            a_interp = b"Interpreter A"
+            b_jit = b"JIT B"
+            b_interp = b"Interpreter B"
+
+            self._write(previous / "bytecode_groups" / "01_a.bc", old_a_bc)
+            self._write(previous / "bytecode_groups" / "02_b.bc", old_b_bc)
+            a_jit_hash = self._write(previous / "paired" / "01_a.jit.espb", a_jit)
+            a_interp_hash = self._write(previous / "paired" / "01_a.interpreter.espb", a_interp)
+            b_jit_hash = self._write(previous / "paired" / "02_b.jit.espb", b_jit)
+            b_interp_hash = self._write(previous / "paired" / "02_b.interpreter.espb", b_interp)
+
+            (previous / "paired" / "manifest.json").write_text(
+                json.dumps({
+                    "schema": "espb-paired-corpus/v1",
+                    "repository": "smersh1307n2/ESPB",
+                    "branch": "ESPB_WORK",
+                    "translator_commit": "a" * 40,
+                    "producer_run_id": 123,
+                    "group_count": 2,
+                    "groups": [
+                        {
+                            "name": "01_a",
+                            "bitcode_sha256": self._write(
+                                previous / "bytecode_groups" / "01_a.bc", old_a_bc
+                            ),
+                            "jit_path": "paired/01_a.jit.espb",
+                            "jit_sha256": a_jit_hash,
+                            "interpreter_path": "paired/01_a.interpreter.espb",
+                            "interpreter_sha256": a_interp_hash,
+                        },
+                        {
+                            "name": "02_b",
+                            "bitcode_sha256": self._write(
+                                previous / "bytecode_groups" / "02_b.bc", old_b_bc
+                            ),
+                            "jit_path": "paired/02_b.jit.espb",
+                            "jit_sha256": b_jit_hash,
+                            "interpreter_path": "paired/02_b.interpreter.espb",
+                            "interpreter_sha256": b_interp_hash,
+                        },
+                    ],
+                }),
+                encoding="utf-8",
+            )
+
+            (bitcode / "01_a.bc").write_bytes(old_a_bc)
+            (bitcode / "02_b.bc").write_bytes(b"new bitcode B")
+
+            reused, changed = reuse_unchanged_pairs(
+                previous, bitcode, paired,
+                "smersh1307n2/ESPB", "ESPB_WORK", "a" * 40
+            )
+
+            self.assertEqual(reused, ["01_a"])
+            self.assertEqual(changed, ["02_b"])
+            self.assertEqual((paired / "01_a.jit.espb").read_bytes(), a_jit)
+            self.assertEqual((paired / "01_a.interpreter.espb").read_bytes(), a_interp)
+            self.assertFalse((paired / "02_b.jit.espb").exists())
+            self.assertFalse((paired / "02_b.interpreter.espb").exists())
+
+    def test_rejects_previous_translator_mismatch(self) -> None:
+        import json
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            previous = root / "previous"
+            bitcode = root / "current_bc"
+            paired = root / "new_paired"
+            bitcode.mkdir()
+            (bitcode / "01_a.bc").write_bytes(b"bc")
+            (previous / "paired").mkdir(parents=True)
+            (previous / "paired" / "manifest.json").write_text(
+                json.dumps({
+                    "schema": "espb-paired-corpus/v1",
+                    "repository": "smersh1307n2/ESPB",
+                    "branch": "ESPB_WORK",
+                    "translator_commit": "b" * 40,
+                    "group_count": 0,
+                    "groups": [],
+                }),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ReuseError, "translator submodule mismatch"):
+                reuse_unchanged_pairs(
+                    previous, bitcode, paired,
+                    "smersh1307n2/ESPB", "ESPB_WORK", "a" * 40
+                )
+
+    def test_rejects_corrupt_previous_module_hash(self) -> None:
+        import json
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            previous = root / "previous"
+            bitcode = root / "current_bc"
+            paired = root / "new_paired"
+            bitcode.mkdir()
+            bc_hash = self._write(bitcode / "01_a.bc", b"same")
+            self._write(previous / "paired" / "01_a.jit.espb", b"tampered jit")
+            interp_hash = self._write(previous / "paired" / "01_a.interpreter.espb", b"interp")
+            (previous / "paired" / "manifest.json").write_text(
+                json.dumps({
+                    "schema": "espb-paired-corpus/v1",
+                    "repository": "smersh1307n2/ESPB",
+                    "branch": "ESPB_WORK",
+                    "translator_commit": "a" * 40,
+                    "group_count": 1,
+                    "groups": [{
+                        "name": "01_a",
+                        "bitcode_sha256": bc_hash,
+                        "jit_path": "paired/01_a.jit.espb",
+                        "jit_sha256": "0" * 64,
+                        "interpreter_path": "paired/01_a.interpreter.espb",
+                        "interpreter_sha256": interp_hash,
+                    }],
+                }),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ReuseError, "JIT module SHA-256 mismatch"):
+                reuse_unchanged_pairs(
+                    previous, bitcode, paired,
+                    "smersh1307n2/ESPB", "ESPB_WORK", "a" * 40
+                )
 
 
 class TranslatorKeyPoolTests(unittest.TestCase):
