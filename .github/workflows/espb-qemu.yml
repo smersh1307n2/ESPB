@@ -13,12 +13,12 @@ on:
       - 'tools/bytecode_groups/**'
       - 'tests/bytecode_groups/**'
       - 'projects/ESP32_PRJ_TO_LLVM'
-      - '.github/scripts/translate_bc.py'
       - '.github/workflows/espb-qemu.yml'
       - '.github/workflows/generate_runtime_corpus.yml'
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -43,54 +43,35 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Install ESP Clang
-        shell: bash
-        run: |
-          python "$IDF_PATH/tools/idf_tools.py" install esp-clang
-          CLANG="$(find -L /opt/esp/tools/esp-clang -type f -path "*/bin/clang" -perm -111 -print -quit)"
-          test -n "$CLANG"
-          echo "$(dirname "$CLANG")" >> "$GITHUB_PATH"
-          echo "ESPB_CLANG=$CLANG" >> "$GITHUB_ENV"
+      - name: Download last successful paired opcode corpus
+        uses: actions/download-artifact@v4
+        with:
+          name: espb-opcode-groups-paired
+          path: .work/paired
+          run-id: 44861542751
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and translate opcode-group corpus
-        env:
-          ESPB_TRANSLATOR_KEYS: ${{ secrets.ESPB_TRANSLATOR_KEYS }}
-          ESPB_API_KEY: ${{ secrets.ESPB_API_KEY }}
-          ESPB_API_KEY_1: ${{ secrets.ESPB_API_KEY_1 }}
-          ESPB_API_KEY_2: ${{ secrets.ESPB_API_KEY_2 }}
-          ESPB_API_KEY_3: ${{ secrets.ESPB_API_KEY_3 }}
-          ESPB_API_KEY_4: ${{ secrets.ESPB_API_KEY_4 }}
-          ESPB_API_KEY_5: ${{ secrets.ESPB_API_KEY_5 }}
-          ESPB_API_KEY_6: ${{ secrets.ESPB_API_KEY_6 }}
+      - name: Stage and validate paired opcode corpus
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "$ESPB_TRANSLATOR_KEYS" && -z "$ESPB_API_KEY" && -z "$ESPB_API_KEY_1" && -z "$ESPB_API_KEY_2" && -z "$ESPB_API_KEY_3" && -z "$ESPB_API_KEY_4" && -z "$ESPB_API_KEY_5" && -z "$ESPB_API_KEY_6" ]]; then
-            echo "::error::No ESPB translator API credentials configured"
-            exit 1
-          fi
-          . "$IDF_PATH/export.sh"
           rm -rf modules/opcode_groups
-          mkdir -p modules/opcode_groups "$RUNNER_TEMP/espb_opcode_bc" "$RUNNER_TEMP/espb_opcode_pairs"
-          python tools/bytecode_groups/build.py --output-dir "$RUNNER_TEMP/espb_opcode_bc"
-          source_count="$(find tests/bytecode_groups -maxdepth 1 -type f -name '*.c' | wc -l)"
-          bitcode_count="$(find "$RUNNER_TEMP/espb_opcode_bc" -maxdepth 1 -type f -name '*.bc' | wc -l)"
-          test "$source_count" -gt 0
-          test "$bitcode_count" -eq "$source_count"
-          for bitcode in "$RUNNER_TEMP"/espb_opcode_bc/*.bc; do
-            stem="$(basename "$bitcode" .bc)"
-            jit_module="$RUNNER_TEMP/espb_opcode_pairs/$stem.jit.espb"
-            interp_module="$RUNNER_TEMP/espb_opcode_pairs/$stem.interpreter.espb"
-            python .github/scripts/translate_bc.py "$bitcode" "$jit_module"
+          mkdir -p modules/opcode_groups "$RUNNER_TEMP/espb_opcode_pairs"
+          count=0
+          for jit_module in .work/paired/*.jit.espb; do
             test -s "$jit_module"
-            python tools/bytecode_groups/make_interpreter_variant.py "$jit_module" "$interp_module"
-            test -s "$interp_module"
+            stem="$(basename "$jit_module" .jit.espb)"
+            interpreter_module=".work/paired/$stem.interpreter.espb"
+            generated_interpreter="$RUNNER_TEMP/espb_opcode_pairs/$stem.interpreter.espb"
+            test -s "$interpreter_module"
+            python tools/bytecode_groups/make_interpreter_variant.py "$jit_module" "$generated_interpreter"
+            cmp -s "$interpreter_module" "$generated_interpreter"
             cp "$jit_module" "modules/opcode_groups/$stem.espb"
-            echo "ESPB_GROUP_MODULE=$stem SIZE=$(stat -c %s "$jit_module")"
+            count=$((count + 1))
           done
-          module_count="$(find modules/opcode_groups -maxdepth 1 -type f -name '*.espb' | wc -l)"
-          test "$module_count" -eq "$source_count"
-          echo "ESPB_OPCODE_GROUPS_TRANSLATED=$module_count"
+          test "$count" -eq 10
+          echo "ESPB_OPCODE_GROUPS_SOURCE_RUN=44861542751"
+          echo "ESPB_OPCODE_GROUPS_STAGED=$count"
 
       - name: Install Espressif QEMU
         shell: bash
