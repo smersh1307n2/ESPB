@@ -27,7 +27,9 @@ Every function defined in every source file is marked JIT_HOT (including helpers
 - Every test has a deterministic success condition. RTOS groups are integration tests and should be run separately from tight execution microbenchmarks. Invoke each group execution function only three times per test pass; do not add long repetition loops.
 - Do not add long delays, unbounded loops, verbose per-operation printing, or arbitrary-address calls to the regular suite.
 - The build/translation workflow must generate paired interpreter and HOT/JIT modules from the same source bitcode. The checked-in ESPB corpus is not regenerated as part of ordinary runtime tests.
-- Coverage is measured from the translated ESPB opcode stream, not inferred from C syntax. A group is complete only when the intended opcodes are present and actually execute in both modes.
+- Coverage is measured across four distinct stages: C source, optimized LLVM IR/bitcode, translated ESPB opcode stream and dynamic execution. An operation written in C may be folded, reassociated, lowered to another form or removed before translation; the ESPB translator also performs its own optimization passes. A group is complete only when the intended opcode is present in the translated stream and its path actually executes in both modes.
+- Do not assume noinline preserves individual operations or volatile forces a particular arithmetic opcode. Use runtime-dependent inputs and observable results, then inspect the LLVM IR and emitted ESPB before classifying a gap.
+- Keep normal optimized coverage separate from narrowly targeted opcode probes; document any local optimization controls used by a probe.
 - Do not modify ESP-IDF configuration, clock, compiler/linker settings, or code/data placement for these tests.
 
 The first pass is a broad coverage baseline. A follow-up opcode audit must map every opcode in the runtime specification to at least one group and identify opcodes that cannot be emitted naturally by the current translator.
