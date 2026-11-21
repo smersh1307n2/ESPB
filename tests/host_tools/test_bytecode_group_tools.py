@@ -13,7 +13,7 @@ TOOLS_DIR = REPO_ROOT / "tools" / "bytecode_groups"
 sys.path.insert(0, str(TOOLS_DIR))
 
 from corpus_manifest import ManifestError, create_manifest, verify_manifest  # noqa: E402
-from clang_group_wrapper import ATOMIC_MARCH, adjust_clang_args  # noqa: E402
+from clang_group_wrapper import ATOMIC_MARCH, FLOAT_OPTIONS, adjust_clang_args  # noqa: E402
 from make_interpreter_variant import (  # noqa: E402
     CODE_SECTION_ID,
     HEADER,
@@ -229,20 +229,31 @@ class CompilerWrapperTests(unittest.TestCase):
             "/tmp/08_atomics.c",
             "-emit-llvm",
         ]
-        adjusted, changed = adjust_clang_args(base)
-        self.assertTrue(changed)
+        adjusted, applied = adjust_clang_args(base)
         self.assertIn(ATOMIC_MARCH, adjusted)
+        self.assertIn(ATOMIC_MARCH, applied)
         self.assertNotIn("-march=rv32imc_zicsr_zifencei", adjusted)
         self.assertEqual(sum(arg.startswith("-march=") for arg in adjusted), 1)
+
+        float_source = [
+            "--target=riscv32-esp-elf",
+            "-march=rv32imc_zicsr_zifencei",
+            "/tmp/03_float.c",
+            "-emit-llvm",
+        ]
+        float_adjusted, float_applied = adjust_clang_args(float_source)
+        self.assertTrue(all(option in float_adjusted for option in FLOAT_OPTIONS))
+        self.assertTrue(all(option in float_applied for option in FLOAT_OPTIONS))
+        self.assertIn("-march=rv32imc_zicsr_zifencei", float_adjusted)
 
         normal = [
             "--target=riscv32-esp-elf",
             "-march=rv32imc_zicsr_zifencei",
-            "/tmp/opcode_groups_build_07_calls_callbacks.c",
+            "/tmp/07_calls_callbacks.c",
             "-emit-llvm",
         ]
-        unchanged, changed = adjust_clang_args(normal)
-        self.assertFalse(changed)
+        unchanged, applied = adjust_clang_args(normal)
+        self.assertFalse(applied)
         self.assertEqual(unchanged, normal)
 
 
