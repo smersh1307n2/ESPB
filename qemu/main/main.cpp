@@ -262,7 +262,11 @@ extern "C" void app_main(void)
     printf("[ESPB_TEST] module_count=%u\n", (unsigned)espb_embedded_module_count);
     for (size_t module_index = 0; module_index < espb_embedded_module_count; ++module_index) {
         const EspbEmbeddedModule &module = espb_embedded_modules[module_index];
-        const bool jit_mode = module.name[0] == 'j' && module.name[1] == 'i' && module.name[2] == 't' && module.name[3] == '_';
+        const size_t module_name_len = strlen(module.name);
+        const char *jit_suffix = ".jit.espb";
+        const size_t jit_suffix_len = sizeof(".jit.espb") - 1;
+        const bool jit_mode = module_name_len >= jit_suffix_len &&
+            strcmp(module.name + module_name_len - jit_suffix_len, jit_suffix) == 0;
         printf("[ESPB_TEST] module=%s size=%u\n", module.name, (unsigned)module.size);
 
         const uint32_t heap_before_load = esp_get_free_heap_size();
