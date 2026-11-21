@@ -226,7 +226,7 @@ class CompilerWrapperTests(unittest.TestCase):
         base = [
             "--target=riscv32-esp-elf",
             "-march=rv32imc_zicsr_zifencei",
-            "/tmp/opcode_groups_build_08_atomics.c",
+            "/tmp/08_atomics.c",
             "-emit-llvm",
         ]
         adjusted, changed = adjust_clang_args(base)
