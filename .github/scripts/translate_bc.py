@@ -28,16 +28,21 @@ with open(source, "rb") as f:
         }
     }
 
-# Prefer the unlimited newline-separated aggregate secret. Fall back to the
-# legacy numbered secrets (ESPB_API_KEY through ESPB_API_KEY_6).
+# Prefer the unlimited newline-separated aggregate secret. Fall back to all
+# supported numbered slots so newly added keys are not silently ignored.
 aggregate = os.environ.get("ESPB_TRANSLATOR_KEYS", "")
 keys = [k.strip() for k in aggregate.splitlines() if k.strip()]
 if not keys:
-    keys = [os.environ.get(name, "").strip() for name in
-            ("ESPB_API_KEY", "ESPB_API_KEY_1", "ESPB_API_KEY_2", "ESPB_API_KEY_3", "ESPB_API_KEY_4", "ESPB_API_KEY_5", "ESPB_API_KEY_6")]
+    key_names = ("ESPB_API_KEY",) + tuple(
+        f"ESPB_API_KEY_{index}" for index in range(1, 10)
+    )
+    keys = [os.environ.get(name, "").strip() for name in key_names]
     keys = [key for key in keys if key]
 if not keys:
-    raise SystemExit("No ESPB API keys configured. Set ESPB_TRANSLATOR_KEYS or ESPB_API_KEY through ESPB_API_KEY_6.")
+    raise SystemExit(
+        "No ESPB API keys configured. Set ESPB_TRANSLATOR_KEYS or "
+        "ESPB_API_KEY through ESPB_API_KEY_9."
+    )
 
 url = os.environ.get("ESPB_API_URL", "http://espb.runasp.net/api/v1/translate")
 body = json.dumps(payload).encode("utf-8")
