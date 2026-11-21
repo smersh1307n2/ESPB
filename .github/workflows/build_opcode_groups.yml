@@ -5,7 +5,7 @@ on:
     branches:
       - ESPB_WORK
     paths:
-      - 'tests/bytecode_groups/**'
+      - 'tests/bytecode_groups/*.c'
       - 'tools/bytecode_groups/**'
       - '.github/workflows/build_opcode_groups.yml'
   workflow_dispatch:
