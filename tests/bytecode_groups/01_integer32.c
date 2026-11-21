@@ -37,5 +37,5 @@ JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
                    (signed_result == -32) &&
                    (bit_result == expected_bits) &&
                    (a < b + 2048) && (a != b);
-    printf("[ESPB_GROUP] integer32=%s\\n", ok ? "PASS" : "FAIL");
+    printf("[ESPB_GROUP] integer32=%s\n", ok ? "PASS" : "FAIL");
 }
