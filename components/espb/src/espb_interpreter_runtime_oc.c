@@ -2809,10 +2809,6 @@ op_0x3E: { // NOT.I64 (unary)
                         ESP_LOGD(TAG, "STORE.I32 R%u(%ld) -> abs[%p]", rs, (long)val32, (void*)target_addr);
 #endif
                     }
-                    if (ra == 38) {
-                        ESP_LOGW(TAG, "[ATOMIC_TRACE] STORE.I32 rs=%u ra=%u addr=%p value=%" PRId32,
-                                 rs, ra, (void*)ra_addr, val32);
-                    }
                     DISPATCH();
                 }
                 // op_0x75 has been removed and is now unhandled
@@ -4381,10 +4377,6 @@ op_0xD6: // SELECT.PTR
                         memcpy(&V_I32(locals[rd]), (void*)target_addr, sizeof(int32_t));
                         SET_TYPE(locals[rd], ESPB_TYPE_I32);
                     }
-                    if (ra == 38) {
-                        ESP_LOGW(TAG, "[ATOMIC_TRACE] LOAD.I32 rd=%u ra=%u addr=%p offset=%d value=%" PRId32,
-                                 rd, ra, (void*)ra_addr, offset, V_I32(locals[rd]));
-                    }
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                    ESP_LOGD(TAG, "LOAD.I32 R%u <- mem[R%u(0x%x)+%d] = %" PRId32, rd, ra, (unsigned int)ra_addr, V_I32(locals[rd]));
 #endif
@@ -4597,15 +4589,10 @@ op_0xD6: // SELECT.PTR
                     int32_t* addr = (int32_t*)V_PTR(locals[ra]);
                     int32_t expected = V_I32(locals[rexp]);
                     int32_t desired = V_I32(locals[rdes]);
-                    int32_t trace_before = __atomic_load_n(addr, __ATOMIC_SEQ_CST);
-                    bool trace_success = __atomic_compare_exchange_n(addr, &expected, desired, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
-                    int32_t trace_after = __atomic_load_n(addr, __ATOMIC_SEQ_CST);
-                    ESP_LOGW(TAG, "[ATOMIC_TRACE] CAS rd=%u addr=%p exp_reg=%u exp_in=%" PRId32 " des_reg=%u des=%" PRId32 " before=%" PRId32 " success=%d exp_out=%" PRId32 " after=%" PRId32,
-                             rd, (void*)addr, rexp, V_I32(locals[rexp]), rdes, desired,
-                             trace_before, (int)trace_success, expected, trace_after);
+                    bool success = __atomic_compare_exchange_n(addr, &expected, desired, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
                     SET_TYPE(locals[rd], ESPB_TYPE_I32);
                     V_I32(locals[rd]) = expected;
-                    V_RAW(locals[rexp]) = trace_success ? 1ULL : 0ULL;
+                    V_RAW(locals[rexp]) = success ? 1ULL : 0ULL;
                     DISPATCH();
                 }
                 op_0xDE: { // ATOMIC.LOAD.I32
@@ -4614,7 +4601,6 @@ op_0xD6: // SELECT.PTR
                     int32_t* addr = (int32_t*)V_PTR(locals[ra]);
                     SET_TYPE(locals[rd], ESPB_TYPE_I32);
                     V_I32(locals[rd]) = __atomic_load_n(addr, __ATOMIC_SEQ_CST);
-                    ESP_LOGW(TAG, "[ATOMIC_TRACE] LOAD rd=%u addr=%p value=%" PRId32, rd, (void*)addr, V_I32(locals[rd]));
                     DISPATCH();
                 }
                 op_0xDF: { // ATOMIC.STORE.I32
