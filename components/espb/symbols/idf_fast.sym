@@ -1,0 +1,50 @@
+// ESP-IDF / libc / FreeRTOS symbols in a stable index order.
+// Format:
+//   ESPB_SYM("name", <address-expression>)
+//   ESPB_SYM_OPT(CONFIG_FLAG, "name", <address-expression>)  // emits NULL if disabled
+//
+// Extra helper flags (not tied to Kconfig):
+//   CONFIG_ESPB_ON / CONFIG_ESPB_OFF
+// Example:
+//   ESPB_SYM_OPT(CONFIG_ESPB_OFF, "some_symbol", (const void*)&some_symbol)
+
+ESPB_SYM("printf", (const void*)&printf)
+ESPB_SYM("puts", (const void*)&puts)
+ESPB_SYM("vTaskDelay", (const void*)&vTaskDelay)
+ESPB_SYM("xTaskCreatePinnedToCore", (const void*)&xTaskCreatePinnedToCore)
+ESPB_SYM("xTimerCreate", (const void*)&xTimerCreate)
+ESPB_SYM("pvTimerGetTimerID", (const void*)&pvTimerGetTimerID)
+ESPB_SYM("xTimerGenericCommand", (const void*)&xTimerGenericCommand)
+ESPB_SYM("xTaskGetTickCount", (const void*)&xTaskGetTickCount)
+ESPB_SYM("vTaskDelete", (const void*)&vTaskDelete)
+
+ESPB_SYM("strcmp", (const void*)&strcmp)
+ESPB_SYM("strcpy", (const void*)&strcpy)
+
+ESPB_SYM("memcmp", (const void*)&memcmp)
+ESPB_SYM("memcpy", (const void*)&memcpy)
+ESPB_SYM("memset", (const void*)&memset)
+
+
+ESPB_SYM("sqrtf", (const void*)&sqrtf)
+ESPB_SYM("sqrt", reinterpret_cast<const void*>(static_cast<double(*)(double)>(sqrt)))
+ESPB_SYM("fminf", (const void*)&fminf)
+ESPB_SYM("fmaxf", (const void*)&fmaxf)
+ESPB_SYM("fmin", reinterpret_cast<const void*>(static_cast<double(*)(double, double)>(fmin)))
+ESPB_SYM("fmax", reinterpret_cast<const void*>(static_cast<double(*)(double, double)>(fmax)))
+ESPB_SYM("fabsf", (const void*)&fabsf)
+ESPB_SYM("fabs", reinterpret_cast<const void*>(static_cast<double(*)(double)>(fabs)))
+
+ESPB_SYM("putchar", (const void*)&putchar)
+
+ESPB_SYM("esp_log_write", (const void*)&esp_log_write)
+ESPB_SYM("esp_log_timestamp", (const void*)&esp_log_timestamp)
+
+// GPIO (can be disabled by Kconfig in future)
+ESPB_SYM_OPT(CONFIG_ESPB_IDF_GPIO, "gpio_config", (const void*)&gpio_config)
+ESPB_SYM_OPT(CONFIG_ESPB_IDF_GPIO, "gpio_set_level", (const void*)&gpio_set_level)
+
+ESPB_SYM("esp_err_to_name", (const void*)&esp_err_to_name)
+
+ESPB_SYM("esp_rom_get_cpu_ticks_per_us", (const void*)&esp_rom_get_cpu_ticks_per_us)
+ESPB_SYM("esp_cpu_get_cycle_count", (const void*)&esp_cpu_get_cycle_count)

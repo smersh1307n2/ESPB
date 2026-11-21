@@ -1,0 +1,26 @@
+menu "libffi Configuration"
+
+    depends on ESPB_INTERPRETER_ENABLED
+    
+    config LIBFFI_USE_IRAM_POOL
+        bool "Use IRAM memory pool for closures"
+        default y if IDF_TARGET_RISCV || IDF_TARGET_XTENSA
+        default n
+        help
+            Enable this to allocate memory for libffi closures from a dedicated
+            pool in IRAM. This is required for targets like ESP32-C3 and ESP32-C2
+            which cannot execute code from DRAM. For other targets, standard
+            heap memory will be used.
+
+    config LIBFFI_IRAM_POOL_SIZE
+        int "IRAM memory pool size (bytes)"
+        depends on LIBFFI_USE_IRAM_POOL
+        default 4096
+        help
+            The size of the memory pool in IRAM to be reserved for libffi closures.
+            This memory is used to generate executable trampolines at runtime.
+            Fixed free-list implementation should work properly with 4KB pool.
+            If you experience crashes related to running out of executable memory
+            for closures, try increasing this value.
+
+endmenu 

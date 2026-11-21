@@ -1,0 +1,10 @@
+// Custom fast (no-name) symbols provided by firmware.
+// These are typically host helper functions used by ESPB modules.
+//
+// You can force-disable an entry without touching Kconfig:
+//   ESPB_SYM_OPT(CONFIG_ESPB_OFF, "my_custom_print", (const void*)&my_custom_print)
+
+ESPB_SYM("my_custom_print", (const void*)&my_custom_print)
+ESPB_SYM("set_magic_number", (const void*)&native_set_magic_number)
+ESPB_SYM("host_invoke_cb", (const void*)&host_invoke_cb)
+ESPB_SYM("host_invoke_cb2", (const void*)&host_invoke_cb2)

@@ -1,0 +1,68 @@
+name: Generate 03_memory_memory
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: espb-work-module-commit
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v5.4.1
+    steps:
+      - name: Checkout ESPB_WORK with project sources
+        uses: actions/checkout@v4
+        with:
+          ref: ESPB_WORK
+          submodules: recursive
+          fetch-depth: 0
+      - name: Install ESP Clang
+        shell: bash
+        run: |
+          python "$IDF_PATH/tools/idf_tools.py" install esp-clang
+          CLANG="$(find -L /opt/esp/tools/esp-clang -type f -path "*/bin/clang" -perm -111 -print -quit)"
+          test -n "$CLANG"
+          echo "$(dirname "$CLANG")" >> "$GITHUB_PATH"
+          echo "ESPB_CLANG=$CLANG" >> "$GITHUB_ENV"
+      - name: Generate LLVM bitcode
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd projects/ESP32_PRJ_TO_LLVM
+          . "$IDF_PATH/export.sh"
+          python scripts/build_bitcode.py "examples/03_memory"
+          test -s "llvm_output/03_memory_memory.bc"
+          mkdir -p "$GITHUB_WORKSPACE/.work"
+          cp "llvm_output/03_memory_memory.bc" "$GITHUB_WORKSPACE/.work/03_memory_memory.bc"
+      - name: Translate BC to ESPB (quota-aware key rotation)
+        env:
+          ESPB_TRANSLATOR_KEYS: ${{ secrets.ESPB_TRANSLATOR_KEYS }}
+          ESPB_API_KEY: ${{ secrets.ESPB_API_KEY }}
+          ESPB_API_KEY_1: ${{ secrets.ESPB_API_KEY_1 }}
+          ESPB_API_KEY_2: ${{ secrets.ESPB_API_KEY_2 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python .github/scripts/translate_bc.py ".work/03_memory_memory.bc" ".work/03_memory_memory.espb"
+          test -s ".work/03_memory_memory.espb"
+      - name: Commit generated module
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "modules/03_memory"
+          cp ".work/03_memory_memory.espb" "modules/03_memory/03_memory_memory.espb"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "modules/03_memory/03_memory_memory.espb"
+          if git diff --cached --quiet; then
+            echo "Generated module is unchanged."
+            exit 0
+          fi
+          git commit -m "build: regenerate 03_memory_memory.espb"
+          git push origin HEAD:ESPB_WORK
