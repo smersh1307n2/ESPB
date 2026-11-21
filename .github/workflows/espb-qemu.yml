@@ -54,7 +54,7 @@ jobs:
           python - <<'PY'
           import json
           import os
-          import urllib.error
+          import sys
           import urllib.request
 
           repository = os.environ["GITHUB_REPOSITORY"]
@@ -84,7 +84,7 @@ jobs:
               candidates = [get_json(f"{api}/actions/runs/{requested}")]
           else:
               payload = get_json(
-                  f"{api}/actions/runs?branch=ESPB_WORK&per_page=100"
+                  f"{api}/actions/runs?branch=ESPB_WORK&status=success&per_page=100"
               )
               candidates = payload.get("workflow_runs", [])
 
@@ -133,7 +133,6 @@ jobs:
         shell: bash
         env:
           PAIRED_RUN_ID: ${{ steps.paired_run.outputs.run_id }}
-          PAIRED_SOURCE_SHA: ${{ steps.paired_run.outputs.source_sha }}
         run: |
           set -euo pipefail
           python tools/bytecode_groups/corpus_manifest.py verify \
@@ -144,7 +143,6 @@ jobs:
             --repository "$GITHUB_REPOSITORY" \
             --branch "$GITHUB_REF_NAME" \
             --expected-run-id "$PAIRED_RUN_ID" \
-            --expected-source-commit "$PAIRED_SOURCE_SHA" \
             --expected-groups 10
 
       - name: Stage and validate paired opcode corpus

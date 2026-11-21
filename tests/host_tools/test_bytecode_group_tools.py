@@ -197,5 +197,29 @@ class CorpusManifestTests(unittest.TestCase):
                 )
 
 
+
+class WorkflowContractTests(unittest.TestCase):
+    def test_qemu_selects_successful_provenance_bound_pair_run(self) -> None:
+        workflow = (REPO_ROOT / ".github" / "workflows" / "espb-qemu.yml").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("build_opcode_groups_espb.yml", workflow)
+        self.assertIn('run.get("status") == "completed"', workflow)
+        self.assertIn('run.get("conclusion") == "success"', workflow)
+        self.assertIn('run.get("path") == ".github/workflows/build_opcode_groups_espb.yml"', workflow)
+        self.assertIn('item.get("name") == "espb-opcode-groups-paired"', workflow)
+        self.assertIn("run-id: ${{ steps.paired_run.outputs.run_id }}", workflow)
+        self.assertIn('--expected-run-id "$PAIRED_RUN_ID"', workflow)
+        self.assertIn('--expected-source-commit "$PAIRED_SOURCE_SHA"', workflow)
+        self.assertIn("--expected-groups 10", workflow)
+        self.assertNotIn("status=success", workflow)
+        self.assertNotIn("44861542751", workflow)
+        self.assertEqual(
+            workflow.count("PAIRED_SOURCE_SHA: ${{ steps.paired_run.outputs.source_sha }}"),
+            1,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

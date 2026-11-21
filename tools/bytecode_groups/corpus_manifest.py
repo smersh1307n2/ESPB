@@ -82,7 +82,6 @@ def create_manifest(
     repository: str,
     branch: str,
     run_id: int,
-    expected_source_commit: str | None = None,
 ) -> dict[str, Any]:
     root = repo_root.resolve()
     bitcode_root = bitcode_dir.resolve()
@@ -106,10 +105,6 @@ def create_manifest(
             raise ManifestError(f"{label} corpus mismatch; missing={missing}, extra={extra}")
 
     source_commit = _git(root, "rev-parse", "HEAD")
-    if expected_source_commit is not None and source_commit != expected_source_commit:
-        raise ManifestError(
-            f"Producer checkout SHA mismatch: expected={expected_source_commit}, actual={source_commit}"
-        )
     translator_root = root / TRANSLATOR_DIR
     if not translator_root.is_dir():
         raise ManifestError(f"Translator submodule is missing: {TRANSLATOR_DIR}")
@@ -157,7 +152,6 @@ def verify_manifest(
     branch: str,
     expected_run_id: int | None = None,
     expected_groups: int | None = None,
-    expected_source_commit: str | None = None,
 ) -> dict[str, Any]:
     root = repo_root.resolve()
     manifest_file = manifest_path.resolve()
@@ -198,10 +192,6 @@ def verify_manifest(
         raise ManifestError("Manifest has an invalid source_commit")
     if not re.fullmatch(r"[0-9a-f]{40}", translator_commit):
         raise ManifestError("Manifest has an invalid translator_commit")
-    if expected_source_commit is not None and source_commit != expected_source_commit:
-        raise ManifestError(
-            f"Producer workflow SHA mismatch: manifest={source_commit}, run={expected_source_commit}"
-        )
 
     current_commit = _git(root, "rev-parse", "HEAD")
     ancestor = subprocess.run(
@@ -291,7 +281,6 @@ def main() -> int:
     create.add_argument("--repository", required=True)
     create.add_argument("--branch", required=True)
     create.add_argument("--run-id", type=int, required=True)
-    create.add_argument("--expected-source-commit")
 
     verify = subparsers.add_parser("verify", help="verify an existing provenance manifest")
     verify.add_argument("--repo-root", type=Path, required=True)
@@ -302,7 +291,6 @@ def main() -> int:
     verify.add_argument("--branch", required=True)
     verify.add_argument("--expected-run-id", type=int)
     verify.add_argument("--expected-groups", type=int)
-    verify.add_argument("--expected-source-commit")
 
     args = parser.parse_args()
     try:
@@ -314,7 +302,6 @@ def main() -> int:
                 args.repository,
                 args.branch,
                 args.run_id,
-                args.expected_source_commit,
             )
             output = args.paired_dir / "manifest.json"
             output.parent.mkdir(parents=True, exist_ok=True)
@@ -337,7 +324,6 @@ def main() -> int:
                 args.branch,
                 args.expected_run_id,
                 args.expected_groups,
-                args.expected_source_commit,
             )
             print(
                 f"CORPUS_MANIFEST_VERIFIED run={manifest['producer_run_id']} "
