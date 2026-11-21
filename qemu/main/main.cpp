@@ -52,6 +52,7 @@ void native_set_magic_number(int *out_value)
  * targeted atomics probe. QEMU runs this deterministic single-threaded
  * semantic case; this helper provides the expected sequential exchange
  * semantics without changing firmware/toolchain atomics or production code.
+ * This wrapper is intentionally QEMU-test-only and single-threaded.
  */
 uint64_t qemu_atomic_exchange_8(volatile void *address,
                                 uint64_t value,
