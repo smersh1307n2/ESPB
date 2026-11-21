@@ -65,7 +65,9 @@ class InterpreterVariantTests(unittest.TestCase):
 
     def test_rejects_trailing_code_section_bytes(self) -> None:
         data = bytearray(make_test_module())
+        section_size = struct.unpack_from("<I", data, HEADER.size + 8)[0]
         data += b"\x00"
+        struct.pack_into("<I", data, HEADER.size + 8, section_size + 1)
         with tempfile.TemporaryDirectory() as temporary:
             source = Path(temporary) / "jit.espb"
             destination = Path(temporary) / "interpreter.espb"
