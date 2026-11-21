@@ -2852,10 +2852,16 @@ op_0x3E: { // NOT.I64 (unary)
                     uintptr_t ra_addr = (uintptr_t)V_PTR(locals[ra]);
                     uintptr_t base_addr = (uintptr_t)base;
                     if (ra_addr < base_addr) {
+                        ESP_LOGE(TAG, "STORE.I64 OOB func=%u pc=%ld ra=R%u ptr=%p base=%p mem=%" PRIu32 " off=%d",
+                                 local_func_idx, (long)((pc - 5) - instructions_ptr), ra,
+                                 (void*)ra_addr, (void*)base_addr, mem_size, (int)offset);
                         return ESPB_ERR_MEMORY_ACCESS_OUT_OF_BOUNDS; }
                     uint32_t ra_offset = (uint32_t)(ra_addr - base_addr);
                     int64_t target_signed = (int64_t)ra_offset + offset;
                     if (target_signed < 0 || (uint64_t)target_signed + sizeof(int64_t) > mem_size) {
+                        ESP_LOGE(TAG, "STORE.I64 OOB func=%u pc=%ld ra=R%u ptr=%p base=%p mem=%" PRIu32 " off=%d target=%" PRId64,
+                                 local_func_idx, (long)((pc - 5) - instructions_ptr), ra,
+                                 (void*)ra_addr, (void*)base_addr, mem_size, (int)offset, target_signed);
                         return ESPB_ERR_MEMORY_ACCESS_OUT_OF_BOUNDS; }
                     uint32_t target = (uint32_t)target_signed;
                     
@@ -2918,10 +2924,20 @@ op_0x3E: { // NOT.I64 (unary)
                     uint32_t mem_size = instance->memory_size_bytes;
                     uintptr_t ra_addr = (uintptr_t)V_PTR(locals[ra]);
                     uintptr_t base_addr = (uintptr_t)base;
-                    if (ra_addr < base_addr) { return ESPB_ERR_MEMORY_ACCESS_OUT_OF_BOUNDS; }
+                    if (ra_addr < base_addr) {
+                        ESP_LOGE(TAG, "LOAD.I64 OOB func=%u pc=%ld ra=R%u ptr=%p base=%p mem=%" PRIu32 " off=%d",
+                                 local_func_idx, (long)((pc - 5) - instructions_ptr), ra,
+                                 (void*)ra_addr, (void*)base_addr, mem_size, (int)offset);
+                        return ESPB_ERR_MEMORY_ACCESS_OUT_OF_BOUNDS;
+                    }
                     uint32_t ra_off = (uint32_t)(ra_addr - base_addr);
                     int64_t tgt64 = (int64_t)ra_off + offset;
-                    if (tgt64 < 0 || (uint64_t)tgt64 + sizeof(int64_t) > mem_size) { return ESPB_ERR_MEMORY_ACCESS_OUT_OF_BOUNDS; }
+                    if (tgt64 < 0 || (uint64_t)tgt64 + sizeof(int64_t) > mem_size) {
+                        ESP_LOGE(TAG, "LOAD.I64 OOB func=%u pc=%ld ra=R%u ptr=%p base=%p mem=%" PRIu32 " off=%d target=%" PRId64,
+                                 local_func_idx, (long)((pc - 5) - instructions_ptr), ra,
+                                 (void*)ra_addr, (void*)base_addr, mem_size, (int)offset, tgt64);
+                        return ESPB_ERR_MEMORY_ACCESS_OUT_OF_BOUNDS;
+                    }
                     uint32_t target = (uint32_t)tgt64;
                     
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
