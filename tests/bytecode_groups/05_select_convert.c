@@ -84,5 +84,10 @@ JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
              converted == 0xffffcdedf8dbbd27ull &&
              truncated == 42 && extended == -5 && signed_value < 0;
 
+    printf("[ESPB_DETAIL] select i32=%ld i64=%lld f32x100=%ld f64x100=%lld ptr_eq=%d ptrval=%ld converted=0x%016llx truncated=%ld extended=%ld signedneg=%d\n",
+           (long)i32, (long long)i64, (long)(f32 * 100.0f),
+           (long long)(f64 * 100.0), selected_ptr == (void *)text,
+           (long)pointer_value, (unsigned long long)converted,
+           (long)truncated, (long)extended, signed_value < 0);
     printf("[ESPB_GROUP] select_convert=%s arg=%ld\n", ok ? "PASS" : "FAIL", (long)arg);
 }
