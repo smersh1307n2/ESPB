@@ -196,8 +196,6 @@ class CorpusManifestTests(unittest.TestCase):
                     expected_source_commit="0000000000000000000000000000000000000000",
                 )
 
-
-
     def test_manifest_rejects_wrong_producer_run_id(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -219,7 +217,6 @@ class CorpusManifestTests(unittest.TestCase):
                     "ESPB_WORK",
                     expected_run_id=12346,
                 )
-
 
 
 class WorkflowContractTests(unittest.TestCase):
@@ -248,6 +245,22 @@ class WorkflowContractTests(unittest.TestCase):
             workflow.count("PAIRED_SOURCE_SHA: ${{ steps.paired_run.outputs.source_sha }}"),
             1,
         )
+
+    def test_translator_key_pool_includes_slots_one_through_nine(self) -> None:
+        script = (REPO_ROOT / ".github" / "scripts" / "translate_bc.py").read_text(
+            encoding="utf-8"
+        )
+        workflow = (
+            REPO_ROOT / ".github" / "workflows" / "build_opcode_groups_espb.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn('range(1, 10)', script)
+        self.assertIn('"ESPB_API_KEY"', script)
+        self.assertIn("ESPB_API_KEY_9", script)
+        for index in range(1, 10):
+            name = f"ESPB_API_KEY_{index}"
+            self.assertIn(name, workflow)
+        self.assertIn("through ESPB_API_KEY_9", script)
 
 
 if __name__ == "__main__":
