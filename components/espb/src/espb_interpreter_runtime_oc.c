@@ -1074,25 +1074,23 @@ EspbResult espb_call_function(EspbInstance *instance, ExecutionContext *exec_ctx
         register Value *locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->sp);
 //#endif
 
-        // Обнуляем выделенный кадр
-        memset(locals, 0, frame_size_bytes);
-        // Массив для хранения контекстов колбэков, индексирован по виртуальным регистрам
-        // CallbackCtx **reg_contexts = (CallbackCtx **)calloc(num_virtual_regs > 0 ? num_virtual_regs : 1, sizeof(CallbackCtx*));
-        // if (reg_contexts == NULL) {
-        //     // REFACTOR_REMOVED: // REMOVED_free_locals;
-        //     return ESPB_ERR_MEMORY_ALLOC;
-        // }
-        // memset не нужен, так как calloc инициализирует нулями
-        
+        // Initialize only registers that need zero values. Argument registers are
+        // overwritten immediately, so clearing them first is redundant memory traffic.
+        uint8_t num_params_to_copy = 0;
         if (args) {
-            // Копируем аргументы в регистры R0..RN
-            EspbFuncSignature* main_sig = &module->signatures[module->function_signature_indices[local_func_idx]];
-            uint8_t num_params_to_copy = MIN(main_sig->num_params, num_virtual_regs);
-            
-            for(uint8_t i=0; i < num_params_to_copy; ++i) {
+            const EspbFuncSignature* main_sig =
+                &module->signatures[module->function_signature_indices[local_func_idx]];
+            num_params_to_copy = (uint8_t)MIN(main_sig->num_params, num_virtual_regs);
+            for (uint8_t i = 0; i < num_params_to_copy; ++i) {
                 locals[i] = args[i];
             }
         }
+
+        if ((size_t)num_params_to_copy < num_virtual_regs) {
+            memset(locals + num_params_to_copy, 0,
+                   (size_t)(num_virtual_regs - num_params_to_copy) * sizeof(Value));
+        }
+        // Callback contexts are indexed by virtual register; no separate array is allocated here.
         
 //#if defined(CONFIG_IDF_TARGET_ARCH_RISCV)
 //        register const uint8_t *pc asm("s1") = instructions_ptr;
