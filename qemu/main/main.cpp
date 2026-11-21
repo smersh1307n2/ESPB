@@ -246,11 +246,79 @@ static bool qemu_benchmark_raw_jit(
     return true;
 }
 
+
+static int32_t qemu_native_switch_probe(int32_t value)
+{
+    if (value < 0) return -1;
+    if (value == 0) return 7;
+    switch (value) {
+        case 1: return 11;
+        case 2: return 13;
+        case 3: return 17;
+        default: return 19;
+    }
+}
+
+static uint64_t qemu_native_conversion_probe(int64_t wide, int32_t narrow)
+{
+    const uint8_t u8 = (uint8_t)narrow;
+    const int8_t s8 = (int8_t)narrow;
+    const uint16_t u16 = (uint16_t)narrow;
+    const int16_t s16 = (int16_t)narrow;
+    const int32_t truncated = (int32_t)wide;
+    const uint32_t truncated_unsigned = (uint32_t)wide;
+    const int64_t sign_extended = (int64_t)narrow;
+    const uint64_t zero_extended = (uint64_t)(uint32_t)narrow;
+
+    uint64_t mix = (uint64_t)u8;
+    mix ^= (uint64_t)(int64_t)s8 << 8;
+    mix ^= (uint64_t)u16 << 16;
+    mix ^= (uint64_t)(int64_t)s16 << 32;
+    mix ^= (uint32_t)truncated;
+    mix ^= (uint64_t)truncated_unsigned << 1;
+    mix ^= (uint64_t)sign_extended;
+    mix ^= zero_extended << 2;
+    return mix;
+}
+
+static int32_t qemu_native_atomic_i32_probe(void)
+{
+    volatile int32_t value = 10;
+    const int32_t old_add = __atomic_fetch_add(&value, 5, __ATOMIC_SEQ_CST);
+    const int32_t old_sub = __atomic_fetch_sub(&value, 3, __ATOMIC_SEQ_CST);
+    const int32_t old_and = __atomic_fetch_and(&value, 0x0f, __ATOMIC_SEQ_CST);
+    const int32_t old_or = __atomic_fetch_or(&value, 0x20, __ATOMIC_SEQ_CST);
+    const int32_t old_xor = __atomic_fetch_xor(&value, 0x03, __ATOMIC_SEQ_CST);
+    const int32_t old_exchange = __atomic_exchange_n(&value, 42, __ATOMIC_SEQ_CST);
+    int32_t expected = 42;
+    const int success = __atomic_compare_exchange_n(
+        &value, &expected, 100, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    expected = 99;
+    const int failure = __atomic_compare_exchange_n(
+        &value, &expected, 200, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+    const int32_t loaded = __atomic_load_n(&value, __ATOMIC_SEQ_CST);
+    __atomic_store_n(&value, 77, __ATOMIC_SEQ_CST);
+    const int32_t stored = __atomic_load_n(&value, __ATOMIC_SEQ_CST);
+
+    return old_add + old_sub + old_and + old_or + old_xor +
+           old_exchange + success + failure + loaded + stored;
+}
+
 extern "C" void app_main(void)
 {
     printf("--- ESPB dual-mode QEMU tests ---\n");
     espb_register_custom_index_symbol_table(qemu_fast_symbols);
     espb_register_symbol_table(0, qemu_named_symbols);
+
+    printf("[ESPB_NATIVE] switch2=%ld switchneg=%ld switchdefault=%ld\\n",
+           (long)qemu_native_switch_probe(2),
+           (long)qemu_native_switch_probe(-1),
+           (long)qemu_native_switch_probe(99));
+    printf("[ESPB_NATIVE] conversion=0x%016llx expected=0xffffcdedf8dbbd27\\n",
+           (unsigned long long)qemu_native_conversion_probe(
+               0x123456789ll, (int32_t)0x89abcdefu));
+    printf("[ESPB_NATIVE] atomic_i32=%ld expected=318\\n",
+           (long)qemu_native_atomic_i32_probe());
 
     char qemu_message[] = "Hello from ESPB_WORK QEMU";
     Value args[] = {

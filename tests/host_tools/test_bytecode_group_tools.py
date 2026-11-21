@@ -518,6 +518,22 @@ class CompilerWrapperTests(unittest.TestCase):
 
 
 class WorkflowContractTests(unittest.TestCase):
+    def test_qemu_uses_scoped_dual_mode_module_names(self) -> None:
+        cmake = (REPO_ROOT / "qemu" / "main" / "CMakeLists.txt").read_text(
+            encoding="utf-8"
+        )
+        main = (REPO_ROOT / "qemu" / "main" / "main.cpp").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            'file(GLOB ESPB_GENERATED_SOURCE_MODULES "${ESPB_REPO_ROOT}/modules/opcode_groups/*.espb")',
+            cmake,
+        )
+        self.assertNotIn("GLOB_RECURSE ESPB_GENERATED_SOURCE_MODULES", cmake)
+        self.assertIn('strncmp(module.name, "jit__", 5) == 0', main)
+        self.assertIn("enum { SAMPLE_COUNT = 1 };", main)
+
     def test_qemu_selects_successful_provenance_bound_pair_run(self) -> None:
         workflow = (REPO_ROOT / ".github" / "workflows" / "espb-qemu.yml").read_text(
             encoding="utf-8"
@@ -531,6 +547,11 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("run-id: ${{ steps.paired_run.outputs.run_id }}", workflow)
         self.assertIn('--expected-run-id "$PAIRED_RUN_ID"', workflow)
         self.assertIn('--expected-source-commit "$PAIRED_SOURCE_SHA"', workflow)
+        self.assertIn('get_json(f"{api}/compare/{source_sha}...{expected_source_sha}")', workflow)
+        self.assertIn('path.startswith("tests/bytecode_groups/")', workflow)
+        self.assertIn('path.startswith("tools/bytecode_groups/")', workflow)
+        self.assertIn('path == "projects/ESP32_PRJ_TO_LLVM"', workflow)
+        self.assertNotIn("subprocess.run(", workflow)
         self.assertIn("--expected-groups 10", workflow)
         self.assertNotIn("status=success", workflow)
         self.assertNotIn("44861542751", workflow)

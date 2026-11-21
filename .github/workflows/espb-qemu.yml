@@ -57,7 +57,6 @@ jobs:
           python - <<'PY'
           import json
           import os
-          import subprocess
           import urllib.error
           import urllib.request
 
@@ -108,17 +107,38 @@ jobs:
               source_sha = run.get("head_sha")
               if not source_sha:
                   continue
-              diff = subprocess.run(
-                  [
-                      "git", "diff", "--quiet", source_sha, expected_source_sha,
-                      "--", "tests/bytecode_groups", "projects/ESP32_PRJ_TO_LLVM",
-                  ],
-                  check=False,
-              )
-              if diff.returncode == 0:
+              try:
+                  comparison = get_json(
+                      f"{api}/compare/{source_sha}...{expected_source_sha}"
+                  )
+              except urllib.error.HTTPError as error:
+                  print(
+                      f"Skipping paired run {run.get('id')}: "
+                      f"source comparison unavailable ({error.code})."
+                  )
+                  continue
+              if comparison.get("status") not in ("ahead", "identical"):
+                  continue
+              changed_files = comparison.get("files") or []
+              # GitHub caps compare responses at 300 files; reject truncated comparisons.
+              if len(changed_files) >= 300:
+                  continue
+              incompatible = False
+              for item in changed_files:
+                  path = item.get("filename", "")
+                  if (
+                      (path.startswith("tests/bytecode_groups/") and
+                       not path.endswith((".md", ".txt")))
+                      or path.startswith("tools/bytecode_groups/")
+                      or path == "projects/ESP32_PRJ_TO_LLVM"
+                      or path.startswith("projects/ESP32_PRJ_TO_LLVM/")
+                      or path == ".github/workflows/build_opcode_groups.yml"
+                      or path == ".github/workflows/build_opcode_groups_espb.yml"
+                  ):
+                      incompatible = True
+                      break
+              if not incompatible:
                   compatible_candidates.append(run)
-              elif diff.returncode > 1:
-                  reject(f"Could not compare paired source {source_sha} with {expected_source_sha}.")
           candidates = compatible_candidates
 
           for run in candidates:
