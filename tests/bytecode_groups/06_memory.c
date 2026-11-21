@@ -46,6 +46,6 @@ JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
     volatile int32_t seed = 10;
     int32_t aggregate = array_struct_ops(seed);
     int32_t copied = heap_copy_fill();
-    int ok = aggregate == 36 && copied == 126 && (text == text) && (user_data == user_data);
+    int ok = aggregate == 36 && copied == 126;
     printf("[ESPB_GROUP] memory=%s arg=%ld\n", ok ? "PASS" : "FAIL", (long)arg);
 }
