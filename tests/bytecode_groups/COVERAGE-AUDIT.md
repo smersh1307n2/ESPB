@@ -81,7 +81,7 @@ Before adding many source cases, generate a fresh provenance-bound paired artifa
 
 ## Current emitted-bytecode audit
 
-<text>Current, manifest-bound evidence is available from paired translation run `44879023927` (success), producer commit `3f14d1ff0810b4b5878abfb2feb857dcb9062a49`, artifact ID `14697435593`. Do not conflate these figures with the historical run above.</text>
+Current, manifest-bound evidence is available from paired translation run `44879023927` (success), producer commit `3f14d1ff0810b4b5878abfb2feb857dcb9062a49`, artifact ID `14697435593`. Do not conflate these figures with the historical run above.</text>
 
 - Bitcode source artifact: run `44878818621`, ten non-empty groups.
 - Incremental paired build reused six exact SHA-matching pairs (`01_integer32`, `02_integer64`, `03_float`, `06_memory`, `09_freertos_task`, `10_freertos_timer`) and translated only four changed groups (`04_control_flow`, `05_select_convert`, `07_calls_callbacks`, `08_atomics`).
