@@ -184,6 +184,9 @@ jobs:
               output.write(
                   f"previous_pair_run_id={selected_pair['id'] if selected_pair else ''}\n"
               )
+              output.write(
+                  f"previous_pair_source_sha={selected_pair['head_sha'] if selected_pair else ''}\n"
+              )
 
           print(
               f"Selected bitcode run={selected_bitcode['id']} "
@@ -218,6 +221,9 @@ jobs:
       - name: Reuse unchanged paired modules by bitcode SHA-256
         if: steps.bitcode.outputs.previous_pair_run_id != ''
         shell: bash
+        env:
+          PREVIOUS_PAIR_RUN_ID: ${{ steps.bitcode.outputs.previous_pair_run_id }}
+          PREVIOUS_PAIR_SOURCE_SHA: ${{ steps.bitcode.outputs.previous_pair_source_sha }}
         run: |
           set -euo pipefail
           python .github/scripts/reuse_paired_groups.py \
@@ -226,7 +232,9 @@ jobs:
             --paired-dir "$GITHUB_WORKSPACE/.work/paired" \
             --repository "$GITHUB_REPOSITORY" \
             --branch "$GITHUB_REF_NAME" \
-            --translator-commit "$(git -C projects/ESP32_PRJ_TO_LLVM rev-parse HEAD)"
+            --translator-commit "$(git -C projects/ESP32_PRJ_TO_LLVM rev-parse HEAD)" \
+            --expected-run-id "$PREVIOUS_PAIR_RUN_ID" \
+            --expected-source-commit "$PREVIOUS_PAIR_SOURCE_SHA"
 
       - name: Verify the downloaded bitcode set
         shell: bash
