@@ -99,7 +99,7 @@ JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
     const uint64_t s8_shift_probe = conversion_s8_shift_probe((int32_t)0x89abcdefu);
     const uint64_t s16_shift_probe = conversion_s16_shift_probe((int32_t)0x89abcdefu);
     const uint64_t s32_probe = conversion_s32_probe((int32_t)0x89abcdefu);
-    const int ok_s8_shift = s8_shift_probe == 0xffffffffffffff00ull;
+    const int ok_s8_shift = s8_shift_probe == 0xffffffffffffef00ull;
     const int ok_s16_shift = s16_shift_probe == 0xffffcdef00000000ull;
     const int ok_s32_sign = s32_probe == 0xffffffff89abcdefull;
     const int ok_signed = signed_value < 0;
