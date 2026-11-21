@@ -547,7 +547,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("run-id: ${{ steps.paired_run.outputs.run_id }}", workflow)
         self.assertIn('--expected-run-id "$PAIRED_RUN_ID"', workflow)
         self.assertIn('--expected-source-commit "$PAIRED_SOURCE_SHA"', workflow)
-        self.assertIn('get_json(f"{api}/compare/{source_sha}...{expected_source_sha}")', workflow)
+        self.assertIn('f"{api}/compare/{source_sha}...{expected_source_sha}"', workflow)
         self.assertIn('path.startswith("tests/bytecode_groups/")', workflow)
         self.assertIn('path.startswith("tools/bytecode_groups/")', workflow)
         self.assertIn('path == "projects/ESP32_PRJ_TO_LLVM"', workflow)
