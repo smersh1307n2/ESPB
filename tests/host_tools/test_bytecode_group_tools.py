@@ -329,7 +329,10 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("benchmark_modules=$((expected_modules - 4 - jit_skipped_count))", workflow)
         self.assertIn("expected_bench_jit=$((jit_modules - 2 - jit_skipped_count))", workflow)
         self.assertIn("expected_memory_count=$((expected_modules - jit_skipped_count))", workflow)
-        self.assertNotIn('interp_ready_count="$(grep -c', workflow.split("jit_ready_count=", 1)[1].split("awk '", 1)[0].rstrip().split("\n")[-1] + "\n          awk '")
+        self.assertEqual(workflow.count("interp_ready_count="), 1)
+        self.assertEqual(workflow.count("expected_jit_ready="), 1)
+        self.assertEqual(workflow.count("      - name: Upload QEMU execution log"), 1)
+        self.assertEqual(workflow.count("          retention-days: 14"), 1)
 
     def test_translator_key_pool_includes_slots_one_through_nine(self) -> None:
         script = (REPO_ROOT / ".github" / "scripts" / "translate_bc.py").read_text(
