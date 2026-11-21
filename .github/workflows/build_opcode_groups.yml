@@ -1,6 +1,13 @@
 name: Build ESPB opcode-group bitcode
 
 on:
+  push:
+    branches:
+      - ESPB_WORK
+    paths:
+      - 'tests/bytecode_groups/**'
+      - 'tools/bytecode_groups/**'
+      - '.github/workflows/build_opcode_groups.yml'
   workflow_dispatch:
 
 permissions:
