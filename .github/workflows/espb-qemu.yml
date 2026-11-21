@@ -261,8 +261,13 @@ jobs:
             echo "Unsupported JIT skip count mismatch: expected=$expected_jit_skips actual=$jit_skipped_count"
             exit 1
           fi
-          jit_ready_count="$(grep -c '^\[ESPB_TEST\] jit_ready=' qemu.log || true)"
-          interp_ready_count="$(grep -c '^\[ESPB_TEST\] interp_ready=.*hot=0 compiled=0
+          jit_ready_count="$(grep -c '^\\[ESPB_TEST\\] jit_ready=' qemu.log || true)"
+          interp_ready_count="$(grep -c '^\\[ESPB_TEST\\] interp_ready=.*hot=0 compiled=0$' qemu.log || true)"
+          expected_jit_ready=$((jit_modules - jit_skipped_count))
+          if [ "$jit_ready_count" -ne "$expected_jit_ready" ] || [ "$interp_ready_count" -ne "$interpreter_modules" ]; then
+            echo "Mode readiness mismatch: jit=$jit_ready_count/$expected_jit_ready interpreter=$interp_ready_count/$interpreter_modules"
+            exit 1
+          fi
           awk '
             /^\[ESPB_TEST\] jit_ready=/ {
               hot = compiled = -1
@@ -336,117 +341,6 @@ jobs:
             exit 1
           fi
           awk -v expected="$expected_memory_count" '
-            /^\[ESPB_MEM\]/ {
-              before=ready=exec_heap=after=0
-              for (i = 1; i <= NF; ++i) {
-                split($i, kv, "=")
-                if (kv[1] == "heap_before") before = kv[2] + 0
-                else if (kv[1] == "heap_ready") ready = kv[2] + 0
-                else if (kv[1] == "heap_after_exec") exec_heap = kv[2] + 0
-                else if (kv[1] == "heap_after_unload") after = kv[2] + 0
-              }
-              if (before > 0 && after + 512 < before) {
-                printf "Heap recovery regression: before=%u after_unload=%u\n", before, after
-                exit 1
-              }
-              if (ready > 0 && exec_heap + 512 < ready) {
-                printf "Heap growth during execution: ready=%u after_exec=%u\n", ready, exec_heap
-                exit 1
-              }
-              count++
-            }
-            END {
-              if (count != expected) {
-                printf "Heap metric records mismatch: expected=%u actual=%u\n", expected, count
-                exit 1
-              }
-            }
-          ' qemu.log
-
-      - name: Upload QEMU execution log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: espb-qemu-${{ matrix.target }}-${{ github.run_id }}
-          path: |
-            qemu.log
-            qemu/build/ESPB_QEMU.elf
-          if-no-files-found: ignore
-          retention-days: 14
- qemu.log || true)"
-          expected_jit_ready=$((jit_modules - jit_skipped_count))
-          if [ "$jit_ready_count" -ne "$expected_jit_ready" ] || [ "$interp_ready_count" -ne "$interpreter_modules" ]; then
-            echo "Mode readiness mismatch: jit=$jit_ready_count/$expected_jit_ready interpreter=$interp_ready_count/$interpreter_modules"
-            exit 1
-          fi
-          awk '
-            /^\[ESPB_TEST\] jit_ready=/ {
-              hot = compiled = -1
-              for (i = 1; i <= NF; ++i) {
-                split($i, kv, "=")
-                if (kv[1] == "hot") hot = kv[2] + 0
-                if (kv[1] == "compiled") compiled = kv[2] + 0
-              }
-              if (hot <= 0 || hot != compiled) {
-                print "Incomplete HOT compilation: " $0 > "/dev/stderr"
-                failed = 1
-              }
-            }
-            END { exit failed }
-          ' qemu.log
-
-          for group in integer32 integer64 float control_flow select_convert memory calls_callbacks atomics freertos_task freertos_timer; do
-            group_passes="$(grep -F -c "[ESPB_GROUP] $group=PASS" qemu.log || true)"
-            if [ "$group_passes" -lt 2 ]; then
-              echo "Missing interpreter/JIT semantic PASS for $group: found $group_passes"
-              exit 1
-            fi
-          done
-          rtos_calls="$(grep -c '^\[ESPB_TEST\] bounded_rtos_calls=.*count=3$' qemu.log || true)"
-          if [ "$rtos_calls" -ne 4 ]; then
-            echo "Expected exactly four bounded RTOS module runs, found $rtos_calls"
-            exit 1
-          fi
-
-          fibonacci_pass_count="$(grep -F -c 'Result is CORRECT.' qemu.log || true)"
-          if [ "$fibonacci_pass_count" -lt 12 ]; then
-            echo "Expected interpreter and JIT Fibonacci checks (12 calls), found $fibonacci_pass_count"
-            exit 1
-          fi
-
-          benchmark_modules=$((expected_modules - 4))
-          expected_samples=$((benchmark_modules * 5))
-          actual_samples="$(grep -Ec '\[ESPB_BENCH\] module=.*sample_[0-4]_us=[1-9][0-9]* cycles_start=[0-9]+ cycles_end=[0-9]+ cycles_delta=[1-9][0-9]*' qemu.log || true)"
-          if [ "$actual_samples" -ne "$expected_samples" ]; then
-            echo "Benchmark sample count mismatch: expected=$expected_samples actual=$actual_samples"
-            exit 1
-          fi
-          median_count="$(grep -Ec '\[ESPB_BENCH\] module=.*app_main_median_us=[1-9][0-9]* app_main_median_cycles=[1-9][0-9]*' qemu.log || true)"
-          if [ "$median_count" -ne "$benchmark_modules" ]; then
-            echo "Expected one numeric median per benchmark module ($benchmark_modules), found $median_count"
-            exit 1
-          fi
-
-          raw_jit_count="$(grep -Ec '^\[ESPB_BENCH_RAW_JIT\] function=app_main median_us=[1-9][0-9]* median_cycles=[1-9][0-9]*' qemu.log || true)"
-          expected_bench_jit=$((jit_modules - 2))
-          if [ "$raw_jit_count" -ne "$expected_bench_jit" ]; then
-            echo "Raw JIT metric count mismatch: expected=$expected_bench_jit actual=$raw_jit_count"
-            exit 1
-          fi
-
-          interpreter_core_count="$(grep -Ec '^\[ESPB_BENCH_INTERP_CORE\] function=app_main median_us=[1-9][0-9]* median_cycles=[1-9][0-9]*' qemu.log || true)"
-          expected_bench_interpreter=$((interpreter_modules - 2))
-          if [ "$interpreter_core_count" -ne "$expected_bench_interpreter" ]; then
-            echo "Interpreter core metric count mismatch: expected=$expected_bench_interpreter actual=$interpreter_core_count"
-            exit 1
-          fi
-
-          memory_count="$(grep -Ec '^\[ESPB_MEM\] module=' qemu.log || true)"
-          if [ "$memory_count" -ne "$expected_modules" ]; then
-            echo "Memory metric count mismatch: expected=$expected_modules actual=$memory_count"
-            exit 1
-          fi
-          awk -v expected="$expected_modules" '
             /^\[ESPB_MEM\]/ {
               before=ready=exec_heap=after=0
               for (i = 1; i <= NF; ++i) {
