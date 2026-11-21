@@ -1,9 +1,17 @@
 name: Build paired ESPB opcode-group modules
 
 on:
+  # Quota-consuming push execution is opt-in via a commit-message marker.
+  # Ordinary corpus and runtime commits never auto-call the translator.
+  push:
+    branches:
+      - ESPB_WORK
+    paths:
+      - ".github/workflows/build_opcode_groups_espb.yml"
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -12,6 +20,7 @@ concurrency:
 
 jobs:
   translate:
+    if: ${{ github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && contains(github.event.head_commit.message, '[translate-opcode-corpus]')) }}
     runs-on: ubuntu-22.04
     container:
       image: espressif/idf:v5.4.1
@@ -47,22 +56,120 @@ jobs:
       - name: Run fast host-side unit tests
         run: python -m unittest discover -s tests/host_tools -p "test_*.py" -v
 
-      - name: Install ESP Clang
+      - name: Select the latest compatible successful bitcode artifact
+        id: bitcode
         shell: bash
-        run: |
-          python "$IDF_PATH/tools/idf_tools.py" install esp-clang
-          CLANG="$(find -L /opt/esp/tools/esp-clang -type f -path "*/bin/clang" -perm -111 -print -quit)"
-          test -n "$CLANG"
-          echo "$(dirname "$CLANG")" >> "$GITHUB_PATH"
-          echo "ESPB_CLANG=$CLANG" >> "$GITHUB_ENV"
-
-      - name: Build ten compact bitcode groups
-        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          . "$IDF_PATH/export.sh"
-          python tools/bytecode_groups/build.py --output-dir "$GITHUB_WORKSPACE/.work/bytecode_groups"
+          python - <<'PY'
+          import json
+          import os
+          import subprocess
+          import urllib.request
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GITHUB_TOKEN"]
+          expected_sha = os.environ["EXPECTED_SOURCE_SHA"]
+          api = f"https://api.github.com/repos/{repository}"
+
+          def get_json(url):
+              request = urllib.request.Request(
+                  url,
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {token}",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+
+          runs = get_json(
+              f"{api}/actions/runs?branch=ESPB_WORK&per_page=100"
+          ).get("workflow_runs", [])
+          candidates = [
+              run for run in runs
+              if run.get("path") == ".github/workflows/build_opcode_groups.yml"
+              and run.get("head_branch") == "ESPB_WORK"
+              and run.get("status") == "completed"
+              and run.get("conclusion") == "success"
+          ]
+          candidates.sort(key=lambda run: run.get("created_at", ""), reverse=True)
+
+          for run in candidates:
+              source_sha = run.get("head_sha", "")
+              ancestor = subprocess.run(
+                  ["git", "merge-base", "--is-ancestor", source_sha, expected_sha],
+                  check=False,
+              )
+              if ancestor.returncode != 0:
+                  continue
+
+              source_diff = subprocess.run(
+                  [
+                      "git", "diff", "--quiet", source_sha, expected_sha, "--",
+                      "tests/bytecode_groups",
+                      "projects/ESP32_PRJ_TO_LLVM",
+                  ],
+                  check=False,
+              )
+              if source_diff.returncode != 0:
+                  continue
+
+              try:
+                  artifacts = get_json(run["artifacts_url"]).get("artifacts", [])
+              except (KeyError, urllib.error.HTTPError):
+                  continue
+              matching = [
+                  item for item in artifacts
+                  if item.get("name") == "espb-opcode-groups-bc"
+                  and not item.get("expired", False)
+              ]
+              if not matching:
+                  continue
+
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write(f"run_id={run['id']}\n")
+                  output.write(f"source_sha={source_sha}\n")
+              print(
+                  f"Selected bitcode artifact run={run['id']} "
+                  f"source={source_sha}"
+              )
+              break
+          else:
+              print(
+                  "::error::No successful bitcode artifact matches the current "
+                  "test sources and translator submodule."
+              )
+              raise SystemExit(1)
+          PY
+
+      - name: Download the already-validated LLVM bitcode corpus
+        uses: actions/download-artifact@v4
+        with:
+          name: espb-opcode-groups-bc
+          path: .work/bytecode_groups
+          run-id: ${{ steps.bitcode.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify the downloaded bitcode set
+        shell: bash
+        env:
+          BITCODE_RUN_ID: ${{ steps.bitcode.outputs.run_id }}
+          BITCODE_SOURCE_SHA: ${{ steps.bitcode.outputs.source_sha }}
+        run: |
+          set -euo pipefail
           test "$(find .work/bytecode_groups -maxdepth 1 -name '*.bc' -type f | wc -l)" -eq 10
+          for source in tests/bytecode_groups/*.c; do
+            stem="$(basename "$source" .c)"
+            test -s ".work/bytecode_groups/$stem.bc"
+          done
+          echo "ESPB_BITCODE_REUSED_RUN=$BITCODE_RUN_ID"
+          echo "ESPB_BITCODE_SOURCE_SHA=$BITCODE_SOURCE_SHA"
+          echo "ESPB_BITCODE_GROUPS=10"
 
       - name: Translate each group once and create matched execution variants
         env:
