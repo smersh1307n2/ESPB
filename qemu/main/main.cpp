@@ -34,7 +34,7 @@ void host_invoke_cb2(qemu_cb2_t cb, int value, void *user_data)
 
 void my_custom_print(const char *message)
 {
-    printf("QEMU custom print: %s\\n", message ? message : "(null)");
+    printf("QEMU custom print: %s\n", message ? message : "(null)");
 }
 
 void native_set_magic_number(int *out_value)
@@ -113,7 +113,7 @@ static bool qemu_benchmark_interpreter_core(
 {
     uint32_t global_func_idx = 0;
     if (!qemu_find_exported_function(handle, function_name, &global_func_idx, NULL, NULL)) {
-        printf("[ESPB_BENCH_INTERP_CORE] function=%s unavailable\\n", function_name);
+        printf("[ESPB_BENCH_INTERP_CORE] function=%s unavailable\n", function_name);
         return false;
     }
 
@@ -124,7 +124,7 @@ static bool qemu_benchmark_interpreter_core(
     for (int i = 0; i < SAMPLE_COUNT; ++i) {
         ExecutionContext *exec_ctx = init_execution_context();
         if (!exec_ctx) {
-            printf("[ESPB_BENCH_INTERP_CORE] function=%s context_alloc_failed\\n", function_name);
+            printf("[ESPB_BENCH_INTERP_CORE] function=%s context_alloc_failed\n", function_name);
             return false;
         }
 
@@ -138,14 +138,14 @@ static bool qemu_benchmark_interpreter_core(
         free_execution_context(exec_ctx);
 
         if (rc != ESPB_OK) {
-            printf("[ESPB_BENCH_INTERP_CORE] function=%s call_failed rc=%d\\n",
+            printf("[ESPB_BENCH_INTERP_CORE] function=%s call_failed rc=%d\n",
                    function_name, (int)rc);
             return false;
         }
     }
 
     qemu_sort_samples(samples_us, samples_cycles, SAMPLE_COUNT);
-    printf("[ESPB_BENCH_INTERP_CORE] function=%s median_us=%lld median_cycles=%u samples=%u\\n",
+    printf("[ESPB_BENCH_INTERP_CORE] function=%s median_us=%lld median_cycles=%u samples=%u\n",
            function_name, (long long)samples_us[SAMPLE_COUNT / 2],
            (unsigned)samples_cycles[SAMPLE_COUNT / 2], (unsigned)SAMPLE_COUNT);
     return true;
@@ -164,7 +164,7 @@ static bool qemu_benchmark_raw_jit(
     const EspbFuncSignature *signature = NULL;
     if (!qemu_find_exported_function(handle, function_name, NULL, &body, &signature) ||
         !body || !body->is_jit_compiled || !body->jit_code) {
-        printf("[ESPB_BENCH_RAW_JIT] function=%s jit_entry_unavailable\\n", function_name);
+        printf("[ESPB_BENCH_RAW_JIT] function=%s jit_entry_unavailable\n", function_name);
         return false;
     }
 
@@ -199,7 +199,7 @@ static bool qemu_benchmark_raw_jit(
     }
 
     qemu_sort_samples(samples_us, samples_cycles, SAMPLE_COUNT);
-    printf("[ESPB_BENCH_RAW_JIT] function=%s median_us=%lld median_cycles=%u regs=%u args=%u samples=%u\\n",
+    printf("[ESPB_BENCH_RAW_JIT] function=%s median_us=%lld median_cycles=%u regs=%u args=%u samples=%u\n",
            function_name, (long long)samples_us[SAMPLE_COUNT / 2],
            (unsigned)samples_cycles[SAMPLE_COUNT / 2], (unsigned)actual_regs,
            (unsigned)copied_args, (unsigned)SAMPLE_COUNT);
@@ -208,7 +208,7 @@ static bool qemu_benchmark_raw_jit(
 
 extern "C" void app_main(void)
 {
-    printf("--- ESPB dual-mode QEMU tests ---\\n");
+    printf("--- ESPB dual-mode QEMU tests ---\n");
     espb_register_custom_index_symbol_table(qemu_fast_symbols);
     espb_register_symbol_table(0, qemu_named_symbols);
 
@@ -219,16 +219,16 @@ extern "C" void app_main(void)
         ESPB_PTR(NULL)
     };
 
-    printf("[ESPB_TEST] module_count=%u\\n", (unsigned)espb_embedded_module_count);
+    printf("[ESPB_TEST] module_count=%u\n", (unsigned)espb_embedded_module_count);
     for (size_t module_index = 0; module_index < espb_embedded_module_count; ++module_index) {
         const EspbEmbeddedModule &module = espb_embedded_modules[module_index];
         const bool jit_mode = module.name[0] == 'j' && module.name[1] == 'i' && module.name[2] == 't' && module.name[3] == '_';
-        printf("[ESPB_TEST] module=%s size=%u\\n", module.name, (unsigned)module.size);
+        printf("[ESPB_TEST] module=%s size=%u\n", module.name, (unsigned)module.size);
 
         espb_handle_t handle = NULL;
         EspbResult result = espb_load_module(module.data, module.size, &handle);
         if (result != ESPB_OK) {
-            printf("[ESPB_TEST] load_failed=%s error=%d\\n", module.name, (int)result);
+            printf("[ESPB_TEST] load_failed=%s error=%d\n", module.name, (int)result);
             return;
         }
 
@@ -236,7 +236,7 @@ extern "C" void app_main(void)
         // either core benchmark begins. No compilation is timed.
         result = espb_call_function_sync(handle, "app_main", args, 3, NULL);
         if (result != ESPB_OK) {
-            printf("[ESPB_TEST] warmup_failed=%s error=%d\\n", module.name, (int)result);
+            printf("[ESPB_TEST] warmup_failed=%s error=%d\n", module.name, (int)result);
             espb_unload_module(handle);
             return;
         }
@@ -245,7 +245,7 @@ extern "C" void app_main(void)
             ? qemu_benchmark_raw_jit(handle, "app_main", args, 3)
             : qemu_benchmark_interpreter_core(handle, "app_main", args, 3);
         if (!core_bench_ok) {
-            printf("[ESPB_TEST] core_bench_failed=%s\\n", module.name);
+            printf("[ESPB_TEST] core_bench_failed=%s\n", module.name);
             espb_unload_module(handle);
             return;
         }
@@ -262,25 +262,25 @@ extern "C" void app_main(void)
             const uint32_t end_cycles = esp_cpu_get_cycle_count();
             samples_us[i] = esp_timer_get_time() - start_us;
             samples_cycles[i] = end_cycles - start_cycles;
-            printf("[ESPB_BENCH] module=%s sample_%d_us=%lld cycles_start=%u cycles_end=%u cycles_delta=%u\\n",
+            printf("[ESPB_BENCH] module=%s sample_%d_us=%lld cycles_start=%u cycles_end=%u cycles_delta=%u\n",
                    module.name, i, (long long)samples_us[i],
                    (unsigned)start_cycles, (unsigned)end_cycles,
                    (unsigned)samples_cycles[i]);
             if (result != ESPB_OK) {
-                printf("[ESPB_TEST] call_failed=%s error=%d\\n", module.name, (int)result);
+                printf("[ESPB_TEST] call_failed=%s error=%d\n", module.name, (int)result);
                 espb_unload_module(handle);
                 return;
             }
         }
 
         qemu_sort_samples(samples_us, samples_cycles, SAMPLE_COUNT);
-        printf("[ESPB_BENCH] module=%s app_main_median_us=%lld app_main_median_cycles=%u\\n",
+        printf("[ESPB_BENCH] module=%s app_main_median_us=%lld app_main_median_cycles=%u\n",
                module.name, (long long)samples_us[SAMPLE_COUNT / 2],
                (unsigned)samples_cycles[SAMPLE_COUNT / 2]);
 
         espb_unload_module(handle);
-        printf("[ESPB_TEST] module_done=%s mode=%s\\n", module.name, jit_mode ? "jit" : "interpreter");
+        printf("[ESPB_TEST] module_done=%s mode=%s\n", module.name, jit_mode ? "jit" : "interpreter");
     }
 
-    printf("--- ESPB dual-mode QEMU tests finished ---\\n");
+    printf("--- ESPB dual-mode QEMU tests finished ---\n");
 }
