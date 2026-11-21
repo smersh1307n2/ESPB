@@ -77,3 +77,59 @@ Do not infer the exact arithmetic opcode sequence from the C expression, and do 
 ## Acceptance
 
 Before adding many source cases, generate a fresh provenance-bound paired artifact and get a minimal Interpreter/JIT smoke pair through both Xtensa and RISC-V QEMU. Then verify semantic results and expand the corpus against confirmed opcode gaps. Do not change runtime/JIT implementation based on static speculation alone. Preserve the current three-call execution limit for FreeRTOS groups.
+
+
+## Current emitted-bytecode audit
+
+<text>Current, manifest-bound evidence is available from paired translation run `44879023927` (success), producer commit `3f14d1ff0810b4b5878abfb2feb857dcb9062a49`, artifact ID `14697435593`. Do not conflate these figures with the historical run above.</text>
+
+- Bitcode source artifact: run `44878818621`, ten non-empty groups.
+- Incremental paired build reused six exact SHA-matching pairs (`01_integer32`, `02_integer64`, `03_float`, `06_memory`, `09_freertos_task`, `10_freertos_timer`) and translated only four changed groups (`04_control_flow`, `05_select_convert`, `07_calls_callbacks`, `08_atomics`).
+- All four translator requests succeeded using key slot 5. Key slots 1–4 reported quota exhausted; slots 6–9 were not needed.
+- The emitted-opcode audit decoded all 20 modules (10 JIT + 10 Interpreter) without unknown primary opcodes, truncation or trailing Code bytes. Every pair was byte-identical after clearing only the HOT bit in function headers.
+- 55 functions; 2,485 primary opcode occurrences (including the `0xFC` prefix); 30 extended instructions.
+- 151 distinct primary opcode byte values were emitted out of 202 implemented Interpreter dispatch entries: **74.75%**. Every generated primary byte has an Interpreter dispatch handler.
+- 12 of 14 implemented `0xFC` extended subopcodes were emitted: **85.71%**.
+- The machine-readable and Markdown reports are stored in the paired artifact as `emitted-opcode-audit.json` and `emitted-opcode-audit.md`.
+
+### Actual primary-opcode gaps
+
+The current corpus does not emit these 51 implemented primary opcode bytes:
+
+`00 01 05 0B 11 1C 2C 2D 2E 3D 3E 4A 71 73 7B 81 83 89 8E 92 95 96 9C A7 A8 A9 AB AF B0 B1 B3 B4 B5 C7 C8 CD CE CF D0 D1 D2 D3 DE DF EE F0 F2 F3 F4 F5 F6`
+
+The actual generated set includes `0x0D CALL_INDIRECT_PTR`, `0xD7–0xDD` I32 atomic operations, `0xF1` I64 atomic SUB, and `0xEC/0xED` I64 atomic LOAD/STORE. This is evidence of translator output, not yet evidence that every backend implementation is semantically correct.
+
+### Actual extended-opcode gaps
+
+The two implemented extended subopcodes not yet emitted are:
+
+- `0xFC.00 MEMORY.INIT`
+- `0xFC.01 DATA.DROP`
+
+Other extended operations now present include MEMORY.COPY/FILL, TABLE.INIT/COPY/FILL/SIZE/GET/SET and HEAP.REALLOC/FREE/CALLOC/MALLOC.
+
+### Per-group emitted counts
+
+| Group | Functions | Primary occurrences | Distinct primary bytes | Extended occurrences | Distinct extended |
+|---|---:|---:|---:|---:|---:|
+| 01_integer32 | 5 | 377 | 42 | 0 | 0 |
+| 02_integer64 | 6 | 289 | 41 | 0 | 0 |
+| 03_float | 9 | 401 | 62 | 2 | 1 |
+| 04_control_flow | 4 | 99 | 18 | 0 | 0 |
+| 05_select_convert | 8 | 295 | 54 | 0 | 0 |
+| 06_memory | 4 | 358 | 30 | 15 | 6 |
+| 07_calls_callbacks | 12 | 288 | 31 | 13 | 6 |
+| 08_atomics | 3 | 260 | 36 | 0 | 0 |
+| 09_freertos_task | 2 | 49 | 17 | 0 | 0 |
+| 10_freertos_timer | 2 | 69 | 14 | 0 | 0 |
+
+### Runtime status for the current work
+
+- The root shadow-stack frame overlap was fixed: QEMU Interpreter `integer64` and `memory` now pass on both ESP32 and ESP32-C3.
+- Interpreter `CALL_INDIRECT_PTR` now resolves raw linear-memory offsets through `func_ptr_map`; the first Interpreter call of `calls_callbacks` passed on both targets. A later repeated-call failure was traced to the test expecting TABLE size 10 after an earlier call had expanded the persistent table; the test now uses a repeatable lower-bound assertion.
+- The same plain-offset resolution was added to the shared JIT indirect-pointer helper used by Xtensa and RISC-V. A full QEMU run against the latest paired artifact is still required to establish JIT success.
+- `control_flow` and `select_convert` previously failed their aggregate semantic assertions. Their current sources print per-operation diagnostics; the next QEMU log will identify which check is mismatched.
+- `atomics` previously failed its aggregate assertion. The current source prints I32 and I64 result values separately. The next QEMU log will determine whether the issue is in raw atomic opcodes or the RV32 `__atomic_exchange_8` host helper.
+- No complete QEMU PASS for all ten groups has yet been established on the current artifact. Static emitted-opcode coverage must not be described as runtime semantic coverage.
+
