@@ -17,6 +17,12 @@ from clang_group_wrapper import ATOMIC_MARCH, FLOAT_OPTIONS, adjust_clang_args  
 from translator_keys import collect_translator_keys  # noqa: E402
 sys.path.insert(0, str(REPO_ROOT / ".github" / "scripts"))
 from reuse_paired_groups import ReuseError, reuse_unchanged_pairs  # noqa: E402
+from audit_espb_opcodes import (  # noqa: E402
+    AuditError,
+    audit_directory,
+    decode_instruction_stream,
+    verify_interpreter_twin,
+)
 from make_interpreter_variant import (  # noqa: E402
     CODE_SECTION_ID,
     HEADER,
@@ -372,6 +378,67 @@ class PairedReuseTests(unittest.TestCase):
                     previous, bitcode, paired,
                     "smersh1307n2/ESPB", "ESPB_WORK", "a" * 40, 123, "c" * 40
                 )
+
+
+class EmittedOpcodeAuditTests(unittest.TestCase):
+    def test_decoder_counts_primary_extended_and_variable_length_instructions(self) -> None:
+        code = bytes([
+            0xFC, 0x08, 0x00, 0x12,                 # TABLE.SIZE, 2 operands
+            0x09, 0x00, 0x00, 0xAA, 0x02, 0x0B, 0x05,  # typed CALL_IMPORT, 2 args
+            0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,  # BR_TABLE, one target + default
+            0x00,                                   # NOP
+        ])
+        primary, extended, instructions = decode_instruction_stream(code)
+        self.assertEqual(primary[0xFC], 1)
+        self.assertEqual(primary[0x09], 1)
+        self.assertEqual(primary[0x04], 1)
+        self.assertEqual(primary[0x00], 1)
+        self.assertEqual(extended[0x08], 1)
+        self.assertEqual(len(instructions), 4)
+
+    def test_decoder_rejects_unknown_and_truncated_instructions(self) -> None:
+        with self.assertRaises(AuditError):
+            decode_instruction_stream(bytes([0xFE]))
+        with self.assertRaises(AuditError):
+            decode_instruction_stream(bytes([0x04, 0x00, 0x02, 0x00]))
+
+    def test_interpreter_twin_may_differ_only_by_hot_flags(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            jit_path = root / "test.jit.espb"
+            interp_path = root / "test.interpreter.espb"
+            jit_path.write_bytes(make_test_module((HOT, HOT)))
+            interp_path.write_bytes(make_test_module((0, 0)))
+
+            from audit_espb_opcodes import audit_module
+            jit = audit_module(jit_path)
+            verify_interpreter_twin(jit, interp_path)
+
+            corrupt = bytearray(interp_path.read_bytes())
+            corrupt[-1] ^= 0x01
+            interp_path.write_bytes(corrupt)
+            with self.assertRaises(AuditError):
+                verify_interpreter_twin(jit, interp_path)
+
+    def test_directory_audit_checks_ten_pairs_and_dispatch_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for index in range(10):
+                stem = f"{index:02d}_group"
+                (root / f"{stem}.jit.espb").write_bytes(make_test_module((HOT, HOT)))
+                (root / f"{stem}.interpreter.espb").write_bytes(make_test_module((0, 0)))
+            dispatch = root / "runtime.c"
+            dispatch.write_text(
+                "dispatch_table[0x11] = &&op_0x11;\n"
+                "dispatch_table[0x44] = &&op_0x44;\n",
+                encoding="utf-8",
+            )
+            report = audit_directory(root, dispatch, expected_groups=10)
+            self.assertEqual(report["group_count"], 10)
+            self.assertEqual(report["function_count"], 20)
+            self.assertEqual(report["primary_instruction_count"], 40)
+            self.assertEqual(report["unique_primary_bytes"], ["0x11", "0x44"])
+            self.assertEqual(report["interpreter_supported_not_emitted"], [])
 
 
 class TranslatorKeyPoolTests(unittest.TestCase):
