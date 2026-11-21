@@ -277,8 +277,8 @@ jobs:
 
           for group in integer32 integer64 float control_flow select_convert memory calls_callbacks atomics freertos_task freertos_timer; do
             group_passes="$(grep -F -c "[ESPB_GROUP] $group=PASS" qemu.log || true)"
-            if [ "$group_passes" -lt "$expected_group_passes" ]; then
-              echo "Missing semantic PASS for $group: expected=$expected_group_passes found=$group_passes"
+            if [ "$group_passes" -lt 2 ]; then
+              echo "Missing interpreter/JIT semantic PASS for $group: expected=2 found=$group_passes"
               exit 1
             fi
           done
