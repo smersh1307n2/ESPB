@@ -20,7 +20,9 @@ A successful bitcode-only build is available without spending translator quota:
 - Bitcode workflow run: `44869019337` (success), branch `ESPB_WORK`, source commit `24049ced8f2ab7a43f0c903abee6d24130a6d387`.
 - Artifact: `espb-opcode-groups-bc`, artifact ID `14693600365`; ten non-empty .bc files.
 - LLVM module target for the inspected groups: `riscv32-esp-unknown-elf`.
-- Embedded compiler identity: Espressif Clang 18.1.2; debug compile-unit metadata marks the module `isOptimized=true`.
+- Build environment: ESP-IDF v5.4.1 and Espressif Clang `esp-18.1.2_20240912`.
+- Effective compile target for these groups: `--target=riscv32-esp-elf -march=rv32imc_zicsr_zifencei -mabi=ilp32 -Og`. This is `-Og`, not an unoptimized `-O0` build. The captured compile command contains no explicit `-ffast-math` or `-ffp-contract` switch; do not infer a non-default FP contraction policy from that absence.
+- Debug compile-unit metadata marks the module `isOptimized=true`.
 - `03_float.bc` SHA-256: `e7dd468a25e83aeddb1e109f367ff4ac9bb307c8327e0a19ee8fe29e39a98fdb`.
 - `08_atomics.bc` SHA-256: `947b5cf0682bc035607f04297169365117f1161a97af4779dc8e0428021fd539`.
 
