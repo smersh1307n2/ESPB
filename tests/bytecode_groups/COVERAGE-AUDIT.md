@@ -133,3 +133,19 @@ Other extended operations now present include MEMORY.COPY/FILL, TABLE.INIT/COPY/
 - `atomics` previously failed its aggregate assertion. The current source prints I32 and I64 result values separately. The next QEMU log will determine whether the issue is in raw atomic opcodes or the RV32 `__atomic_exchange_8` host helper.
 - No complete QEMU PASS for all ten groups has yet been established on the current artifact. Static emitted-opcode coverage must not be described as runtime semantic coverage.
 
+## Translator coverage versus runtime-opcode coverage
+
+The current **151 / 202 (74.75%)** figure is a static count of distinct primary opcode bytes emitted by this ten-group LLVM-to-ESPB corpus, divided by the number of primary dispatch entries discovered in the Interpreter source. It is not a measure of dynamically executed opcodes, semantic correctness, or complete JIT-backend support.
+
+Do not treat every one of the 51 not-emitted primary bytes as a missing C test case. The LLVM bitcode frontend and the ESPB translator do not necessarily expose a one-to-one lowering path for every runtime opcode. Classify each gap before changing the C corpus:
+
+1. **Source/IR expressible:** an equivalent operation exists in LLVM IR and can be retained in a test function.
+2. **Translator lowering gap:** the operation is present in the exact input bitcode but the translator does not emit the corresponding ESPB opcode.
+3. **Not expressible through the current LLVM frontend path:** the opcode represents an ESPB/runtime operation with no reliable source-level lowering route.
+4. **Already emitted but not dynamically reached or semantically asserted:** fix the test path/assertion, not the translator.
+
+For categories 2 and 3, add a separate raw-ESPB fixture path rather than spending translator quota or inventing C expressions that cannot produce the target opcode. Each fixture must have a valid module/function/signature context and valid operands, and must run in both modes: Interpreter with HOT clear and JIT with HOT set. Keep fixture provenance and counts separate from translator-produced modules, then combine them only in a higher-level runtime coverage report.
+
+The next coverage matrix should track, per opcode, the source/IR construct, translator result (emitted / unsupported / optimized away), fixture source (translated / hand-authored), Interpreter execution, Xtensa JIT execution, RISC-V JIT execution, and semantic assertion. The current audit script checks emitted primary bytes against the Interpreter dispatch table; that check alone does not prove matching JIT dispatch coverage. Audit each JIT backend's opcode handlers as a separate implementation set.
+
+The two current extended gaps, `FC.00 MEMORY.INIT` and `FC.01 DATA.DROP`, must be classified by the same process. Do not count a prefix byte `0xFC` as coverage of an individual extended subopcode.
