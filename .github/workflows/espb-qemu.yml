@@ -11,6 +11,7 @@ on:
       - 'qemu/**'
       - 'tools/qemu/**'
       - '.github/workflows/espb-qemu.yml'
+      - '.github/workflows/generate_runtime_corpus.yml'
   workflow_dispatch:
 
 permissions:
