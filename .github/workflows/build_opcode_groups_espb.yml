@@ -98,7 +98,6 @@ jobs:
             --repository "$GITHUB_REPOSITORY" \
             --branch "$GITHUB_REF_NAME" \
             --run-id "$GITHUB_RUN_ID" \
-            --expected-source-commit "$GITHUB_SHA" \
             --expected-source-commit "$GITHUB_SHA"
 
       - name: Upload paired ESPB modules and provenance

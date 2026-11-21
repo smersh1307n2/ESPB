@@ -84,7 +84,7 @@ jobs:
               candidates = [get_json(f"{api}/actions/runs/{requested}")]
           else:
               payload = get_json(
-                  f"{api}/actions/runs?branch=ESPB_WORK&status=success&per_page=100"
+                  f"{api}/actions/runs?branch=ESPB_WORK&per_page=100"
               )
               candidates = payload.get("workflow_runs", [])
 
@@ -132,8 +132,7 @@ jobs:
       - name: Verify corpus provenance and source compatibility
         shell: bash
         env:
-          PAIRED_RUN_ID: ${{ steps.paired_run.outputs.run_id }}}
-          PAIRED_SOURCE_SHA: ${{ steps.paired_run.outputs.source_sha }}
+          PAIRED_RUN_ID: ${{ steps.paired_run.outputs.run_id }}
           PAIRED_SOURCE_SHA: ${{ steps.paired_run.outputs.source_sha }}
         run: |
           set -euo pipefail
