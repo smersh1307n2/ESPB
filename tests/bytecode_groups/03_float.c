@@ -5,6 +5,7 @@
 
 JIT_HOT __attribute__((optnone)) static float float_math(float a, float b)
 {
+#pragma clang fp contract(off)
     return (a * b) + (a / b) - (b - a);
 }
 
