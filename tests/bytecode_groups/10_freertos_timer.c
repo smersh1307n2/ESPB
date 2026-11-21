@@ -16,13 +16,14 @@ JIT_HOT static void timer_callback(TimerHandle_t timer)
 JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
 {
     timer_result = 0;
-    TimerHandle_t timer = xTimerCreate("espb_group_timer", pdMS_TO_TICKS(2),
+    // Use ticks directly: a 2 ms period rounds to zero with a 100 Hz tick rate.
+    TimerHandle_t timer = xTimerCreate("espb_group_timer", 2,
                                        pdFALSE, (void *)(uintptr_t)0x1234u,
                                        timer_callback);
     BaseType_t started = pdFAIL;
     if (timer != NULL) {
         started = xTimerStart(timer, 0);
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(5);
         (void)xTimerStop(timer, 0);
         (void)xTimerDelete(timer, 0);
     }

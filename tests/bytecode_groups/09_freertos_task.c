@@ -18,7 +18,8 @@ JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
 {
     task_result = 0;
     TaskHandle_t handle = NULL;
-    BaseType_t created = xTaskCreate(task_worker, "espb_group_task", 2048,
+    // ESP-IDF expresses task stack depth in bytes; the ESPB callback needs room for its trampoline.
+    BaseType_t created = xTaskCreate(task_worker, "espb_group_task", 8192,
                                      (void *)(uintptr_t)13u, tskIDLE_PRIORITY + 1,
                                      &handle);
     if (created == pdPASS) {
