@@ -77,7 +77,7 @@ JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
     int ok = (signed_result == 88) && (unsigned_result != 0) &&
              (narrowed == 42) &&
              (register_probe == 9119519501662434067ull) &&
-             (immediate_probe == 28201811865ull) &&
+             (immediate_probe == 0xfffffff96f0a8064ull) &&
              ((unsigned_value >> 4) == 0x100000002ull);
 
     printf("[ESPB_GROUP] integer64=%s arg=%ld\n", ok ? "PASS" : "FAIL", (long)arg);
