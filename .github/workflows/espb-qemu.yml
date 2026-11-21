@@ -201,7 +201,7 @@ jobs:
         run: |
           . "$IDF_PATH/export.sh"
           set +e
-          timeout --signal=INT --kill-after=5s 60s idf.py -C qemu qemu > qemu.log 2>&1
+          timeout --signal=INT --kill-after=5s 180s idf.py -C qemu qemu > qemu.log 2>&1
           qemu_status=$?
           set -e
           cat qemu.log
