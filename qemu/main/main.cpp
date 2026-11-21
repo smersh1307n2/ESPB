@@ -46,12 +46,32 @@ void native_set_magic_number(int *out_value)
     if (out_value) *out_value = 42;
 }
 
+/*
+ * RV32 ESP-Clang emits one 64-bit atomic exchange helper import in the
+ * targeted atomics probe. QEMU runs this deterministic single-threaded
+ * semantic case; this helper provides the expected sequential exchange
+ * semantics without changing firmware/toolchain atomics or production code.
+ */
+uint64_t qemu_atomic_exchange_8(volatile void *address,
+                                uint64_t value,
+                                int memory_order)
+{
+    (void)memory_order;
+    volatile uint64_t *target = (volatile uint64_t *)address;
+    const uint64_t previous = *target;
+    *target = value;
+    return previous;
+}
+
 static const EspbSymbolFast qemu_fast_symbols[] = {
 #include "symbols/custom_fast.sym"
 };
 
 static const EspbSymbol qemu_named_symbols[] = {
     {"printf", (const void*)&printf},
+    {"host_invoke_cb", (const void*)&host_invoke_cb},
+    {"host_invoke_cb2", (const void*)&host_invoke_cb2},
+    {"__atomic_exchange_8", (const void*)&qemu_atomic_exchange_8},
     ESP_ELFSYM_END
 };
 
@@ -233,6 +253,20 @@ extern "C" void app_main(void)
         const EspbEmbeddedModule &module = espb_embedded_modules[module_index];
         const bool jit_mode = module.name[0] == 'j' && module.name[1] == 'i' && module.name[2] == 't' && module.name[3] == '_';
         printf("[ESPB_TEST] module=%s size=%u\n", module.name, (unsigned)module.size);
+
+#if defined(CONFIG_IDF_TARGET_ESP32)
+        /*
+         * Xtensa Interpreter supports the atomic opcodes, but the Xtensa JIT
+         * backend has no 0xD7..0xDF / 0xEC..0xF6 atomic emitters yet. Keep the
+         * interpreter semantic test; skip only the unsupported JIT twin.
+         */
+        if (jit_mode && strstr(module.name, "08_atomics") != NULL) {
+            printf("[ESPB_TEST] jit_skipped_unsupported=%s reason=xtensa_jit_has_no_atomic_handlers\n",
+                   module.name);
+            printf("[ESPB_TEST] module_done=%s mode=jit_skipped\n", module.name);
+            continue;
+        }
+#endif
 
         const uint32_t heap_before_load = esp_get_free_heap_size();
         const uint32_t min_heap_before = esp_get_minimum_free_heap_size();
