@@ -7960,7 +7960,11 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Call wrapper: bool jit_xtensa_atomic_compare_exchange_4(ptr, expected*, desired)
                 emit_call_helper(&ctx, &litpool, (void*)jit_xtensa_atomic_compare_exchange_4);
 
-                // Load the old/current value from stack to store in rd
+                // Return value in a10 is success; write it to Rexp.
+                emit_s32i(&ctx, 10, 6, (uint16_t)(rexp * 8));
+                emit_movi_n(&ctx, 8, 0);
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rexp * 8 + 4));
+                // Load the old/current value from stack to store in rd.
                 emit_l32i(&ctx, 8, 1, 0);
                 emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
                 emit_movi_n(&ctx, 8, 0);
@@ -8104,10 +8108,13 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Call wrapper: bool jit_xtensa_atomic_compare_exchange_8(ptr, expected*, desired)
                 emit_call_helper(&ctx, &litpool, (void*)jit_xtensa_atomic_compare_exchange_8);
 
-                // Result: expected value (possibly updated) is on stack, return value in a10 is success/fail
-                // Load the old value from stack to store in rd
-                emit_l32i(&ctx, 8, 1, 0);   // low from stack
-                emit_l32i(&ctx, 9, 1, 4);   // high from stack
+                // Result: expected value (possibly updated) is on stack, return value in a10 is success/fail.
+                // Store success in Rexp, then copy the old/current value to Rd.
+                emit_s32i(&ctx, 10, 6, (uint16_t)(rexp * 8));
+                emit_movi_n(&ctx, 8, 0);
+                emit_s32i(&ctx, 8, 6, (uint16_t)(rexp * 8 + 4));
+                emit_l32i(&ctx, 8, 1, 0);   // old/current low
+                emit_l32i(&ctx, 9, 1, 4);   // old/current high
                 emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
                 emit_s32i(&ctx, 9, 6, (uint16_t)(rd * 8 + 4));
                 break;
