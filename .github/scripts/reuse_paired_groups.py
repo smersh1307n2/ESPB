@@ -25,6 +25,10 @@ def sha256(path: Path) -> str:
 
 
 def safe_file(root: Path, relative: str) -> Path:
+    # Manifest paths are repository-relative (.work/paired/...), while the
+    # uploaded artifact contains only the selected .work subtree (paired/...).
+    if relative.startswith(".work/"):
+        relative = relative[len(".work/"):]
     path = (root / relative).resolve()
     try:
         path.relative_to(root.resolve())
