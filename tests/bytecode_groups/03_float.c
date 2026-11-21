@@ -16,7 +16,7 @@ JIT_HOT static double double_math(double a, double b)
 }
 
 /* Use Clang builtins so fabs/sqrt/min/max lowering is visible in the BC. */
-JIT_PROBE static void float_intrinsics(float a, float b, float *out)
+JIT_HOT static void float_intrinsics(float a, float b, float *out)
 {
     out[0] = __builtin_fabsf(a);
     out[1] = __builtin_sqrtf(b * b);
@@ -24,7 +24,7 @@ JIT_PROBE static void float_intrinsics(float a, float b, float *out)
     out[3] = __builtin_fmaxf(a, b);
 }
 
-JIT_PROBE static void double_intrinsics(double a, double b, double *out)
+JIT_HOT static void double_intrinsics(double a, double b, double *out)
 {
     out[0] = __builtin_fabs(a);
     out[1] = __builtin_sqrt(b * b);
