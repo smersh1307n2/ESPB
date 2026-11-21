@@ -37,15 +37,15 @@ JIT_PROBE static int32_t pointer_roundtrip(int32_t *pointer)
     return *restored;
 }
 
-JIT_PROBE static uint64_t conversion_s8_shift_probe(int32_t value) {
+JIT_PROBE JIT_PROBE static uint64_t conversion_s8_shift_probe(int32_t value) {
     return ((uint64_t)(int64_t)(int8_t)value) << 8;
 }
 
-static uint64_t conversion_s16_shift_probe(int32_t value) {
+JIT_PROBE static uint64_t conversion_s16_shift_probe(int32_t value) {
     return ((uint64_t)(int64_t)(int16_t)value) << 32;
 }
 
-static uint64_t conversion_s32_probe(int32_t value) {
+JIT_PROBE static uint64_t conversion_s32_probe(int32_t value) {
     return (uint64_t)(int64_t)value;
 }
 
