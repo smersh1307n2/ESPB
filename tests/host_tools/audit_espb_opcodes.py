@@ -251,7 +251,7 @@ def verify_interpreter_twin(jit: dict[str, Any], interpreter_path: Path) -> None
 def read_interpreter_dispatch(path: Path) -> set[int]:
     source = path.read_text(encoding="utf-8-sig")
     matches = re.findall(
-        r"dispatch_table\[(0x[0-9A-Fa-f]{2})\]\\s*=\\s*&&([A-Za-z0-9_]+)",
+        r"dispatch_table\[(0x[0-9A-Fa-f]{2})\]\s*=\s*&&([A-Za-z0-9_]+)",
         source,
     )
     return {int(op, 16) for op, handler in matches if handler != "op_unhandled"}
@@ -369,7 +369,7 @@ def render_markdown(report: dict[str, Any]) -> str:
         "Each JIT/Interpreter pair was checked byte-for-byte after clearing only "
         "the HOT bit in each function header."
     )
-    return "\\n".join(lines)
+    return "\n".join(lines)
 
 
 def main() -> int:
@@ -389,7 +389,7 @@ def main() -> int:
     markdown = render_markdown(report)
     if args.json_out:
         args.json_out.parent.mkdir(parents=True, exist_ok=True)
-        args.json_out.write_text(json.dumps(report, indent=2) + "\\n", encoding="utf-8")
+        args.json_out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     if args.markdown_out:
         args.markdown_out.parent.mkdir(parents=True, exist_ok=True)
         args.markdown_out.write_text(markdown + "\\n", encoding="utf-8")
