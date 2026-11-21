@@ -100,7 +100,12 @@ JIT_PROBE static int32_t table_opcode_probe(void)
     int32_t index1 = OP_table_get(0, 1);
     int32_t index2 = OP_table_get(0, 2);
 
-    return initial_size == 10 && first_size >= 9 && expanded_size >= 18 &&
+    /*
+     * The module table persists across repeated app_main calls. Its initial
+     * size is 10 on first entry and may already be expanded on later entries.
+     * Test lower bounds and the actual mutations, not a one-shot initial size.
+     */
+    return initial_size >= 10 && first_size >= 9 && expanded_size >= 18 &&
            index0 == 0 && index1 == 1 && index2 == 2;
 }
 
