@@ -259,7 +259,7 @@ extern "C" void app_main(void)
             // Compilation and register allocation are outside every execution timer.
             result = espb_jit_precompile_hot_functions(handle->instance, NULL);
             if (result != ESPB_OK) {
-                printf("[ESPB_TEST] precompile_failed=%s error=%d\\n", module.name, (int)result);
+                printf("[ESPB_TEST] precompile_failed=%s error=%d\n", module.name, (int)result);
                 espb_unload_module(handle);
                 return;
             }
@@ -272,7 +272,7 @@ extern "C" void app_main(void)
             EspbFunctionBody *body = &handle->module->function_bodies[i];
             const uint16_t declared_regs = body->header.num_virtual_regs;
             const uint16_t max_used_regs = (uint16_t)body->header.max_reg_used + 1u;
-            printf("[ESPB_FRAME] module=%s function=%u vregs=%u max_reg_used=%u max_used_regs=%u frame_size=%u\\n",
+            printf("[ESPB_FRAME] module=%s function=%u vregs=%u max_reg_used=%u max_used_regs=%u frame_size=%u\n",
                    module.name, (unsigned)i, (unsigned)declared_regs,
                    (unsigned)body->header.max_reg_used, (unsigned)max_used_regs,
                    (unsigned)body->header.frame_size);
@@ -287,22 +287,22 @@ extern "C" void app_main(void)
 
         if (jit_mode) {
             if (hot_count == 0 || compiled_hot_count != hot_count) {
-                printf("[ESPB_TEST] jit_not_ready=%s hot=%u compiled=%u\\n",
+                printf("[ESPB_TEST] jit_not_ready=%s hot=%u compiled=%u\n",
                        module.name, (unsigned)hot_count, (unsigned)compiled_hot_count);
                 espb_unload_module(handle);
                 return;
             }
-            printf("[ESPB_TEST] jit_ready=%s hot=%u compiled=%u jit_bytes=%u\\n",
+            printf("[ESPB_TEST] jit_ready=%s hot=%u compiled=%u jit_bytes=%u\n",
                    module.name, (unsigned)hot_count, (unsigned)compiled_hot_count,
                    (unsigned)jit_code_bytes);
         } else {
             if (hot_count != 0 || compiled_hot_count != 0) {
-                printf("[ESPB_TEST] interpreter_not_clean=%s hot=%u compiled=%u\\n",
+                printf("[ESPB_TEST] interpreter_not_clean=%s hot=%u compiled=%u\n",
                        module.name, (unsigned)hot_count, (unsigned)compiled_hot_count);
                 espb_unload_module(handle);
                 return;
             }
-            printf("[ESPB_TEST] interp_ready=%s hot=0 compiled=0\\n", module.name);
+            printf("[ESPB_TEST] interp_ready=%s hot=0 compiled=0\n", module.name);
         }
 
         const uint32_t heap_after_ready = esp_get_free_heap_size();
@@ -315,19 +315,19 @@ extern "C" void app_main(void)
             for (int call = 1; call < 3; ++call) {
                 result = espb_call_function_sync(handle, "app_main", args, 3, NULL);
                 if (result != ESPB_OK) {
-                    printf("[ESPB_TEST] call_failed=%s call=%d error=%d\\n",
+                    printf("[ESPB_TEST] call_failed=%s call=%d error=%d\n",
                            module.name, call + 1, (int)result);
                     espb_unload_module(handle);
                     return;
                 }
             }
-            printf("[ESPB_TEST] bounded_rtos_calls=%s count=3\\n", module.name);
+            printf("[ESPB_TEST] bounded_rtos_calls=%s count=3\n", module.name);
         } else {
             const bool core_bench_ok = jit_mode
                 ? qemu_benchmark_raw_jit(handle, "app_main", args, 3)
                 : qemu_benchmark_interpreter_core(handle, "app_main", args, 3);
             if (!core_bench_ok) {
-                printf("[ESPB_TEST] core_bench_failed=%s\\n", module.name);
+                printf("[ESPB_TEST] core_bench_failed=%s\n", module.name);
                 espb_unload_module(handle);
                 return;
             }
@@ -343,19 +343,19 @@ extern "C" void app_main(void)
                 const uint32_t end_cycles = esp_cpu_get_cycle_count();
                 samples_us[i] = esp_timer_get_time() - start_us;
                 samples_cycles[i] = end_cycles - start_cycles;
-                printf("[ESPB_BENCH] module=%s sample_%d_us=%lld cycles_start=%u cycles_end=%u cycles_delta=%u\\n",
+                printf("[ESPB_BENCH] module=%s sample_%d_us=%lld cycles_start=%u cycles_end=%u cycles_delta=%u\n",
                        module.name, i, (long long)samples_us[i],
                        (unsigned)start_cycles, (unsigned)end_cycles,
                        (unsigned)samples_cycles[i]);
                 if (result != ESPB_OK) {
-                    printf("[ESPB_TEST] call_failed=%s error=%d\\n", module.name, (int)result);
+                    printf("[ESPB_TEST] call_failed=%s error=%d\n", module.name, (int)result);
                     espb_unload_module(handle);
                     return;
                 }
             }
 
             qemu_sort_samples(samples_us, samples_cycles, SAMPLE_COUNT);
-            printf("[ESPB_BENCH] module=%s app_main_median_us=%lld app_main_median_cycles=%u\\n",
+            printf("[ESPB_BENCH] module=%s app_main_median_us=%lld app_main_median_cycles=%u\n",
                    module.name, (long long)samples_us[SAMPLE_COUNT / 2],
                    (unsigned)samples_cycles[SAMPLE_COUNT / 2]);
         }
