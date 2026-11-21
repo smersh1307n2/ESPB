@@ -85,35 +85,51 @@ void espb_register_symbol_table(uint8_t module_num, const EspbSymbol *symbols) {
     ESP_LOGI(TAG, "Registered symbol table for module_num %u", (unsigned)module_num);
 }
 __attribute__((aligned(32)))
-void espb_register_idf_fast_table(const EspbSymbolFast *symbols, uint32_t count) {
-    // Регистрируем как специальную запись в таблице (module_num = 0xFF для idf_fast)
+static void register_fast_symbol_table(uint8_t marker,
+                                        const EspbSymbolFast *symbols,
+                                        uint32_t count,
+                                        uint8_t flags) {
+    if (!symbols) {
+        ESP_LOGE(TAG, "Failed to register fast symbol table: null symbols");
+        return;
+    }
+
+    // init_cpp_symbols() is called by every module load. Keep the two
+    // process-wide fast tables idempotent instead of consuming one slot per
+    // loaded module.
+    for (int i = 0; i < g_num_symbol_tables; ++i) {
+        if (g_symbol_tables[i].module_num == marker) {
+            g_symbol_tables[i].symbols = NULL;
+            g_symbol_tables[i].fast_symbols = symbols;
+            g_symbol_tables[i].fast_count = count;
+            g_symbol_tables[i].fast_flags = flags;
+            return;
+        }
+    }
+
     if (g_num_symbol_tables >= MAX_SYMBOL_TABLES) {
         ESP_LOGE(TAG, "Too many symbol tables registered");
         return;
     }
-    g_symbol_tables[g_num_symbol_tables].module_num = 0xFF;  // Специальный маркер для idf_fast
-    g_symbol_tables[g_num_symbol_tables].symbols = NULL;
-    g_symbol_tables[g_num_symbol_tables].fast_symbols = symbols;
-    g_symbol_tables[g_num_symbol_tables].fast_count = count;
-    g_symbol_tables[g_num_symbol_tables].fast_flags = IMPORT_FLAG_FAST_IDF;
-    g_num_symbol_tables++;
 
-    ESP_LOGI(TAG, "Registered idf_fast table: count=%u", (unsigned)count);
+    ModuleSymbolTable *slot = &g_symbol_tables[g_num_symbol_tables++];
+    memset(slot, 0, sizeof(*slot));
+    slot->module_num = marker;
+    slot->fast_symbols = symbols;
+    slot->fast_count = count;
+    slot->fast_flags = flags;
 }
+
+__attribute__((aligned(32)))
+void espb_register_idf_fast_table(const EspbSymbolFast *symbols, uint32_t count) {
+    // 0xFF is reserved for the process-wide ESP-IDF fast table.
+    register_fast_symbol_table(0xFF, symbols, count, IMPORT_FLAG_FAST_IDF);
+}
+
 __attribute__((aligned(32)))
 void espb_register_custom_fast_table(const EspbSymbolFast *symbols, uint32_t count) {
-    // Регистрируем как специальную запись в таблице (module_num = 0xFE для custom_fast)
-    if (g_num_symbol_tables >= MAX_SYMBOL_TABLES) {
-        ESP_LOGE(TAG, "Too many symbol tables registered");
-        return;
-    }
-    g_symbol_tables[g_num_symbol_tables].module_num = 0xFE;  // Специальный маркер для custom_fast
-    g_symbol_tables[g_num_symbol_tables].symbols = NULL;
-    g_symbol_tables[g_num_symbol_tables].fast_symbols = symbols;
-    g_symbol_tables[g_num_symbol_tables].fast_count = count;
-    g_symbol_tables[g_num_symbol_tables].fast_flags = IMPORT_FLAG_FAST_CUSTOM;
-    g_num_symbol_tables++;
-    // ESP_LOGI(TAG, "Registered custom_fast table: count=%u", (unsigned)count);
+    // 0xFE is reserved for the process-wide user fast table.
+    register_fast_symbol_table(0xFE, symbols, count, IMPORT_FLAG_FAST_CUSTOM);
 }
 
 const void* espb_lookup_host_symbol(uint8_t module_num, const char *entity_name) {
