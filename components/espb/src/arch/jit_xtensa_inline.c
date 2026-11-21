@@ -794,6 +794,7 @@ static void jit_call_espb_function_xtensa(EspbInstance* instance, uint32_t local
             callee_regs[i] = v_regs[i];
         }
 
+#if defined(ESPB_JIT_CALL_TRACE) && ESPB_JIT_CALL_TRACE
         static uint32_t debug_call_logs = 0;
         const bool trace_call = (instance != NULL && instance->module != NULL &&
                                  instance->module->num_imported_funcs == 0u &&
@@ -806,14 +807,17 @@ static void jit_call_espb_function_xtensa(EspbInstance* instance, uint32_t local
                      (unsigned)num_args, (unsigned)needed_regs, (void *)callee_regs,
                      num_args ? (unsigned)V_U32(callee_regs[0]) : 0u);
         }
+#endif
 
         jit_func(instance, callee_regs);
 
+#if defined(ESPB_JIT_CALL_TRACE) && ESPB_JIT_CALL_TRACE
         if (trace_call) {
             ESP_LOGI(TAG, "[jit-call-debug] return local=%u result0=0x%08x",
                      (unsigned)local_func_idx,
                      sig->num_returns ? (unsigned)V_U32(callee_regs[0]) : 0u);
         }
+#endif
 
         // Copy return value back
         if (sig->num_returns > 0) {
