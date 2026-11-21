@@ -1473,8 +1473,13 @@ op_unhandled:
                     // 4. Изолируем аргументы во временном буфере
                     Value temp_args[FFI_ARGS_MAX];
                     uint32_t num_args_to_copy = MIN(callee_sig->num_params, FFI_ARGS_MAX);
-                    for (uint32_t i = 0; i < num_args_to_copy; i++) {
-                        if(i < num_virtual_regs) temp_args[i] = locals[i];
+                    uint32_t copied_args = num_args_to_copy;
+                    if (copied_args > num_virtual_regs) copied_args = num_virtual_regs;
+                    if (copied_args > callee_body->header.num_virtual_regs) {
+                        copied_args = callee_body->header.num_virtual_regs;
+                    }
+                    for (uint32_t i = 0; i < copied_args; ++i) {
+                        temp_args[i] = locals[i];
                     }
 
                     // 5. Выделяем новый кадр
@@ -1483,9 +1488,12 @@ op_unhandled:
 
                     // 6. Копируем аргументы в новый кадр
                     Value* callee_locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->fp);
-                    memset(callee_locals, 0, callee_frame_size);
-                    for (uint32_t i = 0; i < num_args_to_copy; i++) {
-                        if (i < callee_body->header.num_virtual_regs) callee_locals[i] = temp_args[i];
+                    for (uint32_t i = 0; i < copied_args; ++i) {
+                        callee_locals[i] = temp_args[i];
+                    }
+                    if (copied_args < callee_body->header.num_virtual_regs) {
+                        memset(callee_locals + copied_args, 0,
+                               (size_t)(callee_body->header.num_virtual_regs - copied_args) * sizeof(Value));
                     }
                     
                     // 7. Обновляем контекст интерпретатора для вызываемой функции
@@ -1915,8 +1923,13 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                     size_t callee_frame_size = callee_body->header.num_virtual_regs * sizeof(Value);
                     Value temp_args[FFI_ARGS_MAX];
                     uint32_t num_args_to_copy = MIN(callee_sig->num_params, FFI_ARGS_MAX);
-                    for (uint32_t i = 0; i < num_args_to_copy; i++) {
-                        if (i < num_virtual_regs) temp_args[i] = locals[i];
+                    uint32_t copied_args = num_args_to_copy;
+                    if (copied_args > num_virtual_regs) copied_args = num_virtual_regs;
+                    if (copied_args > callee_body->header.num_virtual_regs) {
+                        copied_args = callee_body->header.num_virtual_regs;
+                    }
+                    for (uint32_t i = 0; i < copied_args; ++i) {
+                        temp_args[i] = locals[i];
                     }
                     
                     int return_pc = (int)(pc - instructions_ptr);
@@ -1976,11 +1989,12 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                     // --- Общая логика для обоих путей ---
                     Value* callee_locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->fp);
                     
-                    if (num_args_to_copy < callee_body->header.num_virtual_regs) {
-                        memset(callee_locals, 0, callee_frame_size);
-                    }
-                    for (uint32_t i = 0; i < num_args_to_copy; i++) {
+                    for (uint32_t i = 0; i < copied_args; ++i) {
                         callee_locals[i] = temp_args[i];
+                    }
+                    if (copied_args < callee_body->header.num_virtual_regs) {
+                        memset(callee_locals + copied_args, 0,
+                               (size_t)(callee_body->header.num_virtual_regs - copied_args) * sizeof(Value));
                     }
 
                     local_func_idx = local_func_idx_to_call;
