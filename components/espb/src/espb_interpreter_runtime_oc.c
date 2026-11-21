@@ -1003,8 +1003,14 @@ EspbResult espb_call_function(EspbInstance *instance, ExecutionContext *exec_ctx
 
     // Поддержка вызова любой локальной функции: func_idx после импортов
     if (func_idx >= num_imported_funcs && func_idx < num_imported_funcs + module->num_functions) {
+        // A root call owns the first shadow-stack frame. Reserve its range before
+        // any nested leaf call can place a callee at exec_ctx->sp.
+        const bool is_root_call = (exec_ctx->call_stack_top == 0);
+        const size_t entry_saved_sp = exec_ctx->sp;
+        const size_t entry_saved_fp = exec_ctx->fp;
+
         // If this is the initial entry point, push a base frame so ALLOCA can work.
-        if (exec_ctx->call_stack_top == 0) {
+        if (is_root_call) {
             uint32_t entry_local_idx = func_idx - num_imported_funcs;
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
             ESP_LOGD(TAG, "Initial call, pushing base frame for local_func_idx %u", (unsigned)entry_local_idx);
@@ -1061,17 +1067,23 @@ EspbResult espb_call_function(EspbInstance *instance, ExecutionContext *exec_ctx
         // НОВЫЙ КОД: Используем единый виртуальный стек
         size_t frame_size_bytes = num_virtual_regs * sizeof(Value);
         // "Быстрый путь" - проверка стека встроена inline
-        if (__builtin_expect(exec_ctx->sp + frame_size_bytes > exec_ctx->shadow_stack_capacity, 0)) {
+        if (__builtin_expect(entry_saved_sp + frame_size_bytes > exec_ctx->shadow_stack_capacity, 0)) {
             if (_espb_grow_shadow_stack(exec_ctx, frame_size_bytes) < 0) {
                 return ESPB_ERR_OUT_OF_MEMORY;
             }
         }
-        
-// `locals` теперь просто указатель на текущую позицию в `shadow_stack_buffer`
+
+        const size_t frame_base = is_root_call ? entry_saved_sp : exec_ctx->sp;
+        if (is_root_call) {
+            exec_ctx->fp = frame_base;
+            exec_ctx->sp = frame_base + frame_size_bytes;
+        }
+
+// `locals` points at this function's own shadow-stack frame.
 //#if defined(CONFIG_IDF_TARGET_ARCH_RISCV) || defined(__riscv)
 //        register Value *locals asm("s0") = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->sp);
 //#else
-        register Value *locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->sp);
+        register Value *locals = (Value*)(exec_ctx->shadow_stack_buffer + frame_base);
 //#endif
 
         // Initialize only registers that need zero values. Argument registers are
@@ -5198,6 +5210,13 @@ function_epilogue:
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
     ESP_LOGD(TAG, "Function epilogue: Stack frame will be cleaned up by the caller.");
 #endif
+
+    // Rewind the root frame so this ExecutionContext can be reused by the
+    // caller (e.g. repeated benchmark/API calls) without leaking shadow-stack space.
+    if (is_root_call) {
+        exec_ctx->sp = entry_saved_sp;
+        exec_ctx->fp = entry_saved_fp;
+    }
 
     // Контекст выполнения (exec_ctx) освобождается внешней функцией, которая его создала.
 
