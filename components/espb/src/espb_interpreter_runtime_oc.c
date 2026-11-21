@@ -1538,12 +1538,20 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
     // 2. Определяем, является ли указатель смещением в памяти данных или нативным указателем
     uintptr_t mem_base = (uintptr_t)instance->memory_data;
     uintptr_t mem_end = mem_base + instance->memory_size_bytes;
+    uintptr_t pointer_value = (uintptr_t)target_ptr;
     uint32_t data_offset = 0;
-    bool is_in_data_segment = ((uintptr_t)target_ptr >= mem_base && (uintptr_t)target_ptr < mem_end);
-    
+    bool is_in_data_segment = (pointer_value >= mem_base && pointer_value < mem_end);
+
     if (is_in_data_segment) {
-        data_offset = (uint32_t)((uintptr_t)target_ptr - mem_base);
+        // Full host pointer into the allocated linear-memory buffer.
+        data_offset = (uint32_t)(pointer_value - mem_base);
         ESP_LOGD(TAG, "CALL_INDIRECT_PTR: Pointer %p is in data segment at offset %u.", target_ptr, data_offset);
+    } else if (pointer_value > 0 && pointer_value < instance->memory_size_bytes) {
+        // Relocatable function-pointer entries may be represented as offsets
+        // within the ESPB linear-memory image rather than native host pointers.
+        data_offset = (uint32_t)pointer_value;
+        is_in_data_segment = true;
+        ESP_LOGD(TAG, "CALL_INDIRECT_PTR: Pointer value %p is linear-memory offset %u.", target_ptr, data_offset);
     } else {
         ESP_LOGD(TAG, "CALL_INDIRECT_PTR: Pointer %p is a native pointer.", target_ptr);
     }
