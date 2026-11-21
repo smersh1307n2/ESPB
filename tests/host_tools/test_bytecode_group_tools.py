@@ -270,9 +270,9 @@ class PairedReuseTests(unittest.TestCase):
                             "bitcode_sha256": self._write(
                                 previous / "bytecode_groups" / "01_a.bc", old_a_bc
                             ),
-                            "jit_path": "paired/01_a.jit.espb",
+                            "jit_path": ".work/paired/01_a.jit.espb",
                             "jit_sha256": a_jit_hash,
-                            "interpreter_path": "paired/01_a.interpreter.espb",
+                            "interpreter_path": ".work/paired/01_a.interpreter.espb",
                             "interpreter_sha256": a_interp_hash,
                         },
                         {
@@ -280,9 +280,9 @@ class PairedReuseTests(unittest.TestCase):
                             "bitcode_sha256": self._write(
                                 previous / "bytecode_groups" / "02_b.bc", old_b_bc
                             ),
-                            "jit_path": "paired/02_b.jit.espb",
+                            "jit_path": ".work/paired/02_b.jit.espb",
                             "jit_sha256": b_jit_hash,
-                            "interpreter_path": "paired/02_b.interpreter.espb",
+                            "interpreter_path": ".work/paired/02_b.interpreter.espb",
                             "interpreter_sha256": b_interp_hash,
                         },
                     ],
