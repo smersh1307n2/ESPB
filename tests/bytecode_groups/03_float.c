@@ -90,15 +90,21 @@ JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
     uint32_t dcmp = double_compare_probe(5.0, 2.0);
     int32_t conversions = float_conversion_probe(6.75f, -12.5, -17, 19u);
 
-    int ok = (f == 8.5f) && (d == 10.5) && (converted == 13) &&
-             fops[0] == 3.0f && fops[1] == 4.0f &&
-             fops[2] == -3.0f && fops[3] == 4.0f &&
-             dops[0] == 5.0 && dops[1] == 2.0 &&
-             dops[2] == -5.0 && dops[3] == 2.0 &&
-             fcmp == 22u && dcmp == 42u && conversions == -10 &&
-             (a > b) && (x != y);
-
-    printf("[ESPB_GROUP] float=%s arg=%ld\n", ok ? "PASS" : "FAIL", (long)arg);
+    const int ok_math = (f == 8.5f) && (d == 10.5);
+    const int ok_convert = (converted == 13);
+    const int ok_fops = fops[0] == 3.0f && fops[1] == 4.0f &&
+                        fops[2] == -3.0f && fops[3] == 4.0f;
+    const int ok_dops = dops[0] == 5.0 && dops[1] == 2.0 &&
+                        dops[2] == -5.0 && dops[3] == 2.0;
+    const int ok_compare = fcmp == 22u && dcmp == 42u;
+    const int ok_conversion_probe = conversions == -10;
+    const int ok_order = (a > b) && (x != y);
+    const int ok = ok_math && ok_convert && ok_fops && ok_dops &&
+                   ok_compare && ok_conversion_probe && ok_order;
+    printf("[ESPB_DETAIL] float math=%d convert=%d fops=%d dops=%d cmp=%d cvtprobe=%d order=%d\\n",
+           ok_math, ok_convert, ok_fops, ok_dops, ok_compare,
+           ok_conversion_probe, ok_order);
+    printf("[ESPB_GROUP] float=%s arg=%ld\\n", ok ? "PASS" : "FAIL", (long)arg);
     (void)text;
     (void)user_data;
 }
