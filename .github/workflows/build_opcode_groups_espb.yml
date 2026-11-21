@@ -37,7 +37,7 @@ jobs:
       - name: Checkout ESPB_WORK and translator source project
         uses: actions/checkout@v4
         with:
-          ref: ESPB_WORK
+          ref: ${{ github.sha }}
           submodules: recursive
           fetch-depth: 0
 
@@ -97,7 +97,9 @@ jobs:
             --paired-dir "$GITHUB_WORKSPACE/.work/paired" \
             --repository "$GITHUB_REPOSITORY" \
             --branch "$GITHUB_REF_NAME" \
-            --run-id "$GITHUB_RUN_ID"
+            --run-id "$GITHUB_RUN_ID" \
+            --expected-source-commit "$GITHUB_SHA" \
+            --expected-source-commit "$GITHUB_SHA"
 
       - name: Upload paired ESPB modules and provenance
         uses: actions/upload-artifact@v4

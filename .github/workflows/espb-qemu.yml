@@ -132,7 +132,9 @@ jobs:
       - name: Verify corpus provenance and source compatibility
         shell: bash
         env:
-          PAIRED_RUN_ID: ${{ steps.paired_run.outputs.run_id }}
+          PAIRED_RUN_ID: ${{ steps.paired_run.outputs.run_id }}}
+          PAIRED_SOURCE_SHA: ${{ steps.paired_run.outputs.source_sha }}
+          PAIRED_SOURCE_SHA: ${{ steps.paired_run.outputs.source_sha }}
         run: |
           set -euo pipefail
           python tools/bytecode_groups/corpus_manifest.py verify \
@@ -143,6 +145,7 @@ jobs:
             --repository "$GITHUB_REPOSITORY" \
             --branch "$GITHUB_REF_NAME" \
             --expected-run-id "$PAIRED_RUN_ID" \
+            --expected-source-commit "$PAIRED_SOURCE_SHA" \
             --expected-groups 10
 
       - name: Stage and validate paired opcode corpus

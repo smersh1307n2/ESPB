@@ -147,6 +147,7 @@ class CorpusManifestTests(unittest.TestCase):
                 "ESPB_WORK",
                 expected_run_id=12345,
                 expected_groups=1,
+                expected_source_commit=manifest["source_commit"],
             )
             self.assertEqual(verified["producer_run_id"], 12345)
             self.assertEqual(verified["group_count"], 1)
@@ -171,6 +172,28 @@ class CorpusManifestTests(unittest.TestCase):
                     output,
                     "smersh1307n2/ESPB",
                     "ESPB_WORK",
+                )
+
+    def test_manifest_rejects_producer_run_sha_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bitcode_dir, paired_dir, _ = self._make_fixture(root)
+            manifest = create_manifest(
+                root, bitcode_dir, paired_dir, "smersh1307n2/ESPB", "ESPB_WORK", 12345
+            )
+            output = paired_dir / "manifest.json"
+            import json
+
+            output.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ManifestError, "Producer workflow SHA mismatch"):
+                verify_manifest(
+                    root,
+                    bitcode_dir,
+                    paired_dir,
+                    output,
+                    "smersh1307n2/ESPB",
+                    "ESPB_WORK",
+                    expected_source_commit="0000000000000000000000000000000000000000",
                 )
 
 
