@@ -1399,7 +1399,7 @@ void jit_call_espb_function(EspbInstance* instance, uint32_t local_func_idx, Val
         if (!temp_exec_ctx) {
             temp_exec_ctx = init_execution_context();
             if (!temp_exec_ctx) {
-                printf("[jit] ERROR: Failed to create ExecutionContext\\n");
+                printf("[jit] ERROR: Failed to create ExecutionContext\n");
                 return;
             }
         }
@@ -1459,7 +1459,7 @@ slow_path:
     if (!temp_exec_ctx) {
         temp_exec_ctx = init_execution_context();
         if (!temp_exec_ctx) {
-            printf("[jit] ERROR: Failed to create ExecutionContext\\n");
+            printf("[jit] ERROR: Failed to create ExecutionContext\n");
             return;
         }
     }
