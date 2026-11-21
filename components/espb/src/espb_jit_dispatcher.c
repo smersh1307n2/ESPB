@@ -197,15 +197,20 @@ EspbResult execute_jit_code(EspbInstance *instance, void *jit_code, const Value 
 
     // Выделяем v_regs динамически на стеке (VLA - Variable Length Array)
     Value v_regs[actual_regs] __attribute__((aligned(8)));
-    memset(v_regs, 0, actual_regs * sizeof(Value));
-    
-    // Копируем аргументы в регистры R0-R7 (или сколько есть)
+
+    // Argument registers are overwritten below; clear only the remaining
+    // virtual registers to avoid redundant writes on every JIT invocation.
+    uint8_t copied_args = 0;
     if (args) {
-        uint8_t n = num_args;
-        if (n > actual_regs) n = actual_regs;
-        for (uint8_t i = 0; i < n; i++) {
+        copied_args = num_args;
+        if (copied_args > actual_regs) copied_args = (uint8_t)actual_regs;
+        for (uint8_t i = 0; i < copied_args; ++i) {
             v_regs[i] = args[i];
         }
+    }
+    if ((uint16_t)copied_args < actual_regs) {
+        memset(v_regs + copied_args, 0,
+               (size_t)(actual_regs - copied_args) * sizeof(Value));
     }
     
     // ОПТИМИЗАЦИЯ #2: Убраны избыточные проверки (только в debug режиме)
