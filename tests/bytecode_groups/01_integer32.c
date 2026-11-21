@@ -79,8 +79,8 @@ JIT_HOT static uint32_t integer_bits(uint32_t value)
 
 JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
 {
-    const int32_t a = arg;
-    const int32_t b = arg / 8;
+    const int32_t a = arg + 17;
+    const int32_t b = arg / 8 + 3;
     const int32_t neg = -17;
     const uint32_t bits = (uint32_t)arg ^ 0x12345678u;
 
