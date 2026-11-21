@@ -470,6 +470,10 @@ class WorkflowContractTests(unittest.TestCase):
 
         self.assertIn("previous_pair_run_id=", workflow)
         self.assertIn("previous_pair_source_sha", workflow)
+        self.assertIn("PREVIOUS_PAIR_RUN_ID: ${{ steps.bitcode.outputs.previous_pair_run_id }}", workflow)
+        self.assertIn("PREVIOUS_PAIR_SOURCE_SHA: ${{ steps.bitcode.outputs.previous_pair_source_sha }}", workflow)
+        self.assertIn('--expected-run-id "$PREVIOUS_PAIR_RUN_ID"', workflow)
+        self.assertIn('--expected-source-commit "$PREVIOUS_PAIR_SOURCE_SHA"', workflow)
         self.assertIn("actions/download-artifact@v4", workflow)
         self.assertIn("Reuse unchanged paired modules by bitcode SHA-256", workflow)
         self.assertIn("TRANSLATION_REUSED group=$stem", workflow)
