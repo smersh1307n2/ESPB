@@ -485,6 +485,19 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn('sha256(old_interpreter) != interpreter_hash', helper)
 
 
+    def test_interpreter_reserves_and_rewinds_root_shadow_stack_frame(self) -> None:
+        runtime = (
+            REPO_ROOT / "components" / "espb" / "src" / "espb_interpreter_runtime_oc.c"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("const bool is_root_call = (exec_ctx->call_stack_top == 0);", runtime)
+        self.assertIn("const size_t entry_saved_sp = exec_ctx->sp;", runtime)
+        self.assertIn("const size_t frame_base = is_root_call ? entry_saved_sp : exec_ctx->sp;", runtime)
+        self.assertIn("exec_ctx->sp = frame_base + frame_size_bytes;", runtime)
+        self.assertIn("exec_ctx->sp = entry_saved_sp;", runtime)
+        self.assertIn("exec_ctx->fp = entry_saved_fp;", runtime)
+
+
     def test_qemu_executes_atomic_jit_on_both_architectures(self) -> None:
         workflow = (REPO_ROOT / ".github" / "workflows" / "espb-qemu.yml").read_text(
             encoding="utf-8"
