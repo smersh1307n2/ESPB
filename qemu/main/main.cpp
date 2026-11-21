@@ -328,7 +328,32 @@ extern "C" void app_main(void)
     };
 
     printf("[ESPB_TEST] module_count=%u\n", (unsigned)espb_embedded_module_count);
-    for (size_t module_index = 0; module_index < espb_embedded_module_count; ++module_index) {
+
+    // Run the JIT atomics probe before other JIT groups. This keeps CMPXCHG
+    // coverage reachable even when an unrelated earlier JIT group faults.
+    size_t first_jit_index = espb_embedded_module_count;
+    size_t jit_atomics_index = espb_embedded_module_count;
+    for (size_t i = 0; i < espb_embedded_module_count; ++i) {
+        if (strncmp(espb_embedded_modules[i].name, "jit__", 5) == 0 &&
+            first_jit_index == espb_embedded_module_count) {
+            first_jit_index = i;
+        }
+        if (strcmp(espb_embedded_modules[i].name, "jit__08_atomics.espb") == 0) {
+            jit_atomics_index = i;
+        }
+    }
+
+    for (size_t execution_index = 0; execution_index < espb_embedded_module_count; ++execution_index) {
+        size_t module_index = execution_index;
+        if (jit_atomics_index < espb_embedded_module_count &&
+            first_jit_index < jit_atomics_index) {
+            if (execution_index == first_jit_index) {
+                module_index = jit_atomics_index;
+            } else if (execution_index > first_jit_index &&
+                       execution_index <= jit_atomics_index) {
+                module_index = execution_index - 1;
+            }
+        }
         const EspbEmbeddedModule &module = espb_embedded_modules[module_index];
         const bool jit_mode = strncmp(module.name, "jit__", 5) == 0;
         printf("[ESPB_TEST] module=%s size=%u\n", module.name, (unsigned)module.size);
