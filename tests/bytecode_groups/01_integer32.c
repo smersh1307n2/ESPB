@@ -102,6 +102,12 @@ JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
     const int ok = ok_mix && ok_signed && ok_bits && ok_opcode && ok_bounds;
     printf("[ESPB_DETAIL] i32 mix=%d signed=%d bits=%d opcode=%d bounds=%d\\n",
            ok_mix, ok_signed, ok_bits, ok_opcode, ok_bounds);
+    printf("[ESPB_DETAIL] mix_actual=%08x mix_expected=%08x\\n",
+           (unsigned)mix, (unsigned)expected_mix);
+    printf("[ESPB_DETAIL] signed_actual=%08x signed_expected=%08x\\n",
+           (unsigned)signed_result, (unsigned)-32);
+    printf("[ESPB_DETAIL] opcode_actual=%08x opcode_expected=%08x\\n",
+           (unsigned)opcode_probe, (unsigned)2286556547u);
     printf("[ESPB_GROUP] integer32=%s arg=%ld\\n", ok ? "PASS" : "FAIL", (long)arg);
     (void)text;
     (void)user_data;
