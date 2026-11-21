@@ -5066,8 +5066,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Store result (a10:a11) to rd using a6 as v_regs base
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8));       // v_regs[rd].lo = a10
                 emit_s32i(&ctx, 11, 6, (uint16_t)(rd * 8 + 4));   // v_regs[rd].hi = a11
-                
-                // Restore v_regs pointer to a11 for subsequent opcodes
+                emit_l32i(&ctx, 11, 1, 8); // restore v_regs after CALLX8
                 
                 break;
             }
@@ -7397,7 +7396,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 
                 // Save v_regs to a6 FIRST before we overwrite a11
                 
-                emit_mov_n(&ctx, 10, 11);   // a10 = v_regs
+                emit_mov_n(&ctx, 10, 6);    // a10 = pinned v_regs
                 
                 // ИСПРАВЛЕНИЕ: emit_movi_n работает только для значений 0-15 (4-bit immediate)
                 // Для rd, rs1, rs2 > 15 нужно использовать emit_load_u32_to_reg
@@ -7424,8 +7423,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 
                 emit_load_u32_to_a8(&ctx, &litpool, (uint32_t)(uintptr_t)helper);
                 emit_callx8_a8(&ctx);
-                
-                // Restore v_regs pointer to a11
+                emit_l32i(&ctx, 11, 1, 8); // restore v_regs after CALLX8
                 break;
             }
 
@@ -7439,7 +7437,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 
                 // Save v_regs to a6 FIRST before we overwrite a11
                 
-                emit_mov_n(&ctx, 10, 11);   // a10 = v_regs
+                emit_mov_n(&ctx, 10, 6);    // a10 = pinned v_regs
                 
                 // ИСПРАВЛЕНИЕ: emit_movi_n работает только для значений 0-15 (4-bit immediate)
                 // Для rd, rs > 15 нужно использовать emit_load_u32_to_reg
@@ -7459,8 +7457,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 
                 emit_load_u32_to_a8(&ctx, &litpool, (uint32_t)(uintptr_t)jit_helper_fabs_f64_store);
                 emit_callx8_a8(&ctx);
-                
-                // Restore v_regs pointer to a11
+                emit_l32i(&ctx, 11, 1, 8); // restore v_regs after CALLX8
                 
                 break;
             }
@@ -7472,17 +7469,15 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 void* helper = (void*)jit_helper_fsqrt_f64_bits;
 
-                emit_s32i(&ctx, 11, 1, 48);
                 emit_l32i(&ctx, 10, 6, (uint16_t)(rs1 * 8));
                 emit_l32i(&ctx, 11, 6, (uint16_t)(rs1 * 8 + 4));
 
                 emit_load_u32_to_a8(&ctx, &litpool, (uint32_t)(uintptr_t)helper);
                 emit_callx8_a8(&ctx);
 
-                emit_l32i(&ctx, 12, 1, 4);
-                emit_s32i(&ctx, 10, 12, (uint16_t)(rd * 8));
-                emit_s32i(&ctx, 11, 12, (uint16_t)(rd * 8 + 4));
-                emit_mov_n(&ctx, 11, 12);
+                emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8));
+                emit_s32i(&ctx, 11, 6, (uint16_t)(rd * 8 + 4));
+                emit_l32i(&ctx, 11, 1, 8); // restore v_regs after CALLX8
                 break;
             }
 
