@@ -3,16 +3,21 @@
 
 #define JIT_HOT __attribute__((annotate("espb_jit_hot"), noinline))
 
-JIT_HOT static int32_t branch_switch(int32_t value)
+JIT_HOT static int32_t switch_cases(int32_t value)
 {
-    if (value < 0) return -1;
-    if (value == 0) return 7;
     switch (value) {
         case 1: return 11;
         case 2: return 13;
         case 3: return 17;
         default: return 19;
     }
+}
+
+JIT_HOT static int32_t branch_switch(int32_t value)
+{
+    if (value < 0) return -1;
+    if (value == 0) return 7;
+    return switch_cases(value);
 }
 
 JIT_HOT static int32_t loop_mix(int32_t limit)

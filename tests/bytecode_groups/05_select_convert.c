@@ -56,6 +56,11 @@ JIT_PROBE static uint64_t integer_conversion_probe(int64_t wide, int32_t narrow)
     mix ^= (uint64_t)truncated_unsigned << 1;
     mix ^= (uint64_t)sign_extended;
     mix ^= zero_extended << 2;
+    printf("[ESPB_DETAIL] conversion_parts u8=%u s8=%d u16=%u s16=%d trunc=%ld truncu=%u sext=%lld zext=%llu mix=0x%016llx\\n",
+           (unsigned)u8, (int)s8, (unsigned)u16, (int)s16,
+           (long)truncated, (unsigned)truncated_unsigned,
+           (long long)sign_extended, (unsigned long long)zero_extended,
+           (unsigned long long)mix);
     return mix;
 }
 
