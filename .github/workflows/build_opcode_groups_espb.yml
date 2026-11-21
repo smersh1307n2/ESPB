@@ -289,6 +289,17 @@ jobs:
           test "$(find .work/paired -maxdepth 1 -name '*.jit.espb' -type f | wc -l)" -eq 10
           test "$(find .work/paired -maxdepth 1 -name '*.interpreter.espb' -type f | wc -l)" -eq 10
 
+      - name: Audit emitted ESPB opcode coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tests/host_tools/audit_espb_opcodes.py \
+            --paired-dir .work/paired \
+            --interpreter-source components/espb/src/espb_interpreter_runtime_oc.c \
+            --expected-groups 10 \
+            --json-out .work/paired/emitted-opcode-audit.json \
+            --markdown-out .work/paired/emitted-opcode-audit.md
+
       - name: Create provenance manifest
         shell: bash
         run: |
@@ -309,6 +320,8 @@ jobs:
           path: |
             .work/paired/*.espb
             .work/paired/manifest.json
+            .work/paired/emitted-opcode-audit.json
+            .work/paired/emitted-opcode-audit.md
             .work/bytecode_groups/*.bc
           if-no-files-found: error
           retention-days: 14
