@@ -132,6 +132,8 @@ jobs:
       - name: Verify corpus provenance and source compatibility
         shell: bash
         env:
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/projects/ESP32_PRJ_TO_LLVM"
           PAIRED_RUN_ID: ${{ steps.paired_run.outputs.run_id }}
           PAIRED_SOURCE_SHA: ${{ steps.paired_run.outputs.source_sha }}
         run: |
@@ -253,21 +255,10 @@ jobs:
             exit 1
           fi
 
-          jit_skipped_count="$(grep -c '^\[ESPB_TEST\] jit_skipped_unsupported=' qemu.log || true)"
-          if [ "${{ matrix.target }}" = "esp32" ]; then
-            expected_jit_skips=1
-          else
-            expected_jit_skips=0
-          fi
-          if [ "$jit_skipped_count" -ne "$expected_jit_skips" ]; then
-            echo "Unsupported JIT skip count mismatch: expected=$expected_jit_skips actual=$jit_skipped_count"
-            exit 1
-          fi
           jit_ready_count="$(grep -c '^\[ESPB_TEST\] jit_ready=' qemu.log || true)"
           interp_ready_count="$(grep -c '^\[ESPB_TEST\] interp_ready=.*hot=0 compiled=0$' qemu.log || true)"
-          expected_jit_ready=$((jit_modules - jit_skipped_count))
-          if [ "$jit_ready_count" -ne "$expected_jit_ready" ] || [ "$interp_ready_count" -ne "$interpreter_modules" ]; then
-            echo "Mode readiness mismatch: jit=$jit_ready_count/$expected_jit_ready interpreter=$interp_ready_count/$interpreter_modules"
+          if [ "$jit_ready_count" -ne "$jit_modules" ] || [ "$interp_ready_count" -ne "$interpreter_modules" ]; then
+            echo "Mode readiness mismatch: jit=$jit_ready_count/$jit_modules interpreter=$interp_ready_count/$interpreter_modules"
             exit 1
           fi
           awk '
@@ -288,10 +279,6 @@ jobs:
 
           for group in integer32 integer64 float control_flow select_convert memory calls_callbacks atomics freertos_task freertos_timer; do
             group_passes="$(grep -F -c "[ESPB_GROUP] $group=PASS" qemu.log || true)"
-            expected_group_passes=2
-            if [ "$group" = "atomics" ] && [ "$jit_skipped_count" -eq 1 ]; then
-              expected_group_passes=1
-            fi
             if [ "$group_passes" -lt "$expected_group_passes" ]; then
               echo "Missing semantic PASS for $group: expected=$expected_group_passes found=$group_passes"
               exit 1
@@ -309,7 +296,7 @@ jobs:
             exit 1
           fi
 
-          benchmark_modules=$((expected_modules - 4 - jit_skipped_count))
+          benchmark_modules=$((expected_modules - 4))
           expected_samples=$((benchmark_modules * 5))
           actual_samples="$(grep -Ec '\[ESPB_BENCH\] module=.*sample_[0-4]_us=[1-9][0-9]* cycles_start=[0-9]+ cycles_end=[0-9]+ cycles_delta=[1-9][0-9]*' qemu.log || true)"
           if [ "$actual_samples" -ne "$expected_samples" ]; then
@@ -323,7 +310,7 @@ jobs:
           fi
 
           raw_jit_count="$(grep -Ec '^\[ESPB_BENCH_RAW_JIT\] function=app_main median_us=[1-9][0-9]* median_cycles=[1-9][0-9]*' qemu.log || true)"
-          expected_bench_jit=$((jit_modules - 2 - jit_skipped_count))
+          expected_bench_jit=$((jit_modules - 2))
           if [ "$raw_jit_count" -ne "$expected_bench_jit" ]; then
             echo "Raw JIT metric count mismatch: expected=$expected_bench_jit actual=$raw_jit_count"
             exit 1
@@ -337,12 +324,11 @@ jobs:
           fi
 
           memory_count="$(grep -Ec '^\[ESPB_MEM\] module=' qemu.log || true)"
-          expected_memory_count=$((expected_modules - jit_skipped_count))
-          if [ "$memory_count" -ne "$expected_memory_count" ]; then
-            echo "Memory metric count mismatch: expected=$expected_memory_count actual=$memory_count"
+          if [ "$memory_count" -ne "$expected_modules" ]; then
+            echo "Memory metric count mismatch: expected=$expected_modules actual=$memory_count"
             exit 1
           fi
-          awk -v expected="$expected_memory_count" '
+          awk -v expected="$expected_modules" '
             /^\[ESPB_MEM\]/ {
               before=ready=exec_heap=after=0
               for (i = 1; i <= NF; ++i) {
