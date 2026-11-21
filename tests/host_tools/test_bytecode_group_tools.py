@@ -333,6 +333,8 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertEqual(workflow.count("expected_jit_ready="), 1)
         self.assertEqual(workflow.count("      - name: Upload QEMU execution log"), 1)
         self.assertEqual(workflow.count("          retention-days: 14"), 1)
+        self.assertIn('git config --global --add safe.directory "$GITHUB_WORKSPACE"', workflow)
+        self.assertIn('git config --global --add safe.directory "$GITHUB_WORKSPACE/projects/ESP32_PRJ_TO_LLVM"', workflow)
 
     def test_translator_key_pool_includes_slots_one_through_nine(self) -> None:
         script = (REPO_ROOT / ".github" / "scripts" / "translate_bc.py").read_text(
