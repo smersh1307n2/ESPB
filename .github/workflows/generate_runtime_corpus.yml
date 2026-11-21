@@ -22,11 +22,15 @@ jobs:
           ESPB_API_KEY: ${{ secrets.ESPB_API_KEY }}
           ESPB_API_KEY_1: ${{ secrets.ESPB_API_KEY_1 }}
           ESPB_API_KEY_2: ${{ secrets.ESPB_API_KEY_2 }}
+          ESPB_API_KEY_3: ${{ secrets.ESPB_API_KEY_3 }}
+          ESPB_API_KEY_4: ${{ secrets.ESPB_API_KEY_4 }}
+          ESPB_API_KEY_5: ${{ secrets.ESPB_API_KEY_5 }}
+          ESPB_API_KEY_6: ${{ secrets.ESPB_API_KEY_6 }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "${ESPB_TRANSLATOR_KEYS//[$'\\r\\n' ]/}" && -z "${ESPB_API_KEY}" && -z "${ESPB_API_KEY_1}" && -z "${ESPB_API_KEY_2}" ]]; then
-            echo "::error::No translator credentials configured. Add ESPB_TRANSLATOR_KEYS (newline-separated) or ESPB_API_KEY[_1/_2] repository secrets."
+          if [[ -z "${ESPB_TRANSLATOR_KEYS//[$'\\r\\n' ]/}" && -z "${ESPB_API_KEY}" && -z "${ESPB_API_KEY_1}" && -z "${ESPB_API_KEY_2}" && -z "${ESPB_API_KEY_3}" && -z "${ESPB_API_KEY_4}" && -z "${ESPB_API_KEY_5}" && -z "${ESPB_API_KEY_6}" ]]; then
+            echo "::error::No translator credentials configured. Add ESPB_TRANSLATOR_KEYS (newline-separated) or ESPB_API_KEY through ESPB_API_KEY_6 repository secrets."
             exit 1
           fi
 
