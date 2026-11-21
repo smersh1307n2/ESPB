@@ -308,6 +308,29 @@ class WorkflowContractTests(unittest.TestCase):
             1,
         )
 
+    def test_qemu_accounts_for_xtensa_atomic_jit_skip(self) -> None:
+        workflow = (REPO_ROOT / ".github" / "workflows" / "espb-qemu.yml").read_text(
+            encoding="utf-8"
+        )
+        harness = (REPO_ROOT / "qemu" / "main" / "main.cpp").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn("jit_skipped_unsupported=", harness)
+        self.assertIn("xtensa_jit_has_no_atomic_handlers", harness)
+        self.assertIn('{"host_invoke_cb", (const void*)&host_invoke_cb}', harness)
+        self.assertIn('{"host_invoke_cb2", (const void*)&host_invoke_cb2}', harness)
+        self.assertIn('{"__atomic_exchange_8", (const void*)&qemu_atomic_exchange_8}', harness)
+
+        self.assertIn('expected_jit_skips=1', workflow)
+        self.assertIn('expected_jit_skips=0', workflow)
+        self.assertIn("expected_jit_ready=$((jit_modules - jit_skipped_count))", workflow)
+        self.assertIn('expected_group_passes=1', workflow)
+        self.assertIn("benchmark_modules=$((expected_modules - 4 - jit_skipped_count))", workflow)
+        self.assertIn("expected_bench_jit=$((jit_modules - 2 - jit_skipped_count))", workflow)
+        self.assertIn("expected_memory_count=$((expected_modules - jit_skipped_count))", workflow)
+        self.assertNotIn('interp_ready_count="$(grep -c', workflow.split("jit_ready_count=", 1)[1].split("awk '", 1)[0].rstrip().split("\n")[-1] + "\n          awk '")
+
     def test_translator_key_pool_includes_slots_one_through_nine(self) -> None:
         script = (REPO_ROOT / ".github" / "scripts" / "translate_bc.py").read_text(
             encoding="utf-8"
