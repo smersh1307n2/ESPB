@@ -3,7 +3,7 @@
 
 #define JIT_HOT __attribute__((annotate("espb_jit_hot"), noinline))
 
-JIT_HOT static float float_math(float a, float b)
+JIT_HOT __attribute__((optnone)) static float float_math(float a, float b)
 {
     return (a * b) + (a / b) - (b - a);
 }
