@@ -172,7 +172,7 @@ jobs:
             exit 1
           fi
 
-          memory_count=$(grep -Ec '^\\[ESPB_MEM\\] module=' qemu.log || true)
+          memory_count=$(grep -Ec '^\[ESPB_MEM\] module=' qemu.log || true)
           if [ "$memory_count" -ne "$expected_modules" ]; then
             echo "Memory metric count mismatch: expected=$expected_modules actual=$memory_count"
             exit 1
