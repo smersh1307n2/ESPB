@@ -4045,8 +4045,8 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
                 
-                // Load rs into a8
-                emit_l32i(&ctx, 8, 6, (uint16_t)(rs * 8));   // a8 = v_regs[rs].i32
+                // Use the block-local cache so NOT sees pending writes.
+                XTENSA_VCACHE_LOAD(rs, 8);
                 
                 // Xtensa doesn't have a native NOT instruction.
                 // Implement NOT as XOR with -1 (all bits set):
@@ -4057,8 +4057,8 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_u8(&ctx, 0x88);
                 emit_u8(&ctx, 0x30);
                 
-                // Store result to v_regs[rd]
-                emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
+                // Publish through the same cache used by adjacent ALU opcodes.
+                XTENSA_VCACHE_STORE(rd, 8);
                 break;
             }
 
