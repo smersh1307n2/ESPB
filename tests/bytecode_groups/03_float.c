@@ -94,8 +94,11 @@ JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
     const int ok_convert = (converted == 13);
     const int ok_fops = fops[0] == 3.0f && fops[1] == 4.0f &&
                         fops[2] == -3.0f && fops[3] == 4.0f;
-    const int ok_dops = dops[0] == 5.0 && dops[1] == 2.0 &&
-                        dops[2] == -5.0 && dops[3] == 2.0;
+    const int ok_dabs = dops[0] == 5.0;
+    const int ok_dsqrt = dops[1] == 2.0;
+    const int ok_dmin = dops[2] == -5.0;
+    const int ok_dmax = dops[3] == 2.0;
+    const int ok_dops = ok_dabs && ok_dsqrt && ok_dmin && ok_dmax;
     const int ok_compare = fcmp == 22u && dcmp == 42u;
     const int ok_conversion_probe = conversions == -10;
     const int ok_order = (a > b) && (x != y);
@@ -104,6 +107,11 @@ JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
     printf("[ESPB_DETAIL] float math=%d convert=%d fops=%d dops=%d cmp=%d cvtprobe=%d order=%d\\n",
            ok_math, ok_convert, ok_fops, ok_dops, ok_compare,
            ok_conversion_probe, ok_order);
+    printf("[ESPB_DETAIL] dops_x100=%ld,%ld,%ld,%ld\\n",
+           (long)(dops[0] * 100.0), (long)(dops[1] * 100.0),
+           (long)(dops[2] * 100.0), (long)(dops[3] * 100.0));
+    printf("[ESPB_DETAIL] dops_flags=%d,%d,%d,%d\\n",
+           ok_dabs, ok_dsqrt, ok_dmin, ok_dmax);
     printf("[ESPB_GROUP] float=%s arg=%ld\\n", ok ? "PASS" : "FAIL", (long)arg);
     (void)text;
     (void)user_data;
