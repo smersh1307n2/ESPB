@@ -52,6 +52,8 @@ JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
     int32_t i32_result = atomic_i32();
     int64_t i64_result = atomic_i64();
     int ok = i32_result == 318 && i64_result == 1977;
+    printf("[ESPB_DETAIL] atomics i32=%ld expected_i32=318 i64=%lld expected_i64=1977\n",
+           (long)i32_result, (long long)i64_result);
     printf("[ESPB_GROUP] atomics=%s arg=%ld\n", ok ? "PASS" : "FAIL", (long)arg);
     (void)text;
     (void)user_data;
