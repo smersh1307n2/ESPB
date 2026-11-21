@@ -381,11 +381,23 @@ class PairedReuseTests(unittest.TestCase):
 
 
 class EmittedOpcodeAuditTests(unittest.TestCase):
+    @staticmethod
+    def _make_audit_fixture(function_flags: tuple[int, ...]) -> bytes:
+        code = bytearray(struct.pack("<I", len(function_flags)))
+        instructions = bytes([0x11, 0x00, 0x00, 0x44, 0x00, 0x00, 0x00])
+        for flags in function_flags:
+            body = struct.pack("<BBHHH", flags, 1, 0, 2, 0) + instructions
+            code += struct.pack("<I", len(body)) + body
+        section_offset = HEADER.size + SECTION.size
+        file_header = HEADER.pack(0x42505345, 1, 0, 0, 1)
+        section = SECTION.pack(CODE_SECTION_ID, 0, 0, section_offset, len(code))
+        return file_header + section + code
+
     def test_decoder_counts_primary_extended_and_variable_length_instructions(self) -> None:
         code = bytes([
             0xFC, 0x08, 0x00, 0x12,                 # TABLE.SIZE, 2 operands
             0x09, 0x00, 0x00, 0xAA, 0x02, 0x0B, 0x05,  # typed CALL_IMPORT, 2 args
-            0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00,  # BR_TABLE, one target + default
+            0x04, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,  # BR_TABLE
             0x00,                                   # NOP
         ])
         primary, extended, instructions = decode_instruction_stream(code)
@@ -407,8 +419,8 @@ class EmittedOpcodeAuditTests(unittest.TestCase):
             root = Path(tmp)
             jit_path = root / "test.jit.espb"
             interp_path = root / "test.interpreter.espb"
-            jit_path.write_bytes(make_test_module((HOT, HOT)))
-            interp_path.write_bytes(make_test_module((0, 0)))
+            jit_path.write_bytes(self._make_audit_fixture((HOT, HOT)))
+            interp_path.write_bytes(self._make_audit_fixture((0, 0)))
 
             from audit_espb_opcodes import audit_module
             jit = audit_module(jit_path)
@@ -425,8 +437,8 @@ class EmittedOpcodeAuditTests(unittest.TestCase):
             root = Path(tmp)
             for index in range(10):
                 stem = f"{index:02d}_group"
-                (root / f"{stem}.jit.espb").write_bytes(make_test_module((HOT, HOT)))
-                (root / f"{stem}.interpreter.espb").write_bytes(make_test_module((0, 0)))
+                (root / f"{stem}.jit.espb").write_bytes(self._make_audit_fixture((HOT, HOT)))
+                (root / f"{stem}.interpreter.espb").write_bytes(self._make_audit_fixture((0, 0)))
             dispatch = root / "runtime.c"
             dispatch.write_text(
                 "dispatch_table[0x11] = &&op_0x11;\n"
