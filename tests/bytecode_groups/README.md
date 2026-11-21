@@ -24,7 +24,7 @@ Every function defined in every source file is marked JIT_HOT (including helpers
 ## Rules
 
 - Keep each group self-contained and deliberately small; split it if its generated native code approaches the measured JIT RAM budget.
-- Every test has a deterministic success condition. RTOS groups are integration tests and should be run separately from tight execution microbenchmarks.
+- Every test has a deterministic success condition. RTOS groups are integration tests and should be run separately from tight execution microbenchmarks. Invoke each group execution function only three times per test pass; do not add long repetition loops.
 - Do not add long delays, unbounded loops, verbose per-operation printing, or arbitrary-address calls to the regular suite.
 - The build/translation workflow must generate paired interpreter and HOT/JIT modules from the same source bitcode. The checked-in ESPB corpus is not regenerated as part of ordinary runtime tests.
 - Coverage is measured from the translated ESPB opcode stream, not inferred from C syntax. A group is complete only when the intended opcodes are present and actually execute in both modes.
