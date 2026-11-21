@@ -4709,8 +4709,11 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 emit_lw_phys(&ctx, 5, rexp * 8, 18);  // t0 = v_regs[rexp] (actual value)
                 emit_sw_phys(&ctx, 5, rd * 8, 18);   // v_regs[rd] = t0
                 
-                // Zero high 32 bits
+                // Zero high 32 bits of the old-value result.
                 emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                // The CMPXCHG contract returns success in Rexp; helper returns it in a0.
+                emit_sw_phys(&ctx, 10, rexp * 8, 18);
+                emit_sw_phys(&ctx, 0, rexp * 8 + 4, 18);
                 
                 break;
             }
@@ -4884,6 +4887,9 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 emit_sw_phys(&ctx, 5, rd * 8, 18);
                 emit_lw_phys(&ctx, 5, rexp * 8 + 4, 18);
                 emit_sw_phys(&ctx, 5, rd * 8 + 4, 18);
+                // Helper return value is the cmpxchg success flag in a0.
+                emit_sw_phys(&ctx, 10, rexp * 8, 18);
+                emit_sw_phys(&ctx, 0, rexp * 8 + 4, 18);
                 
                 break;
             }
