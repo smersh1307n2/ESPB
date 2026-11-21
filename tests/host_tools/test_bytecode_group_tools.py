@@ -198,6 +198,30 @@ class CorpusManifestTests(unittest.TestCase):
 
 
 
+    def test_manifest_rejects_wrong_producer_run_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bitcode_dir, paired_dir, _ = self._make_fixture(root)
+            manifest = create_manifest(
+                root, bitcode_dir, paired_dir, "smersh1307n2/ESPB", "ESPB_WORK", 12345
+            )
+            output = paired_dir / "manifest.json"
+            import json
+
+            output.write_text(json.dumps(manifest), encoding="utf-8")
+            with self.assertRaisesRegex(ManifestError, "Workflow run mismatch"):
+                verify_manifest(
+                    root,
+                    bitcode_dir,
+                    paired_dir,
+                    output,
+                    "smersh1307n2/ESPB",
+                    "ESPB_WORK",
+                    expected_run_id=12346,
+                )
+
+
+
 class WorkflowContractTests(unittest.TestCase):
     def test_qemu_selects_successful_provenance_bound_pair_run(self) -> None:
         workflow = (REPO_ROOT / ".github" / "workflows" / "espb-qemu.yml").read_text(
