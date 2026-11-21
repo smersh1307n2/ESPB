@@ -261,8 +261,8 @@ jobs:
             echo "Unsupported JIT skip count mismatch: expected=$expected_jit_skips actual=$jit_skipped_count"
             exit 1
           fi
-          jit_ready_count="$(grep -c '^\\[ESPB_TEST\\] jit_ready=' qemu.log || true)"
-          interp_ready_count="$(grep -c '^\\[ESPB_TEST\\] interp_ready=.*hot=0 compiled=0$' qemu.log || true)"
+          jit_ready_count="$(grep -c '^\[ESPB_TEST\] jit_ready=' qemu.log || true)"
+          interp_ready_count="$(grep -c '^\[ESPB_TEST\] interp_ready=.*hot=0 compiled=0$' qemu.log || true)"
           expected_jit_ready=$((jit_modules - jit_skipped_count))
           if [ "$jit_ready_count" -ne "$expected_jit_ready" ] || [ "$interp_ready_count" -ne "$interpreter_modules" ]; then
             echo "Mode readiness mismatch: jit=$jit_ready_count/$expected_jit_ready interpreter=$interp_ready_count/$interpreter_modules"
