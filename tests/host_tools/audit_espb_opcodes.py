@@ -316,6 +316,10 @@ def audit_directory(
         report["interpreter_supported_not_emitted"] = [
             f"0x{x:02X}" for x in sorted(interpreter_supported - set(total_primary))
         ]
+    report["extended_supported_count"] = len(EXTENDED_OPERANDS)
+    report["extended_supported_not_emitted"] = [
+        f"FC.{x:02X}" for x in sorted(set(EXTENDED_OPERANDS) - set(total_extended))
+    ]
     return report
 
 
@@ -328,9 +332,13 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Groups: **{report['group_count']}**",
         f"- Functions: **{report['function_count']}**",
         f"- Primary instructions: **{report['primary_instruction_count']}**",
-        f"- Distinct primary opcode bytes: **{len(report['unique_primary_bytes'])}**",
+        f"- Distinct primary opcode bytes: **{len(report['unique_primary_bytes'])}**"
+        + (f" / {report['interpreter_supported_count']} Interpreter handlers "
+           f"({100.0 * len(report['unique_primary_bytes']) / report['interpreter_supported_count']:.2f}%)"
+           if report.get("interpreter_supported_count") else ""),
         f"- Extended instructions: **{report['extended_instruction_count']}**",
-        f"- Distinct extended subopcodes: **{len(report['unique_extended_subopcodes'])}**",
+        f"- Distinct extended subopcodes: **{len(report['unique_extended_subopcodes'])} / {report['extended_supported_count']}** "
+        f"({100.0 * len(report['unique_extended_subopcodes']) / report['extended_supported_count']:.2f}%)",
         "",
         "| Group | Functions | Primary instructions | Unique primary | Extended instructions | Unique extended |",
         "|---|---:|---:|---:|---:|---:|",
@@ -365,6 +373,11 @@ def render_markdown(report: dict[str, Any]) -> str:
             "Interpreter handlers not emitted by this corpus: "
             + (", ".join(gaps) if gaps else "(none)")
         )
+    extended_gaps = report["extended_supported_not_emitted"]
+    lines.append(
+        "Extended handlers not emitted by this corpus: "
+        + (", ".join(extended_gaps) if extended_gaps else "(none)")
+    )
     lines.append(
         "Each JIT/Interpreter pair was checked byte-for-byte after clearing only "
         "the HOT bit in each function header."
@@ -384,7 +397,7 @@ def main() -> int:
     try:
         report = audit_directory(args.paired_dir, args.interpreter_source, args.expected_groups)
     except (AuditError, OSError, struct.error) as exc:
-        parser.exit(1, f"ESPB_OPCODE_AUDIT_ERROR: {exc}\\n")
+        parser.exit(1, f"ESPB_OPCODE_AUDIT_ERROR: {exc}\n")
 
     markdown = render_markdown(report)
     if args.json_out:
@@ -392,7 +405,7 @@ def main() -> int:
         args.json_out.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     if args.markdown_out:
         args.markdown_out.parent.mkdir(parents=True, exist_ok=True)
-        args.markdown_out.write_text(markdown + "\\n", encoding="utf-8")
+        args.markdown_out.write_text(markdown + "\n", encoding="utf-8")
     print(markdown)
     return 0
 
