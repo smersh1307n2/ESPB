@@ -1,5 +1,6 @@
 name: Build paired ESPB opcode-group modules
 # Incremental retry after artifact-path normalization; unchanged pairs stay quota-free.
+# Fresh diagnostic source groups: switch isolation, conversion trace, atomic sub-results.
 # Reuse prior JIT/Interpreter pairs by exact LLVM bitcode SHA; only changed
 # bitcode groups are submitted to the quota-limited translator API.
 
