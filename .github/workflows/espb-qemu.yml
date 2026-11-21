@@ -136,6 +136,8 @@ jobs:
           PAIRED_SOURCE_SHA: ${{ steps.paired_run.outputs.source_sha }}
         run: |
           set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/projects/ESP32_PRJ_TO_LLVM"
           python tools/bytecode_groups/corpus_manifest.py verify \
             --repo-root "$GITHUB_WORKSPACE" \
             --bitcode-dir "$GITHUB_WORKSPACE/.work/bytecode_groups" \
