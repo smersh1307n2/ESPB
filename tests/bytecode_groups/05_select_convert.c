@@ -37,7 +37,19 @@ JIT_PROBE static int32_t pointer_roundtrip(int32_t *pointer)
     return *restored;
 }
 
-JIT_PROBE static uint64_t integer_conversion_probe(int64_t wide, int32_t narrow)
+JIT_PROBE static uint64_t conversion_s8_shift_probe(int32_t value) {
+    return ((uint64_t)(int64_t)(int8_t)value) << 8;
+}
+
+static uint64_t conversion_s16_shift_probe(int32_t value) {
+    return ((uint64_t)(int64_t)(int16_t)value) << 32;
+}
+
+static uint64_t conversion_s32_probe(int32_t value) {
+    return (uint64_t)(int64_t)value;
+}
+
+static uint64_t integer_conversion_probe(int64_t wide, int32_t narrow)
 {
     uint8_t u8 = (uint8_t)narrow;
     int8_t s8 = (int8_t)narrow;
@@ -84,11 +96,24 @@ JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
     const int ok_converted = converted == 0xffffcdedf8dbbd27ull;
     const int ok_truncated = truncated == 42;
     const int ok_extended = extended == -5;
+    const uint64_t s8_shift_probe = conversion_s8_shift_probe((int32_t)0x89abcdefu);
+    const uint64_t s16_shift_probe = conversion_s16_shift_probe((int32_t)0x89abcdefu);
+    const uint64_t s32_probe = conversion_s32_probe((int32_t)0x89abcdefu);
+    const int ok_s8_shift = s8_shift_probe == 0xffffffffffffff00ull;
+    const int ok_s16_shift = s16_shift_probe == 0xffffcdef00000000ull;
+    const int ok_s32_sign = s32_probe == 0xffffffff89abcdefull;
     const int ok_signed = signed_value < 0;
     const int ok = ok_select && ok_pointer && ok_converted &&
-                   ok_truncated && ok_extended && ok_signed;
+                   ok_truncated && ok_extended && ok_signed &&
+                   ok_s8_shift && ok_s16_shift && ok_s32_sign;
     printf("[ESPB_DETAIL] select=%d pointer=%d converted=%d trunc=%d extend=%d sign=%d\\n",
            ok_select, ok_pointer, ok_converted, ok_truncated, ok_extended, ok_signed);
+    printf("[ESPB_DETAIL] sext_flags=%d,%d,%d\\n",
+           ok_s8_shift, ok_s16_shift, ok_s32_sign);
+    printf("[ESPB_DETAIL] sext_s8_hi=%08x sext_s16_hi=%08x sext_s32_hi=%08x\\n",
+           (uint32_t)(s8_shift_probe >> 32),
+           (uint32_t)(s16_shift_probe >> 32),
+           (uint32_t)(s32_probe >> 32));
     printf("[ESPB_DETAIL] converted_lo=%08x hi=%08x expected_lo=%08x hi=%08x\\n",
            (uint32_t)converted, (uint32_t)(converted >> 32),
            0xf8dbbd27u, 0xffffcdedu);
