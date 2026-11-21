@@ -49,6 +49,15 @@ jobs:
           idf.py -C qemu set-target "${{ matrix.target }}"
           idf.py -C qemu build
 
+          if [ "${{ matrix.target }}" = "esp32" ]; then
+            grep -qx 'CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240' qemu/sdkconfig
+            grep -qx 'CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y' qemu/sdkconfig
+            echo "ESPB_CPU_CONFIG target=esp32 cpu_mhz=240"
+          else
+            grep -qx 'CONFIG_ESP32C3_DEFAULT_CPU_FREQ_MHZ=160' qemu/sdkconfig
+            echo "ESPB_CPU_CONFIG target=esp32c3 cpu_mhz=160"
+          fi
+
       - name: Execute interpreter and HOT/JIT suites
         shell: bash
         run: |
