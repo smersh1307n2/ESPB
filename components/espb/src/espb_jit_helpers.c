@@ -28,7 +28,7 @@ void espb_jit_alloca_ex(EspbInstance *instance, Value *v_regs, uint16_t num_regs
                         uint8_t rd, uint8_t rs_size, uint8_t align)
 {
 #if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
-    ESP_LOGI(TAG, "args instance=%p regs=%p count=%u rd=%u rs=%u align=%u",
+    ESP_LOGI(TAG, "ENTER instance=%p regs=%p count=%u rd=%u rs=%u align=%u",
              (void *)instance, (void *)v_regs, (unsigned)num_regs_allocated,
              (unsigned)rd, (unsigned)rs_size, (unsigned)align);
 #endif
@@ -47,7 +47,7 @@ void espb_jit_alloca_ex(EspbInstance *instance, Value *v_regs, uint16_t num_regs
     EspbResult result = espb_runtime_alloca(instance, NULL, v_regs,
                                             num_regs_allocated, rd, rs_size, align);
 #if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
-    ESP_LOGI(TAG, "result=%d allocated=%p", (int)result, V_PTR(v_regs[rd]));
+    ESP_LOGI(TAG, "EXIT result=%d allocated=%p", (int)result, V_PTR(v_regs[rd]));
 #endif
 }
 
