@@ -27,7 +27,7 @@ static const char *TAG = "espb_jit_alloca";
 void espb_jit_alloca_ex(EspbInstance *instance, Value *v_regs, uint16_t num_regs_allocated,
                         uint8_t rd, uint8_t rs_size, uint8_t align)
 {
-#if 1 /* TEMP: capture ALLOCA ABI during QEMU regression */
+#if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
     ESP_LOGI(TAG, "ENTER instance=%p regs=%p count=%u rd=%u rs=%u align=%u",
              (void *)instance, (void *)v_regs, (unsigned)num_regs_allocated,
              (unsigned)rd, (unsigned)rs_size, (unsigned)align);
@@ -41,12 +41,12 @@ void espb_jit_alloca_ex(EspbInstance *instance, Value *v_regs, uint16_t num_regs
                  (unsigned)rd, (unsigned)rs_size, (unsigned)num_regs_allocated);
         return;
     }
-#if 1 /* TEMP: capture ALLOCA ABI during QEMU regression */
+#if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
     ESP_LOGI(TAG, "size=%u", (unsigned)V_I32(v_regs[rs_size]));
 #endif
     EspbResult result = espb_runtime_alloca(instance, NULL, v_regs,
                                             num_regs_allocated, rd, rs_size, align);
-#if 1 /* TEMP: capture ALLOCA ABI during QEMU regression */
+#if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
     ESP_LOGI(TAG, "EXIT result=%d allocated=%p", (int)result, V_PTR(v_regs[rd]));
 #endif
 }
