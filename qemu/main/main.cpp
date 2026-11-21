@@ -10,6 +10,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/timers.h"
 #include "espb_host_symbols.h"
 #include "espb_fast_symbols.h"
 
@@ -74,6 +75,14 @@ static const EspbSymbol qemu_named_symbols[] = {
     {"host_invoke_cb", (const void*)&host_invoke_cb},
     {"host_invoke_cb2", (const void*)&host_invoke_cb2},
     {"__atomic_exchange_8", (const void*)&qemu_atomic_exchange_8},
+    // These modules use the regular named-import path (not IDF fast indices).
+    {"vTaskDelay", (const void*)&vTaskDelay},
+    {"xTaskCreatePinnedToCore", (const void*)&xTaskCreatePinnedToCore},
+    {"vTaskDelete", (const void*)&vTaskDelete},
+    {"xTaskGetTickCount", (const void*)&xTaskGetTickCount},
+    {"xTimerCreate", (const void*)&xTimerCreate},
+    {"xTimerGenericCommand", (const void*)&xTimerGenericCommand},
+    {"pvTimerGetTimerID", (const void*)&pvTimerGetTimerID},
     ESP_ELFSYM_END
 };
 
