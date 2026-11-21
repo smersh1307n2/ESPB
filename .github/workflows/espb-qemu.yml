@@ -159,3 +159,15 @@ jobs:
             echo "Expected one numeric median per module ($expected_modules), found $median_count"
             exit 1
           fi
+
+          raw_jit_count=$(grep -Ec '^\\[ESPB_BENCH_RAW_JIT\\] function=app_main median_us=[1-9][0-9]* median_cycles=[1-9][0-9]*' qemu.log || true)
+          if [ "$raw_jit_count" -ne "$jit_modules" ]; then
+            echo "Raw JIT metric count mismatch: expected=$jit_modules actual=$raw_jit_count"
+            exit 1
+          fi
+
+          interpreter_core_count=$(grep -Ec '^\\[ESPB_BENCH_INTERP_CORE\\] function=app_main median_us=[1-9][0-9]* median_cycles=[1-9][0-9]*' qemu.log || true)
+          if [ "$interpreter_core_count" -ne "$interpreter_modules" ]; then
+            echo "Interpreter core metric count mismatch: expected=$interpreter_modules actual=$interpreter_core_count"
+            exit 1
+          fi

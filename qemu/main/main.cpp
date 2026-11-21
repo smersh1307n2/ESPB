@@ -2,6 +2,7 @@
 #include <string.h>
 #include "espb_api.h"
 #include "espb_interpreter_runtime.h"
+#include "espb_jit_precompile.h"
 #include "espb_embedded_modules.h"
 #include "esp_timer.h"
 #include "esp_cpu.h"
@@ -112,8 +113,10 @@ static bool qemu_benchmark_interpreter_core(
     uint32_t args_count)
 {
     uint32_t global_func_idx = 0;
-    if (!qemu_find_exported_function(handle, function_name, &global_func_idx, NULL, NULL)) {
-        printf("[ESPB_BENCH_INTERP_CORE] function=%s unavailable\n", function_name);
+    const EspbFuncSignature *signature = NULL;
+    if (!qemu_find_exported_function(handle, function_name, &global_func_idx, NULL, &signature) ||
+        !signature || signature->num_params > args_count) {
+        printf("[ESPB_BENCH_INTERP_CORE] function=%s unavailable_or_args_mismatch\n", function_name);
         return false;
     }
 
@@ -163,8 +166,9 @@ static bool qemu_benchmark_raw_jit(
     EspbFunctionBody *body = NULL;
     const EspbFuncSignature *signature = NULL;
     if (!qemu_find_exported_function(handle, function_name, NULL, &body, &signature) ||
-        !body || !body->is_jit_compiled || !body->jit_code) {
-        printf("[ESPB_BENCH_RAW_JIT] function=%s jit_entry_unavailable\n", function_name);
+        !body || !signature || !body->is_jit_compiled || !body->jit_code ||
+        signature->num_params > args_count) {
+        printf("[ESPB_BENCH_RAW_JIT] function=%s jit_entry_unavailable_or_args_mismatch\n", function_name);
         return false;
     }
 
@@ -173,8 +177,10 @@ static bool qemu_benchmark_raw_jit(
     if (actual_regs < 8) actual_regs = 8;
 
     uint32_t copied_args = signature->num_params;
-    if (copied_args > args_count) copied_args = args_count;
-    if (copied_args > actual_regs) copied_args = actual_regs;
+    if (copied_args > actual_regs) {
+        printf("[ESPB_BENCH_RAW_JIT] function=%s argument_registers_exceed_frame\n", function_name);
+        return false;
+    }
 
     Value v_regs[256] __attribute__((aligned(8)));
     qemu_jit_func_t jit_func = (qemu_jit_func_t)body->jit_code;
@@ -239,6 +245,39 @@ extern "C" void app_main(void)
             printf("[ESPB_TEST] warmup_failed=%s error=%d\n", module.name, (int)result);
             espb_unload_module(handle);
             return;
+        }
+
+        if (jit_mode) {
+            // Ensure every HOT callee is compiled before the raw JIT timer starts.
+            result = espb_jit_precompile_hot_functions(handle->instance, NULL);
+            if (result != ESPB_OK) {
+                printf("[ESPB_TEST] precompile_failed=%s error=%d\n", module.name, (int)result);
+                espb_unload_module(handle);
+                return;
+            }
+
+            uint32_t hot_count = 0;
+            uint32_t compiled_hot_count = 0;
+            size_t jit_code_bytes = 0;
+            for (uint32_t i = 0; i < handle->module->num_functions; ++i) {
+                EspbFunctionBody *body = &handle->module->function_bodies[i];
+                if (body->header.flags & ESPB_FUNC_FLAG_HOT) {
+                    ++hot_count;
+                    if (body->is_jit_compiled && body->jit_code) {
+                        ++compiled_hot_count;
+                        jit_code_bytes += body->jit_code_size;
+                    }
+                }
+            }
+            if (compiled_hot_count != hot_count) {
+                printf("[ESPB_TEST] jit_not_ready=%s hot=%u compiled=%u\n",
+                       module.name, (unsigned)hot_count, (unsigned)compiled_hot_count);
+                espb_unload_module(handle);
+                return;
+            }
+            printf("[ESPB_TEST] jit_ready=%s hot=%u compiled=%u jit_bytes=%u\n",
+                   module.name, (unsigned)hot_count, (unsigned)compiled_hot_count,
+                   (unsigned)jit_code_bytes);
         }
 
         const bool core_bench_ok = jit_mode
