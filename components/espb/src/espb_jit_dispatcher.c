@@ -198,9 +198,9 @@ EspbResult execute_jit_code(EspbInstance *instance, void *jit_code, const Value 
     // Выделяем v_regs динамически на стеке (VLA - Variable Length Array)
     Value v_regs[actual_regs] __attribute__((aligned(8)));
     if (actual_regs >= 25) {
-        ESP_LOGI(TAG, "[JIT_ENTRY_TRACE] func=%u regs=%p count=%u args=%p argc=%u",
-                 (unsigned)function_idx, (void *)v_regs, (unsigned)actual_regs,
-                 (void *)args, (unsigned)num_args);
+        printf("[JIT_ENTRY_TRACE] code=%p regs=%p count=%u args=%p argc=%u\\n",
+               jit_code, (void *)v_regs, (unsigned)actual_regs,
+               (void *)args, (unsigned)num_args);
     }
 
     // Argument registers are overwritten below; clear only the remaining
