@@ -27,6 +27,6 @@ JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
     int32_t narrowed = narrow_i64(0x10000002aull);
     int ok = (signed_result == 88) && (unsigned_result != 0) &&
              (narrowed == 42) && ((unsigned_value >> 4) == 0x100000002ull) &&
-             (text == text) && (user_data == user_data);
+;
     printf("[ESPB_GROUP] integer64=%s arg=%ld\n", ok ? "PASS" : "FAIL", (long)arg);
 }
