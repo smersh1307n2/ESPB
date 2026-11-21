@@ -4472,6 +4472,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
                 uint8_t align_param = *pc++;
+                size_t alloca_emit_start = ctx.offset; /* TEMP: map runtime PC to emitted helper sequence */
                 
                 // ОПТИМИЗАЦИЯ #6: Убрана отладка из hot path
                 // printf("[JIT-COMPILE] ALLOCA at offset %ld: rd=%u, rs=%u, align=%u\n", 
@@ -4530,6 +4531,14 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 // Восстанавливаем t0-t6 и ra из temp area (s0+0..s0+31)
                 for (int i = 0; i < 7; ++i) emit_lw_phys(&ctx, t_regs[i], i * 4, 8); // lw tX, i*4(s0)
                 emit_lw_phys(&ctx, 1, 28, 8); // lw ra, 28(s0)
+                /* TEMP: compact RISC-V JIT code map for ALLOCA crash PC correlation. */
+                printf("[JIT_ALLOCA_CODE] func=%u bc_off=%zu base=%p start=%zu end=%zu bytes=",
+                       (unsigned)func_idx, (size_t)bytecode_offset, (void *)ctx.buffer,
+                       alloca_emit_start, ctx.offset);
+                for (size_t trace_i = alloca_emit_start; trace_i < ctx.offset; ++trace_i) {
+                    printf("%02x", ctx.buffer[trace_i]);
+                }
+                printf("\\n");
                 // s1(x9) и s2(x18) callee-saved — хелпер их сохранил сам, восстанавливать не нужно
                 
                 break;
