@@ -28,6 +28,6 @@ JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
     double d = double_math(x, y);
     int32_t converted = float_convert(3.25f);
     int ok = (f == 8.5f) && (d == 10.5) && (converted == 13) &&
-             (a > b) && (x != y) && (text == text) && (user_data == user_data);
+             (a > b) && (x != y);
     printf("[ESPB_GROUP] float=%s arg=%ld\n", ok ? "PASS" : "FAIL", (long)arg);
 }
