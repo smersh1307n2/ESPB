@@ -56,11 +56,6 @@ JIT_PROBE static uint64_t integer_conversion_probe(int64_t wide, int32_t narrow)
     mix ^= (uint64_t)truncated_unsigned << 1;
     mix ^= (uint64_t)sign_extended;
     mix ^= zero_extended << 2;
-    printf("[ESPB_DETAIL] conversion_parts u8=%u s8=%d u16=%u s16=%d trunc=%ld truncu=%u sext=%lld zext=%llu mix=0x%016llx\\n",
-           (unsigned)u8, (int)s8, (unsigned)u16, (int)s16,
-           (long)truncated, (unsigned)truncated_unsigned,
-           (long long)sign_extended, (unsigned long long)zero_extended,
-           (unsigned long long)mix);
     return mix;
 }
 
@@ -82,17 +77,20 @@ JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
     int32_t extended = (int32_t)(int8_t)-5;
     volatile int64_t signed_value = -7;
 
-    int ok = i32 == 123 && i64 == -987654321ll &&
-             f32 == 4.5f && f64 == 3.5 &&
-             selected_ptr == (void *)text &&
-             pointer_value == 1234 &&
-             converted == 0xffffcdedf8dbbd27ull &&
-             truncated == 42 && extended == -5 && signed_value < 0;
-
-    printf("[ESPB_DETAIL] select i32=%ld i64=%lld f32x100=%ld f64x100=%lld ptr_eq=%d ptrval=%ld converted=0x%016llx truncated=%ld extended=%ld signedneg=%d\n",
-           (long)i32, (long long)i64, (long)(f32 * 100.0f),
-           (long long)(f64 * 100.0), selected_ptr == (void *)text,
-           (long)pointer_value, (unsigned long long)converted,
-           (long)truncated, (long)extended, signed_value < 0);
-    printf("[ESPB_GROUP] select_convert=%s arg=%ld\n", ok ? "PASS" : "FAIL", (long)arg);
+    const int ok_select = i32 == 123 && i64 == -987654321ll &&
+                          f32 == 4.5f && f64 == 3.5 &&
+                          selected_ptr == (void *)text;
+    const int ok_pointer = pointer_value == 1234;
+    const int ok_converted = converted == 0xffffcdedf8dbbd27ull;
+    const int ok_truncated = truncated == 42;
+    const int ok_extended = extended == -5;
+    const int ok_signed = signed_value < 0;
+    const int ok = ok_select && ok_pointer && ok_converted &&
+                   ok_truncated && ok_extended && ok_signed;
+    printf("[ESPB_DETAIL] select=%d pointer=%d converted=%d trunc=%d extend=%d sign=%d\\n",
+           ok_select, ok_pointer, ok_converted, ok_truncated, ok_extended, ok_signed);
+    printf("[ESPB_DETAIL] converted_lo=%08x hi=%08x expected_lo=%08x hi=%08x\\n",
+           (uint32_t)converted, (uint32_t)(converted >> 32),
+           0xf8dbbd27u, 0xffffcdedu);
+    printf("[ESPB_GROUP] select_convert=%s arg=%ld\\n", ok ? "PASS" : "FAIL", (long)arg);
 }
