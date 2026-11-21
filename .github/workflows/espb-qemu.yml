@@ -10,6 +10,11 @@ on:
       - 'main/test.espb'
       - 'qemu/**'
       - 'tools/qemu/**'
+      - 'tools/bytecode_groups/**'
+      - 'tests/bytecode_groups/**'
+      - 'projects/ESP32_PRJ_TO_LLVM'
+      - '.github/scripts/translate_bc.py'
+      - '.github/workflows/build_opcode_groups_espb.yml'
       - '.github/workflows/espb-qemu.yml'
       - '.github/workflows/generate_runtime_corpus.yml'
   workflow_dispatch:
@@ -34,6 +39,46 @@ jobs:
           ref: ESPB_WORK
           submodules: recursive
           fetch-depth: 0
+
+      - name: Install ESP Clang
+        shell: bash
+        run: |
+          python "$IDF_PATH/tools/idf_tools.py" install esp-clang
+          CLANG="$(find -L /opt/esp/tools/esp-clang -type f -path "*/bin/clang" -perm -111 -print -quit)"
+          test -n "$CLANG"
+          echo "$(dirname "$CLANG")" >> "$GITHUB_PATH"
+          echo "ESPB_CLANG=$CLANG" >> "$GITHUB_ENV"
+
+      - name: Build and translate opcode-group corpus
+        env:
+          ESPB_TRANSLATOR_KEYS: ${{ secrets.ESPB_TRANSLATOR_KEYS }}
+          ESPB_API_KEY: ${{ secrets.ESPB_API_KEY }}
+          ESPB_API_KEY_1: ${{ secrets.ESPB_API_KEY_1 }}
+          ESPB_API_KEY_2: ${{ secrets.ESPB_API_KEY_2 }}
+          ESPB_API_KEY_3: ${{ secrets.ESPB_API_KEY_3 }}
+          ESPB_API_KEY_4: ${{ secrets.ESPB_API_KEY_4 }}
+          ESPB_API_KEY_5: ${{ secrets.ESPB_API_KEY_5 }}
+          ESPB_API_KEY_6: ${{ secrets.ESPB_API_KEY_6 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          . "$IDF_PATH/export.sh"
+          python tools/bytecode_groups/build.py --output-dir "$RUNNER_TEMP/espb_opcode_bc"
+          mkdir -p modules/opcode_groups "$RUNNER_TEMP/espb_opcode_pairs"
+          for bitcode in "$RUNNER_TEMP"/espb_opcode_bc/*.bc; do
+            stem="$(basename "$bitcode" .bc)"
+            jit_module="$RUNNER_TEMP/espb_opcode_pairs/$stem.jit.espb"
+            interp_module="$RUNNER_TEMP/espb_opcode_pairs/$stem.interpreter.espb"
+            python .github/scripts/translate_bc.py "$bitcode" "$jit_module"
+            test -s "$jit_module"
+            python tools/bytecode_groups/make_interpreter_variant.py "$jit_module" "$interp_module"
+            test -s "$interp_module"
+            cp "$jit_module" "modules/opcode_groups/$stem.espb"
+            echo "ESPB_GROUP_MODULE=$stem SIZE=$(stat -c %s "$jit_module")"
+          done
+          module_count="$(find modules/opcode_groups -maxdepth 1 -type f -name '*.espb' | wc -l)"
+          test "$module_count" -eq 10
+          echo "ESPB_OPCODE_GROUPS_TRANSLATED=$module_count"
 
       - name: Install Espressif QEMU
         shell: bash
@@ -64,7 +109,7 @@ jobs:
         run: |
           . "$IDF_PATH/export.sh"
           set +e
-          timeout --signal=INT --kill-after=5s 60s idf.py -C qemu qemu > qemu.log 2>&1
+          timeout --signal=INT --kill-after=5s 180s idf.py -C qemu qemu > qemu.log 2>&1
           qemu_status=$?
           set -e
           cat qemu.log
@@ -115,33 +160,175 @@ jobs:
             exit 1
           fi
 
+          jit_ready_count=$(grep -c '^\\[ESPB_TEST\\] jit_ready=' qemu.log || true)
+          interp_ready_count=$(grep -c '^\\[ESPB_TEST\\] interp_ready=.*hot=0 compiled=0
+          fibonacci_pass_count=$(grep -F -c "Result is CORRECT." qemu.log || true)
+          if [ "$fibonacci_pass_count" -lt 12 ]; then
+            echo "Expected interpreter and JIT Fibonacci checks (12 calls), found $fibonacci_pass_count"
+            exit 1
+          fi
+
+          benchmark_modules=$((expected_modules - 4))
+          expected_samples=$((benchmark_modules * 5))
+          actual_samples=$(grep -Ec "\\[ESPB_BENCH\\] module=.*sample_[0-4]_us=[1-9][0-9]* cycles_start=[0-9]+ cycles_end=[0-9]+ cycles_delta=[1-9][0-9]*" qemu.log || true)
+          if [ "$actual_samples" -ne "$expected_samples" ]; then
+            echo "Benchmark sample count mismatch: expected=$expected_samples actual=$actual_samples"
+            exit 1
+          fi
+          median_count=$(grep -Ec "\\[ESPB_BENCH\\] module=.*app_main_median_us=[1-9][0-9]* app_main_median_cycles=[1-9][0-9]*" qemu.log || true)
+          if [ "$median_count" -ne "$expected_modules" ]; then
+            echo "Expected one numeric median per module ($expected_modules), found $median_count"
+            exit 1
+          fi
+
+          raw_jit_count=$(grep -Ec '^\[ESPB_BENCH_RAW_JIT\] function=app_main median_us=[1-9][0-9]* median_cycles=[1-9][0-9]*' qemu.log || true)
+          expected_bench_jit=$((jit_modules - 2))
+          if [ "$raw_jit_count" -ne "$expected_bench_jit" ]; then
+            echo "Raw JIT metric count mismatch: expected=$expected_bench_jit actual=$raw_jit_count"
+            exit 1
+          fi
+
+          interpreter_core_count=$(grep -Ec '^\[ESPB_BENCH_INTERP_CORE\] function=app_main median_us=[1-9][0-9]* median_cycles=[1-9][0-9]*' qemu.log || true)
+          expected_bench_interpreter=$((interpreter_modules - 2))
+          if [ "$interpreter_core_count" -ne "$expected_bench_interpreter" ]; then
+            echo "Interpreter core metric count mismatch: expected=$expected_bench_interpreter actual=$interpreter_core_count"
+            exit 1
+          fi
+
+          memory_count=$(grep -Ec '^\[ESPB_MEM\] module=' qemu.log || true)
+          if [ "$memory_count" -ne "$expected_modules" ]; then
+            echo "Memory metric count mismatch: expected=$expected_modules actual=$memory_count"
+            exit 1
+          fi
+
+          awk -v expected="$expected_modules" '
+            /^\[ESPB_MEM\]/ {
+              before=ready=exec_heap=after=0
+              for (i = 1; i <= NF; i++) {
+                split($i, kv, "=")
+                if (kv[1] == "heap_before") before = kv[2] + 0
+                else if (kv[1] == "heap_ready") ready = kv[2] + 0
+                else if (kv[1] == "heap_after_exec") exec_heap = kv[2] + 0
+                else if (kv[1] == "heap_after_unload") after = kv[2] + 0
+              }
+              if (before > 0 && after + 512 < before) {
+                printf "Heap recovery regression: before=%u after_unload=%u\n", before, after
+                exit 1
+              }
+              if (ready > 0 && exec_heap + 512 < ready) {
+                printf "Heap growth during execution: ready=%u after_exec=%u\n", ready, exec_heap
+                exit 1
+              }
+              count++
+            }
+            END {
+              if (count != expected) {
+                printf "Heap metric records mismatch: expected=%u actual=%u\n", expected, count
+                exit 1
+              }
+            }
+          ' qemu.log
+ qemu.log || true)
+          if [ "$jit_ready_count" -ne "$jit_modules" ] || [ "$interp_ready_count" -ne "$interpreter_modules" ]; then
+            echo "Mode readiness mismatch: jit=$jit_ready_count/$jit_modules interpreter=$interp_ready_count/$interpreter_modules"
+            exit 1
+          fi
           awk '
-            index($0, "[ESPB_TEST] module=") == 1 {
-              if (active && mode == "jit" && compiled_count != 3) {
-                print "HOT/JIT module compiled " compiled_count " of 3 functions: " module_name > "/dev/stderr"
+            /^\\[ESPB_TEST\\] jit_ready=/ {
+              hot = compiled = -1
+              for (i = 1; i <= NF; ++i) {
+                split($i, kv, "=")
+                if (kv[1] == "hot") hot = kv[2] + 0
+                if (kv[1] == "compiled") compiled = kv[2] + 0
+              }
+              if (hot <= 0 || hot != compiled) {
+                print "Incomplete HOT compilation: " $0 > "/dev/stderr"
                 failed = 1
               }
-              active = 1
-              module_name = $0
-              mode = ($0 ~ /module=jit__/) ? "jit" : "interpreter"
-              compiled_count = 0
-            }
-            (index($0, "[JIT] Compiled HOT function") == 1 || index($0, "Precompiled HOT function #") > 0) {
-              if (active && mode == "jit") compiled_count++
-              if (active && mode == "interpreter") {
-                print "Interpreter-only module unexpectedly compiled JIT: " module_name > "/dev/stderr"
-                failed = 1
-              }
-            }
-            index($0, "[ESPB_TEST] module_done=") == 1 {
-              if (active && mode == "jit" && compiled_count != 3) {
-                print "HOT/JIT module compiled " compiled_count " of 3 functions: " module_name > "/dev/stderr"
-                failed = 1
-              }
-              active = 0
             }
             END { exit failed }
           ' qemu.log
+
+          if grep -E -m1 '\\[ESPB_GROUP\\] [A-Za-z0-9_]+=FAIL' qemu.log; then
+            echo "Opcode-group semantic assertion failed"
+            exit 1
+          fi
+          for group in integer32 integer64 float control_flow select_convert memory calls_callbacks atomics freertos_task freertos_timer; do
+            group_passes=$(grep -F -c "[ESPB_GROUP] $group=PASS" qemu.log || true)
+            if [ "$group_passes" -lt 2 ]; then
+              echo "Missing interpreter/JIT semantic PASS for $group: found $group_passes"
+              exit 1
+            fi
+          done
+          rtos_calls=$(grep -c '^\\[ESPB_TEST\\] bounded_rtos_calls=.*count=3
+          fibonacci_pass_count=$(grep -F -c "Result is CORRECT." qemu.log || true)
+          if [ "$fibonacci_pass_count" -lt 12 ]; then
+            echo "Expected interpreter and JIT Fibonacci checks (12 calls), found $fibonacci_pass_count"
+            exit 1
+          fi
+
+          expected_samples=$((expected_modules * 5))
+          actual_samples=$(grep -Ec "\\[ESPB_BENCH\\] module=.*sample_[0-4]_us=[1-9][0-9]* cycles_start=[0-9]+ cycles_end=[0-9]+ cycles_delta=[1-9][0-9]*" qemu.log || true)
+          if [ "$actual_samples" -ne "$expected_samples" ]; then
+            echo "Benchmark sample count mismatch: expected=$expected_samples actual=$actual_samples"
+            exit 1
+          fi
+          median_count=$(grep -Ec "\\[ESPB_BENCH\\] module=.*app_main_median_us=[1-9][0-9]* app_main_median_cycles=[1-9][0-9]*" qemu.log || true)
+          if [ "$median_count" -ne "$expected_modules" ]; then
+            echo "Expected one numeric median per module ($expected_modules), found $median_count"
+            exit 1
+          fi
+
+          raw_jit_count=$(grep -Ec '^\[ESPB_BENCH_RAW_JIT\] function=app_main median_us=[1-9][0-9]* median_cycles=[1-9][0-9]*' qemu.log || true)
+          if [ "$raw_jit_count" -ne "$jit_modules" ]; then
+            echo "Raw JIT metric count mismatch: expected=$jit_modules actual=$raw_jit_count"
+            exit 1
+          fi
+
+          interpreter_core_count=$(grep -Ec '^\[ESPB_BENCH_INTERP_CORE\] function=app_main median_us=[1-9][0-9]* median_cycles=[1-9][0-9]*' qemu.log || true)
+          if [ "$interpreter_core_count" -ne "$interpreter_modules" ]; then
+            echo "Interpreter core metric count mismatch: expected=$interpreter_modules actual=$interpreter_core_count"
+            exit 1
+          fi
+
+          memory_count=$(grep -Ec '^\[ESPB_MEM\] module=' qemu.log || true)
+          if [ "$memory_count" -ne "$expected_modules" ]; then
+            echo "Memory metric count mismatch: expected=$expected_modules actual=$memory_count"
+            exit 1
+          fi
+
+          awk -v expected="$expected_modules" '
+            /^\[ESPB_MEM\]/ {
+              before=ready=exec_heap=after=0
+              for (i = 1; i <= NF; i++) {
+                split($i, kv, "=")
+                if (kv[1] == "heap_before") before = kv[2] + 0
+                else if (kv[1] == "heap_ready") ready = kv[2] + 0
+                else if (kv[1] == "heap_after_exec") exec_heap = kv[2] + 0
+                else if (kv[1] == "heap_after_unload") after = kv[2] + 0
+              }
+              if (before > 0 && after + 512 < before) {
+                printf "Heap recovery regression: before=%u after_unload=%u\n", before, after
+                exit 1
+              }
+              if (ready > 0 && exec_heap + 512 < ready) {
+                printf "Heap growth during execution: ready=%u after_exec=%u\n", ready, exec_heap
+                exit 1
+              }
+              count++
+            }
+            END {
+              if (count != expected) {
+                printf "Heap metric records mismatch: expected=%u actual=%u\n", expected, count
+                exit 1
+              }
+            }
+          ' qemu.log
+ qemu.log || true)
+          if [ "$rtos_calls" -ne 4 ]; then
+            echo "Expected exactly four bounded RTOS module runs (two groups x two modes), found $rtos_calls"
+            exit 1
+          fi
 
           fibonacci_pass_count=$(grep -F -c "Result is CORRECT." qemu.log || true)
           if [ "$fibonacci_pass_count" -lt 12 ]; then
@@ -206,3 +393,12 @@ jobs:
               }
             }
           ' qemu.log
+
+      - name: Upload QEMU execution log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: espb-qemu-${{ matrix.target }}-${{ github.run_id }}
+          path: qemu.log
+          if-no-files-found: ignore
+          retention-days: 14
