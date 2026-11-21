@@ -13,6 +13,23 @@ Coverage is measured from decoded ESPB Code sections, not inferred from C syntax
 - Every observed raw opcode is present in the interpreter and in both Xtensa and RISC-V JIT dispatch implementations.
 - Each JIT/Interpreter pair has identical function bytecode. The only difference is the HOT flag: all 38 functions are HOT in JIT variants and non-HOT in Interpreter variants.
 
+## Pre-translation bitcode spot-check
+
+A successful bitcode-only build is available without spending translator quota:
+
+- Bitcode workflow run: `44869019337` (success), branch `ESPB_WORK`, source commit `24049ced8f2ab7a43f0c903abee6d24130a6d387`.
+- Artifact: `espb-opcode-groups-bc`, artifact ID `14693600365`; ten non-empty .bc files.
+- LLVM module target for the inspected groups: `riscv32-esp-unknown-elf`.
+- Embedded compiler identity: Espressif Clang 18.1.2; debug compile-unit metadata marks the module `isOptimized=true`.
+- `03_float.bc` SHA-256: `e7dd468a25e83aeddb1e109f367ff4ac9bb307c8327e0a19ee8fe29e39a98fdb`.
+- `08_atomics.bc` SHA-256: `947b5cf0682bc035607f04297169365117f1161a97af4779dc8e0428021fd539`.
+
+The inspected `float_math` LLVM function contains `fdiv`, a call to `llvm.fmuladd.f32`, two `fsub` operations and `ret`. It does not contain standalone `fmul` or `fadd`. The same module still contains separate F64 `fadd`, `fsub`, `fmul`, `fdiv` operations in `double_math`, and F32 `fmul` plus `fptosi` in `float_convert`. This confirms that the frontend/bitcode stage has already contracted the F32 multiply-plus-add expression into an LLVM fused-multiply-add intrinsic. It does not yet tell us how the translator handles that intrinsic because this bitcode-only artifact has no paired ESPB result.
+
+The inspected `08_atomics.bc` functions call `__atomic_fetch_add_4`, `__atomic_compare_exchange_4`, `__atomic_load_4`, `__atomic_exchange_8`, `__atomic_store_8` and `__atomic_load_8`. There are no LLVM `atomicrmw`, `cmpxchg` or `fence` instructions in either helper function. The RISC-V target feature string contains `-a` (the A/atomic extension is disabled), consistent with the frontend leaving these builtins as helper calls instead of emitting RISC-V atomic instructions. The source-level atomic calls therefore cannot be used as evidence of raw ESPB atomic-opcode coverage.
+
+This spot-check is pre-translation evidence only. Do not merge its LLVM operation counts into the historical ESPB emitted-opcode counts above. The next translator-quota use for this question should be a single targeted translation of this exact `03_float.bc`, not a new ten-group corpus run. That will determine whether `llvm.fmuladd.f32` is correctly lowered, expanded or lost by the translator.
+
 ## Confirmed gaps
 
 - Integer: register DIV/REM signed and unsigned, OR/NOT, several shifts, I64 SUB/MUL/OR/NOT and many immediate variants.
