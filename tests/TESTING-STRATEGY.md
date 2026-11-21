@@ -19,7 +19,7 @@ This document defines how ESPB tests are layered and what each result proves. A 
 
 The canonical corpus flow is:
 
-`tests/bytecode_groups/*.c -> LLVM .bc -> translated JIT .espb -> interpreter twin`
+`tests/bytecode_groups/*.c -> ESP-IDF CMake compile command / ESP-Clang -> LLVM .bc -> ESPB translator optimization passes -> ESPB Code section -> Interpreter or JIT`
 
 The Interpreter twin is produced by clearing only the function-header HOT bit (`0x40`) in the translated module. The pair validator must prove:
 - every JIT function is HOT;
@@ -54,6 +54,24 @@ Opcode coverage and semantic execution coverage are separate:
 - *Semantic assertions* say the output/side effects are correct.
 
 Do not infer dynamic execution from static presence. Add runtime instrumentation only in a separate coverage profile; keep it out of timed benchmark regions. Keep the denominator tied to the exact implementation set and target dispatch implementation under audit.
+
+### 3.1 Attribute a missing or changed opcode to the correct stage
+
+The bitcode builder reuses the effective compiler arguments from ESP-IDF compile_commands.json. The translation request then enables additional LLVM, call-result and alloca optimizations, register patching, peephole optimization and compaction. Thus an expression in C is not a promise that a corresponding operation survives into ESPB.
+
+For an opcode-specific case, compare four checkpoints:
+1. C source: the intended operation and runtime-dependent inputs are present.
+2. LLVM bitcode / disassembled LLVM IR before translation: determine what ESP-IDF Clang and its effective compile flags produced.
+3. ESPB output: inspect what the translator optimization and lowering stages emitted into the Code section.
+4. Dynamic runtime: prove that the relevant instruction path executed and its result or side effect is correct in each engine.
+
+Attribute the first point where the operation disappears or changes. If it is absent from LLVM IR, investigate frontend lowering, compiler flags or test construction; this is not evidence of an ESPB translator defect. If it is present in LLVM IR but absent from ESPB, inspect translator optimization/lowering. If it is present in ESPB but not reached, the test lacks dynamic path coverage. If it executes and gives a wrong result, investigate runtime semantics and the expected value.
+
+For reproducible investigations, record the actual compile command or normalized options, ESP-IDF and ESP-Clang versions, target triple/architecture, optimization level, relevant feature defines, floating-point options (including fast-math and contraction), .bc SHA-256, translator revision and translator options. The current paired manifest binds source and .bc hashes but does not itself explain the compiler flags that produced the bitcode.
+
+Test-design caveats: noinline helps preserve a function boundary but does not preserve every operation inside it. Volatile makes specified memory accesses observable but does not guarantee an arithmetic opcode or prevent all algebraic simplification. Constant operands, dead results and compile-time-known branches can fold away the operation under test. Prefer runtime-dependent inputs and an externally observable result, then inspect LLVM IR and ESPB output before spending translator quota. Floating-point expressions are especially sensitive to effective FP flags and contraction/reassociation rules. Atomic builtins may become LLVM atomics, target-specific sequences or imported helpers; only decoded ESPB atomic opcodes count as raw-opcode coverage.
+
+Keep the regular corpus representative of the normal optimized build. A targeted opcode probe may use narrowly scoped, documented controls to preserve an operation, but its results must not be mixed with production-like coverage. Do not globally change compiler flags or ESP-IDF configuration to force an opcode. A local attribute such as optnone may be considered for an isolated probe, but it is not a substitute for inspecting actual IR and final ESPB output.
 
 ## 4. ABI and callbacks
 
@@ -124,7 +142,7 @@ A failure at an earlier gate blocks interpretation of later gates. In particular
 - Do not alter ESP-IDF/sdkconfig, CPU frequencies, compiler/linker flags, or IRAM/DRAM placement to influence results.
 - Do not modify existing runtime modules to accommodate a test unless a reproducible root cause establishes a runtime defect.
 - Add tests in small isolated groups and keep artifacts provenance-bound.
-- Keep translator API use separate and manual/quota-aware; bitcode generation and host checks should not spend translator quota.
+- Keep translator API use separate and manual/quota-aware; bitcode generation, LLVM IR inspection and host checks should not spend translator quota.
 ## 10. Operating sequence
 
 1. A push that changes `tests/bytecode_groups/**` runs the LLVM bitcode build workflow. The fast host-tool workflow runs for changes to the host tools and their tests.
@@ -133,4 +151,4 @@ A failure at an earlier gate blocks interpretation of later gates. In particular
 4. QEMU verifies run ID, producer `head_sha`, source hashes, translator submodule SHA, bitcode hashes and both module hashes before staging bytecode. A legacy artifact without `manifest.json` is rejected by design.
 5. When QEMU runtime code changes, the normal push path starts target tests. Corpus-only changes do not automatically launch QEMU against a possibly stale translator artifact.
 
-The translator workflow is manual/quota-aware by design. Do not repeatedly launch it to validate CMake or bitcode generation: use the separate bitcode workflow and host tests for those layers.
+The translator workflow is manual/quota-aware by design. Do not repeatedly launch it to validate CMake or bitcode generation: use the separate bitcode workflow, host tests and LLVM IR inspection for those layers.
