@@ -1,6 +1,6 @@
 # Opcode coverage audit
 
-Coverage is measured from decoded ESPB Code sections, not inferred from C syntax. Numbers below are pinned to one historical paired artifact and must not be presented as a live count for later corpora.
+Coverage is measured from decoded ESPB Code sections, not inferred from C syntax. C source, optimized LLVM IR, translated ESPB and dynamic execution are separate evidence layers. Numbers below are pinned to one historical paired artifact and must not be presented as a live count for later corpora.
 
 ## Artifact basis
 
@@ -24,9 +24,17 @@ Coverage is measured from decoded ESPB Code sections, not inferred from C syntax
 - Extended operations: MEMORY.INIT/COPY, DATA.DROP, ELEM.DROP, TABLE.INIT/COPY/FILL/SIZE/GET/SET, HEAP_REALLOC and HEAP_CALLOC are not covered.
 - Native-to-ESPB callback bridge: `07_calls_callbacks.c` tests internal bytecode function pointers and recursion. It does not yet prove native `host_invoke_cb` / `host_invoke_cb2` calls invoke ESPB callbacks through CBMETA. Keep that as an explicit gap until the emitted metadata and both engine paths pass.
 
-## Translator semantic warning
+## Source / LLVM / translator lowering warning
 
-The emitted `03_float` function corresponding to the F32 arithmetic helper contains DIV.F32 followed by two SUB.F32 operations, but no MUL.F32 or ADD.F32 for source expression `(a * b) + (a / b) - (b - a)`. Treat this as a translator semantic discrepancy to reproduce and investigate; do not trust the group's PASS marker until emitted code and runtime result are both independently checked.
+The emitted `03_float` function corresponding to the F32 arithmetic helper contains DIV.F32 followed by two SUB.F32 operations, but no MUL.F32 or ADD.F32 for source expression `(a * b) + (a / b) - (b - a)`. This is an unresolved source-to-ESPB lowering discrepancy, not yet proof of a translator defect.
+
+The actual bitcode build inherits the ESP-IDF CMake compile command, so frontend optimization and floating-point flags may already have transformed the source before translation. The ESPB translation request then enables additional LLVM optimizations, call-result optimization, alloca optimization, register patching, peephole optimization and compaction. To attribute this observation correctly, inspect the same function in disassembled LLVM IR from the exact .bc used for translation, then compare it with the decoded ESPB Code section:
+- If fmul/fadd are already absent from LLVM IR, investigate Clang lowering, effective optimization flags, FP options and test construction.
+- If fmul/fadd remain in LLVM IR but disappear from ESPB, investigate translator optimization/lowering.
+- If the ESPB instructions exist but are not executed, fix dynamic path coverage rather than changing the translator.
+- If they execute but the result is wrong, investigate runtime opcode semantics and expected-value calculation.
+
+Do not infer the exact arithmetic opcode sequence from the C expression, and do not spend translator quota until the pre-translation IR and relevant compile options have been checked. The existing manifest binds the .bc SHA-256, but the current report does not yet retain the exact per-source compile command/options record.
 
 ## Runtime execution status
 
@@ -43,7 +51,7 @@ The emitted `03_float` function corresponding to the F32 arithmetic helper conta
 
 1. Report every coverage count with exact producer run ID and manifest source commit.
 2. Distinguish implemented opcode count, statically emitted opcode count, dynamically executed opcode paths and semantic assertion coverage.
-3. Do not count source syntax as opcode coverage; inspect the emitted Code section. Compiler `__atomic_*` builtins may resolve to imported calls rather than raw atomic opcodes.
+3. Do not count source syntax as opcode coverage; inspect pre-translation LLVM IR, the emitted ESPB Code section and actual runtime paths. Compiler `__atomic_*` builtins may become LLVM atomics, target-specific sequences or imported calls rather than raw atomic opcodes.
 4. Keep static opcode audit outside timed regions. If runtime instrumentation is added, use a distinct coverage profile.
 5. Refresh this audit whenever the corpus, translator revision, or opcode implementation changes.
 
