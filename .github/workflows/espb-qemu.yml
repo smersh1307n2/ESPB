@@ -6,6 +6,7 @@ on:
       - ESPB_WORK
     paths:
       - 'components/espb/**'
+      - 'tests/bytecode_groups/**'
       - 'modules/**/*.espb'
       - 'main/test.espb'
       - 'qemu/**'
