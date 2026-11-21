@@ -125,3 +125,12 @@ A failure at an earlier gate blocks interpretation of later gates. In particular
 - Do not modify existing runtime modules to accommodate a test unless a reproducible root cause establishes a runtime defect.
 - Add tests in small isolated groups and keep artifacts provenance-bound.
 - Keep translator API use separate and manual/quota-aware; bitcode generation and host checks should not spend translator quota.
+## 10. Operating sequence
+
+1. A push that changes `tests/bytecode_groups/**` runs the LLVM bitcode build workflow. The fast host-tool workflow runs for changes to the host tools and their tests.
+2. Run `Build paired ESPB opcode-group modules` manually when translator quota is available. It re-runs the host checks, compiles the ten LLVM groups, translates each once, creates the Interpreter twin and uploads one provenance-bound artifact.
+3. Run `ESPB_WORK dual-mode QEMU tests` manually after the producer succeeds. Leave `paired_run_id` empty to select the newest successful producer run, or supply its exact run ID to reproduce a specific artifact.
+4. QEMU verifies run ID, producer `head_sha`, source hashes, translator submodule SHA, bitcode hashes and both module hashes before staging bytecode. A legacy artifact without `manifest.json` is rejected by design.
+5. When QEMU runtime code changes, the normal push path starts target tests. Corpus-only changes do not automatically launch QEMU against a possibly stale translator artifact.
+
+The translator workflow is manual/quota-aware by design. Do not repeatedly launch it to validate CMake or bitcode generation: use the separate bitcode workflow and host tests for those layers.

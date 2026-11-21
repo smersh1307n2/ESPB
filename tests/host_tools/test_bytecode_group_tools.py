@@ -239,6 +239,11 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("--expected-groups 10", workflow)
         self.assertNotIn("status=success", workflow)
         self.assertNotIn("44861542751", workflow)
+        self.assertNotIn("outputs.run_id }}}", workflow)
+        self.assertEqual(
+            workflow.count("PAIRED_RUN_ID: ${{ steps.paired_run.outputs.run_id }}"),
+            1,
+        )
         self.assertEqual(
             workflow.count("PAIRED_SOURCE_SHA: ${{ steps.paired_run.outputs.source_sha }}"),
             1,
