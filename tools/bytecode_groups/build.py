@@ -70,3 +70,7 @@ def main() -> int:
     finally:
         shutil.rmtree(build_example, ignore_errors=True)
         wrapper.unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
