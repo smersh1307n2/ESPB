@@ -29,6 +29,6 @@ JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
     uint32_t bit_result = integer_bits(bits);
     int ok = (mix == 229) && (signed_result == -32) &&
              (bit_result == ((((0x12345678u << 5) | (0x12345678u >> 27)) ^ (0x12345678u & 0x55aa55aau)))) &&
-             (a < b + 32) && (a != b) && (text == text) && (user_data == user_data);
+             (a < b + 32) && (a != b);
     printf("[ESPB_GROUP] integer32=%s arg=%ld\n", ok ? "PASS" : "FAIL", (long)arg);
 }
