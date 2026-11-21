@@ -3979,7 +3979,8 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         // Result returned in a10, move to a8
                         emit_mov_n(&ctx, 8, 10);
                         
-                        // Restore a11 back to v_regs pointer from a6
+                        // Restore a11 after CALLX8 (a6 is pinned across the windowed call).
+                        emit_mov_n(&ctx, 11, 6);
                         break;
                     }
                 }
@@ -5349,7 +5350,8 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Result in a10 -> a8
                 emit_mov_n(&ctx, 8, 10);
 
-                // Restore v_regs pointer
+                // Restore a11 after CALLX8 (a6 is pinned across the windowed call).
+                emit_mov_n(&ctx, 11, 6);
 
                 // store result low32
                 emit_s32i(&ctx, 8, 6, rd_off);
@@ -5388,7 +5390,8 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Result in a10 -> a8
                 emit_mov_n(&ctx, 8, 10);
 
-                // Restore v_regs pointer
+                // Restore a11 after CALLX8 (a6 is pinned across the windowed call).
+                emit_mov_n(&ctx, 11, 6);
 
                 // store result low32
                 emit_s32i(&ctx, 8, 6, rd_off);
@@ -5427,7 +5430,8 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Result in a10 -> a8
                 emit_mov_n(&ctx, 8, 10);
 
-                // Restore v_regs pointer
+                // Restore a11 after CALLX8 (a6 is pinned across the windowed call).
+                emit_mov_n(&ctx, 11, 6);
 
                 // store result low32
                 emit_s32i(&ctx, 8, 6, rd_off);
@@ -5466,7 +5470,8 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // Result in a10 -> a8
                 emit_mov_n(&ctx, 8, 10);
 
-                // Restore v_regs pointer
+                // Restore a11 after CALLX8 (a6 is pinned across the windowed call).
+                emit_mov_n(&ctx, 11, 6);
 
                 // store result low32
                 emit_s32i(&ctx, 8, 6, rd_off);
@@ -7379,7 +7384,8 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8));       // v_regs[rd].lo = a10
                 emit_s32i(&ctx, 11, 6, (uint16_t)(rd * 8 + 4));   // v_regs[rd].hi = a11
                 
-                // Restore v_regs pointer to a11 for subsequent opcodes
+                // Restore a11 after CALLX8 (a6 is pinned across the windowed call).
+                emit_mov_n(&ctx, 11, 6);
                 break;
             }
 
