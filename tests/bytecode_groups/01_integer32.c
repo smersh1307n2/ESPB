@@ -94,12 +94,15 @@ JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
 
     const uint32_t opcode_probe =
         integer32_opcode_probe(1234567, 37, 0xF1234567u, 29u);
-    const int ok = (mix == expected_mix) &&
-                   (signed_result == -32) &&
-                   (bit_result == expected_bits) &&
-                   (opcode_probe == 2286556547u) &&
-                   (a < b + 2048) && (a != b);
-    printf("[ESPB_GROUP] integer32=%s arg=%ld\n", ok ? "PASS" : "FAIL", (long)arg);
+    const int ok_mix = (mix == expected_mix);
+    const int ok_signed = (signed_result == -32);
+    const int ok_bits = (bit_result == expected_bits);
+    const int ok_opcode = (opcode_probe == 2286556547u);
+    const int ok_bounds = (a < b + 2048) && (a != b);
+    const int ok = ok_mix && ok_signed && ok_bits && ok_opcode && ok_bounds;
+    printf("[ESPB_DETAIL] i32 mix=%d signed=%d bits=%d opcode=%d bounds=%d\\n",
+           ok_mix, ok_signed, ok_bits, ok_opcode, ok_bounds);
+    printf("[ESPB_GROUP] integer32=%s arg=%ld\\n", ok ? "PASS" : "FAIL", (long)arg);
     (void)text;
     (void)user_data;
 }
