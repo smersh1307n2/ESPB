@@ -42,6 +42,6 @@ JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
     int32_t recursive = recursive_sum(5);
     int32_t indirect = invoke_callback(table[1], (void *)(intptr_t)4);
     int ok = direct == 20 && recursive == 15 && indirect == 34 &&
-             (text == text) && (user_data == user_data);
+;
     printf("[ESPB_GROUP] calls_callbacks=%s arg=%ld\n", ok ? "PASS" : "FAIL", (long)arg);
 }
