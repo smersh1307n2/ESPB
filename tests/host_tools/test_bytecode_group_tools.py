@@ -570,11 +570,13 @@ class WorkflowContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
 
         self.assertIn("const bool is_root_call = (exec_ctx->call_stack_top == 0);", runtime)
+        self.assertIn("const int entry_saved_call_stack_top = exec_ctx->call_stack_top;", runtime)
         self.assertIn("const size_t entry_saved_sp = exec_ctx->sp;", runtime)
         self.assertIn("const size_t frame_base = is_root_call ? entry_saved_sp : exec_ctx->sp;", runtime)
         self.assertIn("exec_ctx->sp = frame_base + frame_size_bytes;", runtime)
         self.assertIn("exec_ctx->sp = entry_saved_sp;", runtime)
         self.assertIn("exec_ctx->fp = entry_saved_fp;", runtime)
+        self.assertIn("exec_ctx->call_stack_top = entry_saved_call_stack_top;", runtime)
 
 
     def test_qemu_executes_atomic_jit_on_both_architectures(self) -> None:
