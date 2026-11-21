@@ -10,12 +10,13 @@ on:
       - 'main/test.espb'
       - 'qemu/**'
       - 'tools/qemu/**'
-      - 'tools/bytecode_groups/**'
-      - 'tests/bytecode_groups/**'
       - 'projects/ESP32_PRJ_TO_LLVM'
-      - '.github/workflows/espb-qemu.yml'
-      - '.github/workflows/generate_runtime_corpus.yml'
   workflow_dispatch:
+    inputs:
+      paired_run_id:
+        description: "Optional successful paired-translator workflow run ID. Empty selects the latest successful run."
+        required: false
+        type: string
 
 permissions:
   actions: read
@@ -43,13 +44,106 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Download last successful paired opcode corpus
+      - name: Select a successful paired corpus run
+        id: paired_run
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUESTED_RUN_ID: ${{ inputs.paired_run_id }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.request
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GITHUB_TOKEN"]
+          requested = os.environ.get("REQUESTED_RUN_ID", "").strip()
+          api = f"https://api.github.com/repos/{repository}"
+
+          def get_json(url):
+              request = urllib.request.Request(
+                  url,
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {token}",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+
+          def reject(message):
+              print(f"::error::{message}")
+              raise SystemExit(1)
+
+          if requested:
+              if not requested.isdigit():
+                  reject("paired_run_id must be a numeric GitHub Actions run ID.")
+              candidates = [get_json(f"{api}/actions/runs/{requested}")]
+          else:
+              payload = get_json(
+                  f"{api}/actions/runs?branch=ESPB_WORK&status=success&per_page=100"
+              )
+              candidates = payload.get("workflow_runs", [])
+
+          candidates = [
+              run for run in candidates
+              if run.get("path") == ".github/workflows/build_opcode_groups_espb.yml"
+              and run.get("head_branch") == "ESPB_WORK"
+              and run.get("status") == "completed"
+              and run.get("conclusion") == "success"
+              and run.get("repository", {}).get("full_name", repository) == repository
+          ]
+          candidates.sort(key=lambda run: run.get("created_at", ""), reverse=True)
+
+          for run in candidates:
+              try:
+                  artifacts = get_json(run["artifacts_url"]).get("artifacts", [])
+              except (KeyError, urllib.error.HTTPError):
+                  continue
+              matching = [
+                  item for item in artifacts
+                  if item.get("name") == "espb-opcode-groups-paired"
+                  and not item.get("expired", False)
+              ]
+              if matching:
+                  print(f"Selected paired corpus run {run['id']} ({run['head_sha']})")
+                  with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                      output.write(f"run_id={run['id']}\n")
+                      output.write(f"source_sha={run['head_sha']}\n")
+                  break
+          else:
+              reject(
+                  "No successful, unexpired espb-opcode-groups-paired artifact was found. "
+                  "Run the manual paired translator workflow first."
+              )
+          PY
+
+      - name: Download paired corpus and bitcode from the selected run
         uses: actions/download-artifact@v4
         with:
           name: espb-opcode-groups-paired
-          path: .work/paired
-          run-id: 44861542751
+          path: .work
+          run-id: ${{ steps.paired_run.outputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Verify corpus provenance and source compatibility
+        shell: bash
+        env:
+          PAIRED_RUN_ID: ${{ steps.paired_run.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          python tools/bytecode_groups/corpus_manifest.py verify \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --bitcode-dir "$GITHUB_WORKSPACE/.work/bytecode_groups" \
+            --paired-dir "$GITHUB_WORKSPACE/.work/paired" \
+            --manifest "$GITHUB_WORKSPACE/.work/paired/manifest.json" \
+            --repository "$GITHUB_REPOSITORY" \
+            --branch "$GITHUB_REF_NAME" \
+            --expected-run-id "$PAIRED_RUN_ID" \
+            --expected-groups 10
 
       - name: Stage and validate paired opcode corpus
         shell: bash
@@ -70,7 +164,7 @@ jobs:
             count=$((count + 1))
           done
           test "$count" -eq 10
-          echo "ESPB_OPCODE_GROUPS_SOURCE_RUN=44861542751"
+          echo "ESPB_OPCODE_GROUPS_SOURCE_RUN=${{ steps.paired_run.outputs.run_id }}"
           echo "ESPB_OPCODE_GROUPS_STAGED=$count"
 
       - name: Install Espressif QEMU
