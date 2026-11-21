@@ -42,6 +42,8 @@ def reuse_unchanged_pairs(
     repository: str,
     branch: str,
     translator_commit: str,
+    expected_run_id: int,
+    expected_source_commit: str,
 ) -> tuple[list[str], list[str]]:
     previous_root = previous_root.resolve()
     bitcode_dir = bitcode_dir.resolve()
@@ -63,6 +65,10 @@ def reuse_unchanged_pairs(
         raise ReuseError("Previous paired artifact branch mismatch")
     if manifest.get("translator_commit") != translator_commit:
         raise ReuseError("Previous paired artifact translator submodule mismatch")
+    if manifest.get("producer_run_id") != expected_run_id:
+        raise ReuseError("Previous paired artifact producer run ID mismatch")
+    if manifest.get("source_commit") != expected_source_commit:
+        raise ReuseError("Previous paired artifact source commit mismatch")
 
     groups = manifest.get("groups")
     if not isinstance(groups, list) or manifest.get("group_count") != len(groups):
@@ -140,6 +146,8 @@ def main() -> int:
     parser.add_argument("--repository", required=True)
     parser.add_argument("--branch", required=True)
     parser.add_argument("--translator-commit", required=True)
+    parser.add_argument("--expected-run-id", type=int, required=True)
+    parser.add_argument("--expected-source-commit", required=True)
     args = parser.parse_args()
     try:
         reuse_unchanged_pairs(
@@ -149,6 +157,8 @@ def main() -> int:
             args.repository,
             args.branch,
             args.translator_commit,
+            args.expected_run_id,
+            args.expected_source_commit,
         )
     except (ReuseError, OSError) as exc:
         print(f"PAIRED_REUSE_ERROR: {exc}", flush=True)
