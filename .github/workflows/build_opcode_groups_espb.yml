@@ -1,4 +1,6 @@
 name: Build paired ESPB opcode-group modules
+# Reuse prior JIT/Interpreter pairs by exact LLVM bitcode SHA; only changed
+# bitcode groups are submitted to the quota-limited translator API.
 
 on:
   # Quota-consuming push execution is opt-in via a commit-message marker.
