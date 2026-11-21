@@ -52,10 +52,12 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REQUESTED_RUN_ID: ${{ inputs.paired_run_id }}
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
         run: |
           python - <<'PY'
           import json
           import os
+          import subprocess
           import urllib.error
           import urllib.request
 
@@ -99,6 +101,25 @@ jobs:
               and run.get("repository", {}).get("full_name", repository) == repository
           ]
           candidates.sort(key=lambda run: run.get("created_at", ""), reverse=True)
+
+          expected_source_sha = os.environ["EXPECTED_SOURCE_SHA"]
+          compatible_candidates = []
+          for run in candidates:
+              source_sha = run.get("head_sha")
+              if not source_sha:
+                  continue
+              diff = subprocess.run(
+                  [
+                      "git", "diff", "--quiet", source_sha, expected_source_sha,
+                      "--", "tests/bytecode_groups", "projects/ESP32_PRJ_TO_LLVM",
+                  ],
+                  check=False,
+              )
+              if diff.returncode == 0:
+                  compatible_candidates.append(run)
+              elif diff.returncode > 1:
+                  reject(f"Could not compare paired source {source_sha} with {expected_source_sha}.")
+          candidates = compatible_candidates
 
           for run in candidates:
               try:

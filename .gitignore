@@ -1,5 +1,0 @@
-/qemu/build/
-/qemu/sdkconfig
-/qemu/sdkconfig.old
-/qemu/main/interp__*.espb
-/qemu/main/jit__*.espb

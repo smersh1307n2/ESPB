@@ -1,8 +1,0 @@
-[submodule "projects/ESP32_PRJ_TO_LLVM"]
-	path = projects/ESP32_PRJ_TO_LLVM
-	url = https://github.com/smersh1307n2/ESP32_PRJ_TO_LLVM.git
-	branch = experiment/espb-runtime-corpus
-[submodule "projects/ESPB_Desktop_Client"]
-	path = projects/ESPB_Desktop_Client
-	url = https://github.com/smersh1307n2/ESPB_Desktop_Client.git
-	branch = main

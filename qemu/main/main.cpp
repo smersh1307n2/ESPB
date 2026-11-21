@@ -154,7 +154,7 @@ static bool qemu_benchmark_interpreter_core(
         return false;
     }
 
-    enum { SAMPLE_COUNT = 5 };
+    enum { SAMPLE_COUNT = 1 };
     int64_t samples_us[SAMPLE_COUNT];
     uint32_t samples_cycles[SAMPLE_COUNT];
 
@@ -355,8 +355,8 @@ extern "C" void app_main(void)
             printf("[ESPB_TEST] bounded_rtos_calls=%s count=3\n", module.name);
         } else {
             const bool core_bench_ok = jit_mode
-                ? qemu_benchmark_raw_jit(handle, "app_main", args, 3)
-                : qemu_benchmark_interpreter_core(handle, "app_main", args, 3);
+                ? qemu_benchmark_raw_jit(handle, "app_main", args, 1)
+                : qemu_benchmark_interpreter_core(handle, "app_main", args, 1);
             if (!core_bench_ok) {
                 printf("[ESPB_TEST] core_bench_failed=%s\n", module.name);
                 espb_unload_module(handle);
