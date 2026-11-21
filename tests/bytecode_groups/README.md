@@ -12,12 +12,12 @@ Every function defined in every source file is marked JIT_HOT (including helpers
 |---|---|
 | 01 integer32 | I32 arithmetic, signed division/remainder, comparisons, bitwise operations and shifts |
 | 02 integer64 | I64 arithmetic, signed/unsigned division and remainder, shifts and truncation |
-| 03 float | F32/F64 arithmetic, comparisons and integer conversions |
+| 03 float | F32/F64 arithmetic, comparisons and integer conversions; current F32 multiply-add contracts to LLVM fmuladd |
 | 04 control_flow | conditional branches, switch/table dispatch, for/while/do-while, break/continue, nested loops |
 | 05 select_convert | SELECT for scalar types, sign/zero extension, truncation and pointer/integer conversions |
 | 06 memory | scalar loads/stores, arrays, structs, pointers, globals, malloc/free, copy/fill |
 | 07 calls_callbacks | nested direct calls, recursion, indirect calls through function pointers and callback context |
-| 08 atomics | I32/I64 atomic load/store/add/exchange/compare-exchange |
+| 08 atomics | I32/I64 __atomic builtin behavior; currently lowers to external __atomic_* helpers, not raw atomic opcodes |
 | 09 freertos_task | task creation, argument passing, task callback and completion |
 | 10 freertos_timer | timer creation/start/expiry callback/stop/delete and timer ID |
 
