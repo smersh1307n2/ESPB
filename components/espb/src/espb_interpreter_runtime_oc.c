@@ -4605,6 +4605,7 @@ op_0xD6: // SELECT.PTR
                              trace_before, (int)trace_success, expected, trace_after);
                     SET_TYPE(locals[rd], ESPB_TYPE_I32);
                     V_I32(locals[rd]) = expected;
+                    V_RAW(locals[rexp]) = trace_success ? 1ULL : 0ULL;
                     DISPATCH();
                 }
                 op_0xDE: { // ATOMIC.LOAD.I32
@@ -4653,9 +4654,10 @@ op_0xD6: // SELECT.PTR
                     int64_t* addr = (int64_t*)V_PTR(locals[ra]);
                     int64_t expected = V_I64(locals[rexp]);
                     int64_t desired = V_I64(locals[rdes]);
-                    __atomic_compare_exchange_n(addr, &expected, desired, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+                    bool success = __atomic_compare_exchange_n(addr, &expected, desired, false, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
                     SET_TYPE(locals[rd], ESPB_TYPE_I64);
                     V_I64(locals[rd]) = expected;
+                    V_RAW(locals[rexp]) = success ? 1ULL : 0ULL;
                     DISPATCH();
                 }
                 op_0xEC: { // ATOMIC.LOAD.I64
