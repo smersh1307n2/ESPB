@@ -485,33 +485,37 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn('sha256(old_interpreter) != interpreter_hash', helper)
 
 
-    def test_qemu_accounts_for_xtensa_atomic_jit_skip(self) -> None:
+    def test_qemu_executes_atomic_jit_on_both_architectures(self) -> None:
         workflow = (REPO_ROOT / ".github" / "workflows" / "espb-qemu.yml").read_text(
             encoding="utf-8"
         )
         harness = (REPO_ROOT / "qemu" / "main" / "main.cpp").read_text(
             encoding="utf-8"
         )
+        xtensa_backend = (
+            REPO_ROOT / "components" / "espb" / "src" / "arch" / "jit_xtensa_inline.c"
+        ).read_text(encoding="utf-8")
+        component_cmake = (REPO_ROOT / "components" / "espb" / "CMakeLists.txt").read_text(
+            encoding="utf-8"
+        )
 
-        self.assertIn("jit_skipped_unsupported=", harness)
-        self.assertIn("xtensa_jit_has_no_atomic_handlers", harness)
         self.assertIn('{"host_invoke_cb", (const void*)&host_invoke_cb}', harness)
         self.assertIn('{"host_invoke_cb2", (const void*)&host_invoke_cb2}', harness)
         self.assertIn('{"__atomic_exchange_8", (const void*)&qemu_atomic_exchange_8}', harness)
+        self.assertIn('case 0xD7:', xtensa_backend)
+        self.assertIn('case 0xDD:', xtensa_backend)
+        self.assertIn('case 0xEC:', xtensa_backend)
+        self.assertIn('case 0xF6:', xtensa_backend)
+        self.assertIn('"src/arch/jit_xtensa_inline.c"', component_cmake)
 
-        self.assertIn('expected_jit_skips=1', workflow)
-        self.assertIn('expected_jit_skips=0', workflow)
-        self.assertIn("expected_jit_ready=$((jit_modules - jit_skipped_count))", workflow)
-        self.assertIn('expected_group_passes=1', workflow)
-        self.assertIn("benchmark_modules=$((expected_modules - 4 - jit_skipped_count))", workflow)
-        self.assertIn("expected_bench_jit=$((jit_modules - 2 - jit_skipped_count))", workflow)
-        self.assertIn("expected_memory_count=$((expected_modules - jit_skipped_count))", workflow)
-        self.assertEqual(workflow.count("interp_ready_count="), 1)
-        self.assertEqual(workflow.count("expected_jit_ready="), 1)
-        self.assertEqual(workflow.count("      - name: Upload QEMU execution log"), 1)
-        self.assertEqual(workflow.count("          retention-days: 14"), 1)
+        self.assertNotIn("jit_skipped_unsupported", harness)
+        self.assertNotIn("jit_skipped_count", workflow)
+        self.assertIn('group_passes" -lt 2', workflow)
+        self.assertIn("benchmark_modules=$((expected_modules - 4))", workflow)
+        self.assertIn("expected_bench_jit=$((jit_modules - 2))", workflow)
+        self.assertIn('if [ "$memory_count" -ne "$expected_modules" ]', workflow)
         self.assertIn('git config --global --add safe.directory "$GITHUB_WORKSPACE"', workflow)
-        self.assertIn('git config --global --add safe.directory "$GITHUB_WORKSPACE/projects/ESP32_PRJ_TO_LLVM"', workflow)
+
 
     def test_translator_key_pool_includes_slots_one_through_nine(self) -> None:
         script = (REPO_ROOT / ".github" / "scripts" / "translate_bc.py").read_text(
