@@ -62,5 +62,5 @@ target_compile_options(${COMPONENT_LIB} PRIVATE $<$<COMPILE_LANGUAGE:C>:-std=gnu
 target_compile_options(${COMPONENT_LIB} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-std=gnu++11>)
 
 # JIT debug statistics (helper calls)
-target_compile_definitions(${COMPONENT_LIB} PRIVATE JIT_STATS=1)
+target_compile_definitions(${COMPONENT_LIB} PRIVATE JIT_STATS=1 ESPB_JIT_ALLOCA_TRACE=1)
 
