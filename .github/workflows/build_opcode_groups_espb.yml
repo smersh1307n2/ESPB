@@ -26,10 +26,13 @@ jobs:
           ESPB_API_KEY_4: ${{ secrets.ESPB_API_KEY_4 }}
           ESPB_API_KEY_5: ${{ secrets.ESPB_API_KEY_5 }}
           ESPB_API_KEY_6: ${{ secrets.ESPB_API_KEY_6 }}
+          ESPB_API_KEY_7: ${{ secrets.ESPB_API_KEY_7 }}
+          ESPB_API_KEY_8: ${{ secrets.ESPB_API_KEY_8 }}
+          ESPB_API_KEY_9: ${{ secrets.ESPB_API_KEY_9 }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "$ESPB_TRANSLATOR_KEYS" && -z "$ESPB_API_KEY" && -z "$ESPB_API_KEY_1" && -z "$ESPB_API_KEY_2" && -z "$ESPB_API_KEY_3" && -z "$ESPB_API_KEY_4" && -z "$ESPB_API_KEY_5" && -z "$ESPB_API_KEY_6" ]]; then
+          if [[ -z "$ESPB_TRANSLATOR_KEYS" && -z "$ESPB_API_KEY" && -z "$ESPB_API_KEY_1" && -z "$ESPB_API_KEY_2" && -z "$ESPB_API_KEY_3" && -z "$ESPB_API_KEY_4" && -z "$ESPB_API_KEY_5" && -z "$ESPB_API_KEY_6" && -z "$ESPB_API_KEY_7" && -z "$ESPB_API_KEY_8" && -z "$ESPB_API_KEY_9" ]]; then
             echo "::error::No translator credentials configured."
             exit 1
           fi
@@ -71,6 +74,9 @@ jobs:
           ESPB_API_KEY_4: ${{ secrets.ESPB_API_KEY_4 }}
           ESPB_API_KEY_5: ${{ secrets.ESPB_API_KEY_5 }}
           ESPB_API_KEY_6: ${{ secrets.ESPB_API_KEY_6 }}
+          ESPB_API_KEY_7: ${{ secrets.ESPB_API_KEY_7 }}
+          ESPB_API_KEY_8: ${{ secrets.ESPB_API_KEY_8 }}
+          ESPB_API_KEY_9: ${{ secrets.ESPB_API_KEY_9 }}
         shell: bash
         run: |
           set -euo pipefail
