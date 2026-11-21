@@ -1005,7 +1005,8 @@ EspbResult espb_call_function(EspbInstance *instance, ExecutionContext *exec_ctx
     if (func_idx >= num_imported_funcs && func_idx < num_imported_funcs + module->num_functions) {
         // A root call owns the first shadow-stack frame. Reserve its range before
         // any nested leaf call can place a callee at exec_ctx->sp.
-        const bool is_root_call = (exec_ctx->call_stack_top == 0);
+        const int entry_saved_call_stack_top = exec_ctx->call_stack_top;
+        const bool is_root_call = (entry_saved_call_stack_top == 0);
         const size_t entry_saved_sp = exec_ctx->sp;
         const size_t entry_saved_fp = exec_ctx->fp;
 
@@ -5224,6 +5225,10 @@ function_epilogue:
     if (is_root_call) {
         exec_ctx->sp = entry_saved_sp;
         exec_ctx->fp = entry_saved_fp;
+        // The initial frame is a sentinel used while nested calls execute.
+        // Remove it as well so the same ExecutionContext can enter another
+        // independent root function call safely.
+        exec_ctx->call_stack_top = entry_saved_call_stack_top;
     }
 
     // Контекст выполнения (exec_ctx) освобождается внешней функцией, которая его создала.
