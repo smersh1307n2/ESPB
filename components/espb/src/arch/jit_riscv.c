@@ -1418,16 +1418,7 @@ void jit_call_espb_function(EspbInstance* instance, uint32_t local_func_idx, Val
 
         // Локальный регистровый фрейм для вызываемой функции (семантика CALL)
         // КРИТИЧНО: нельзя выделять 256 Value на каждый рекурсивный вызов (переполнит стек)
-        // max_reg_used is validated against num_virtual_regs by the module parser.
-        // Allocate only the register range the generated code can access, plus all arguments.
-        uint16_t declared_regs = callee_body->header.num_virtual_regs;
-        uint16_t max_used_regs = (uint16_t)callee_body->header.max_reg_used + 1u;
-        uint16_t needed_regs = declared_regs;
-        if (declared_regs > 0 && declared_regs <= 256 &&
-            max_used_regs > 0 && max_used_regs <= declared_regs) {
-            needed_regs = max_used_regs;
-        }
-        if (needed_regs < num_args) needed_regs = num_args;
+        uint16_t needed_regs = callee_body->header.num_virtual_regs;
         if (needed_regs == 0 || needed_regs > 256) needed_regs = 256;
 
         // Fast-path frame: stack allocation avoids heap work on recursive calls.
@@ -1436,13 +1427,19 @@ void jit_call_espb_function(EspbInstance* instance, uint32_t local_func_idx, Val
             goto slow_path;
         }
 
+        uint16_t max_used = (uint16_t)callee_body->header.max_reg_used + 1u;
+        uint16_t zero_regs = needed_regs;
+        if (max_used > 0 && max_used < zero_regs) zero_regs = max_used;
+        if (zero_regs < num_args) zero_regs = num_args;
+        if (zero_regs == 0) zero_regs = 1;
+
         // Argument registers are overwritten below; clear only the unused tail.
         for (uint8_t i = 0; i < num_args; i++) {
             callee_regs[i] = v_regs[i];
         }
-        if (needed_regs > num_args) {
+        if (zero_regs > num_args) {
             memset(callee_regs + num_args, 0,
-                   (size_t)(needed_regs - num_args) * sizeof(Value));
+                   (size_t)(zero_regs - num_args) * sizeof(Value));
         }
 
         jit_func(instance, callee_regs);
