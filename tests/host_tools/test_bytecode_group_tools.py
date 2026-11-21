@@ -587,6 +587,12 @@ class WorkflowContractTests(unittest.TestCase):
         xtensa_backend = (
             REPO_ROOT / "components" / "espb" / "src" / "arch" / "jit_xtensa_inline.c"
         ).read_text(encoding="utf-8")
+        interpreter_runtime = (
+            REPO_ROOT / "components" / "espb" / "src" / "espb_interpreter_runtime_oc.c"
+        ).read_text(encoding="utf-8")
+        jit_indirect_helper = (
+            REPO_ROOT / "components" / "espb" / "src" / "espb_jit_indirect_ptr.c"
+        ).read_text(encoding="utf-8")
         component_cmake = (REPO_ROOT / "components" / "espb" / "CMakeLists.txt").read_text(
             encoding="utf-8"
         )
@@ -599,6 +605,8 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn('case 0xEC:', xtensa_backend)
         self.assertIn('case 0xF6:', xtensa_backend)
         self.assertIn('"src/arch/jit_xtensa_inline.c"', component_cmake)
+        self.assertIn('pointer_value > 0 && pointer_value < instance->memory_size_bytes', interpreter_runtime)
+        self.assertIn('raw_ptr > 0 && raw_ptr < instance->memory_size_bytes', jit_indirect_helper)
 
         self.assertNotIn("jit_skipped_unsupported", harness)
         self.assertNotIn("jit_skipped_count", workflow)
