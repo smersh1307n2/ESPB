@@ -13,6 +13,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: espb-opcode-group-bitcode
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-22.04
