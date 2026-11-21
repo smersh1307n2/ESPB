@@ -31,11 +31,6 @@ JIT_PROBE static int32_t atomic_i32(void)
     int32_t loaded = __atomic_load_n(&value, __ATOMIC_SEQ_CST);
     __atomic_store_n(&value, 77, __ATOMIC_SEQ_CST);
     int32_t stored = __atomic_load_n(&value, __ATOMIC_SEQ_CST);
-
-    printf("[ESPB_DETAIL] atomic_parts add=%ld sub=%ld and=%ld or=%ld xor=%ld exchange=%ld cas_success=%d cas_failure=%d loaded=%ld stored=%ld\\n",
-           (long)old_add, (long)old_sub, (long)old_and, (long)old_or,
-           (long)old_xor, (long)old_exchange, success, failure,
-           (long)loaded, (long)stored);
     return old_add + old_sub + old_and + old_or + old_xor +
            old_exchange + success + failure + loaded + stored;
 }
