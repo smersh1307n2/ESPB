@@ -14,6 +14,7 @@ sys.path.insert(0, str(TOOLS_DIR))
 
 from corpus_manifest import ManifestError, create_manifest, verify_manifest  # noqa: E402
 from clang_group_wrapper import ATOMIC_MARCH, FLOAT_OPTIONS, adjust_clang_args  # noqa: E402
+from translator_keys import collect_translator_keys  # noqa: E402
 from make_interpreter_variant import (  # noqa: E402
     CODE_SECTION_ID,
     HEADER,
@@ -219,6 +220,29 @@ class CorpusManifestTests(unittest.TestCase):
                     expected_run_id=12346,
                 )
 
+
+
+class TranslatorKeyPoolTests(unittest.TestCase):
+    def test_aggregate_and_numbered_keys_are_merged_without_duplicates(self) -> None:
+        keys = collect_translator_keys({
+            "ESPB_TRANSLATOR_KEYS": "aggregate-one\naggregate-two\n",
+            "ESPB_API_KEY": "aggregate-one",
+            "ESPB_API_KEY_1": "numbered-one",
+            "ESPB_API_KEY_7": "numbered-seven",
+            "ESPB_API_KEY_8": "numbered-eight",
+            "ESPB_API_KEY_9": "numbered-nine",
+        })
+        self.assertEqual(
+            keys,
+            [
+                "aggregate-one",
+                "aggregate-two",
+                "numbered-one",
+                "numbered-seven",
+                "numbered-eight",
+                "numbered-nine",
+            ],
+        )
 
 
 class CompilerWrapperTests(unittest.TestCase):
