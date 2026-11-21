@@ -1,13 +1,6 @@
 name: Build paired ESPB opcode-group modules
 
 on:
-  push:
-    branches:
-      - ESPB_WORK
-    paths:
-      - 'tests/bytecode_groups/**'
-      - 'tools/bytecode_groups/**'
-      - '.github/workflows/build_opcode_groups_espb.yml'
   workflow_dispatch:
 
 permissions:
