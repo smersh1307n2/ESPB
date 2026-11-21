@@ -81,6 +81,6 @@ file(APPEND "${ESPB_MODULE_SOURCE}"
 idf_component_register(
     SRCS "main.cpp" "${ESPB_MODULE_SOURCE}"
     INCLUDE_DIRS "." "${CMAKE_CURRENT_BINARY_DIR}" "${ESPB_REPO_ROOT}/main"
-    REQUIRES espb esp_timer esp_hw_support
+    REQUIRES espb esp_timer esp_hw_support esp_system freertos
     EMBED_FILES ${ESPB_EMBED_FILES}
 )

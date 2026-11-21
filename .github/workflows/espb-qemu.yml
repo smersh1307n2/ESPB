@@ -171,3 +171,9 @@ jobs:
             echo "Interpreter core metric count mismatch: expected=$interpreter_modules actual=$interpreter_core_count"
             exit 1
           fi
+
+          memory_count=$(grep -Ec '^\\[ESPB_MEM\\] module=' qemu.log || true)
+          if [ "$memory_count" -ne "$expected_modules" ]; then
+            echo "Memory metric count mismatch: expected=$expected_modules actual=$memory_count"
+            exit 1
+          fi

@@ -6,6 +6,9 @@
 #include "espb_embedded_modules.h"
 #include "esp_timer.h"
 #include "esp_cpu.h"
+#include "esp_system.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "espb_host_symbols.h"
 #include "espb_fast_symbols.h"
 
@@ -231,12 +234,17 @@ extern "C" void app_main(void)
         const bool jit_mode = module.name[0] == 'j' && module.name[1] == 'i' && module.name[2] == 't' && module.name[3] == '_';
         printf("[ESPB_TEST] module=%s size=%u\n", module.name, (unsigned)module.size);
 
+        const uint32_t heap_before_load = esp_get_free_heap_size();
+        const uint32_t min_heap_before = esp_get_minimum_free_heap_size();
+        const UBaseType_t stack_hwm_before = uxTaskGetStackHighWaterMark(NULL);
+
         espb_handle_t handle = NULL;
         EspbResult result = espb_load_module(module.data, module.size, &handle);
         if (result != ESPB_OK) {
             printf("[ESPB_TEST] load_failed=%s error=%d\n", module.name, (int)result);
             return;
         }
+        const uint32_t heap_after_load = esp_get_free_heap_size();
 
         // This call resolves HOT functions and compiles the JIT entry before
         // either core benchmark begins. No compilation is timed.
@@ -280,6 +288,8 @@ extern "C" void app_main(void)
                    (unsigned)jit_code_bytes);
         }
 
+        const uint32_t heap_after_ready = esp_get_free_heap_size();
+
         const bool core_bench_ok = jit_mode
             ? qemu_benchmark_raw_jit(handle, "app_main", args, 3)
             : qemu_benchmark_interpreter_core(handle, "app_main", args, 3);
@@ -317,7 +327,20 @@ extern "C" void app_main(void)
                module.name, (long long)samples_us[SAMPLE_COUNT / 2],
                (unsigned)samples_cycles[SAMPLE_COUNT / 2]);
 
+        const uint32_t heap_after_exec = esp_get_free_heap_size();
+        const uint32_t min_heap_after = esp_get_minimum_free_heap_size();
+        const UBaseType_t stack_hwm_after = uxTaskGetStackHighWaterMark(NULL);
+
         espb_unload_module(handle);
+        const uint32_t heap_after_unload = esp_get_free_heap_size();
+        const UBaseType_t stack_hwm_delta =
+            stack_hwm_before > stack_hwm_after ? stack_hwm_before - stack_hwm_after : 0;
+        printf("[ESPB_MEM] module=%s heap_before=%u heap_loaded=%u heap_ready=%u heap_after_exec=%u heap_after_unload=%u min_heap_before=%u min_heap_after=%u stack_hwm_before_words=%u stack_hwm_after_words=%u stack_hwm_peak_delta_words=%u\n",
+               module.name, (unsigned)heap_before_load, (unsigned)heap_after_load,
+               (unsigned)heap_after_ready, (unsigned)heap_after_exec,
+               (unsigned)heap_after_unload, (unsigned)min_heap_before,
+               (unsigned)min_heap_after, (unsigned)stack_hwm_before,
+               (unsigned)stack_hwm_after, (unsigned)stack_hwm_delta);
         printf("[ESPB_TEST] module_done=%s mode=%s\n", module.name, jit_mode ? "jit" : "interpreter");
     }
 
