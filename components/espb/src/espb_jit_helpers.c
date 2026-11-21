@@ -27,6 +27,12 @@ static const char *TAG = "espb_jit_alloca";
 void espb_jit_alloca_ex(EspbInstance *instance, Value *v_regs, uint16_t num_regs_allocated,
                         uint8_t rd, uint8_t rs_size, uint8_t align)
 {
+    if ((uintptr_t)v_regs < 0x10000u) {
+        ESP_LOGE(TAG, "[JIT_ALLOCA_BAD] instance=%p regs=%p count=%u rd=%u rs=%u align=%u",
+                 (void *)instance, (void *)v_regs, (unsigned)num_regs_allocated,
+                 (unsigned)rd, (unsigned)rs_size, (unsigned)align);
+        return;
+    }
 #if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
     ESP_LOGI(TAG, "ENTER instance=%p regs=%p count=%u rd=%u rs=%u align=%u",
              (void *)instance, (void *)v_regs, (unsigned)num_regs_allocated,
