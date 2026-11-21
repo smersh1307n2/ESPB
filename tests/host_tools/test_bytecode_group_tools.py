@@ -21,6 +21,7 @@ from audit_espb_opcodes import (  # noqa: E402
     AuditError,
     audit_directory,
     decode_instruction_stream,
+    render_markdown,
     verify_interpreter_twin,
 )
 from make_interpreter_variant import (  # noqa: E402
@@ -451,6 +452,10 @@ class EmittedOpcodeAuditTests(unittest.TestCase):
             self.assertEqual(report["primary_instruction_count"], 40)
             self.assertEqual(report["unique_primary_bytes"], ["0x11", "0x44"])
             self.assertEqual(report["interpreter_supported_not_emitted"], [])
+            self.assertEqual(report["extended_supported_count"], 14)
+            self.assertEqual(len(report["extended_supported_not_emitted"]), 14)
+            self.assertIn("Extended handlers not emitted", render_markdown(report))
+            self.assertNotIn(r"\\n", render_markdown(report))
 
 
 class TranslatorKeyPoolTests(unittest.TestCase):
