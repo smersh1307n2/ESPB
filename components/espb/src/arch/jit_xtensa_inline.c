@@ -766,22 +766,25 @@ static void jit_call_espb_function_xtensa(EspbInstance* instance, uint32_t local
         typedef void (*JitFunc)(EspbInstance*, Value*);
         JitFunc jit_func = (JitFunc)callee_body->jit_code;
         
-        uint16_t needed_regs = callee_body->header.num_virtual_regs;
+        // max_reg_used is validated against num_virtual_regs by the module parser.
+        // Allocate only the register range the generated code can access, plus all arguments.
+        uint16_t declared_regs = callee_body->header.num_virtual_regs;
+        uint16_t max_used_regs = (uint16_t)callee_body->header.max_reg_used + 1u;
+        uint16_t needed_regs = declared_regs;
+        if (declared_regs > 0 && declared_regs <= 256 &&
+            max_used_regs > 0 && max_used_regs <= declared_regs) {
+            needed_regs = max_used_regs;
+        }
+        if (needed_regs < num_args) needed_regs = num_args;
         if (needed_regs == 0 || needed_regs > 256) needed_regs = 256;
-        
+
         Value *callee_regs = (Value*)alloca((size_t)needed_regs * sizeof(Value));
         if (!callee_regs) goto slow_path;
-        
-        uint16_t max_used = (uint16_t)callee_body->header.max_reg_used + 1;
-        uint16_t zero_regs = needed_regs;
-        if (max_used > 0 && max_used < zero_regs) zero_regs = max_used;
-        if (zero_regs < num_args) zero_regs = num_args;
-        if (zero_regs == 0) zero_regs = 1;
-        
-        // For hot calls (like fibonacci_iterative): the first num_args registers are overwritten
-        // by the arg copy below, so we only need to clear the tail.
-        if (zero_regs > num_args) {
-            memset(callee_regs + num_args, 0, (size_t)(zero_regs - num_args) * sizeof(Value));
+
+        // Argument registers are overwritten below; clear only the unused tail.
+        if (needed_regs > num_args) {
+            memset(callee_regs + num_args, 0,
+                   (size_t)(needed_regs - num_args) * sizeof(Value));
         }
 
         // Copy arguments from caller's v_regs to callee_regs
