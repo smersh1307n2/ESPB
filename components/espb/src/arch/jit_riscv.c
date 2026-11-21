@@ -4494,10 +4494,21 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 // ВАЖНО: нельзя использовать просто (max_reg_used+1) — bytecode может ссылаться
                 // на регистры с большими индексами (например R16). Если значение слишком маленькое,
                 // espb_jit_alloca_ex не найдёт слот для rd и оставит его нулевым → store по адресу 0.
+                // execute_jit_code allocates v_regs using num_virtual_regs (minimum 8).
+                // Never advertise a larger capacity to the helper: doing so lets ALLOCA
+                // write beyond the actual VLA when malformed/inconsistent bytecode metadata
+                // contains a register index outside the function's declared register file.
                 uint16_t num_regs_allocated = num_virtual_regs;
-                if (num_regs_allocated < (uint16_t)(rs + 1)) num_regs_allocated = (uint16_t)(rs + 1);
-                if (num_regs_allocated < (uint16_t)(rd + 1)) num_regs_allocated = (uint16_t)(rd + 1);
-                if (num_regs_allocated < 256) num_regs_allocated = 256;
+                if (num_regs_allocated < 8) num_regs_allocated = 8;
+                if (rd >= num_regs_allocated || rs >= num_regs_allocated) {
+                    printf("[JIT ERROR] ALLOCA register out of range: rd=%u rs=%u regs=%u func=%u\\n",
+                           (unsigned)rd, (unsigned)rs, (unsigned)num_regs_allocated,
+                           (unsigned)func_idx);
+                    free(exec_buffer);
+                    *out_code = NULL;
+                    *out_size = 0;
+                    return ESPB_ERR_INVALID_REGISTER_INDEX;
+                }
                 if (num_regs_allocated < 2048) {
                     emit_addi_phys(&ctx, 12, 0, (int16_t)num_regs_allocated);
                 } else {
