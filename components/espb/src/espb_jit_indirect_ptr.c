@@ -64,7 +64,14 @@ void espb_jit_call_indirect_ptr(EspbInstance* instance,
     } else {
         is_in_data_segment = (mem_base != 0) && (raw_ptr >= mem_base) && (raw_ptr < mem_end);
         if (is_in_data_segment) {
+            // Full host pointer into the ESPB linear-memory allocation.
             data_offset = (uint32_t)(raw_ptr - mem_base);
+        } else if (raw_ptr > 0 && raw_ptr < instance->memory_size_bytes) {
+            // The translator may emit a raw linear-memory offset for a function
+            // table entry (e.g. 0x3b), without CALLBACK_FLAG_BIT tagging.
+            data_offset = (uint32_t)raw_ptr;
+            is_in_data_segment = true;
+            target_ptr = (void*)(mem_base + data_offset);
         }
     }
 
