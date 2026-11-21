@@ -41,6 +41,9 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - name: Run fast host-side unit tests
+        run: python -m unittest discover -s tests/host_tools -p "test_*.py" -v
+
       - name: Install ESP Clang
         shell: bash
         run: |
@@ -84,10 +87,25 @@ jobs:
           test "$(find .work/paired -maxdepth 1 -name '*.jit.espb' -type f | wc -l)" -eq 10
           test "$(find .work/paired -maxdepth 1 -name '*.interpreter.espb' -type f | wc -l)" -eq 10
 
-      - name: Upload paired ESPB modules
+      - name: Create provenance manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/bytecode_groups/corpus_manifest.py create \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --bitcode-dir "$GITHUB_WORKSPACE/.work/bytecode_groups" \
+            --paired-dir "$GITHUB_WORKSPACE/.work/paired" \
+            --repository "$GITHUB_REPOSITORY" \
+            --branch "$GITHUB_REF_NAME" \
+            --run-id "$GITHUB_RUN_ID"
+
+      - name: Upload paired ESPB modules and provenance
         uses: actions/upload-artifact@v4
         with:
           name: espb-opcode-groups-paired
-          path: .work/paired/*.espb
+          path: |
+            .work/paired/*.espb
+            .work/paired/manifest.json
+            .work/bytecode_groups/*.bc
           if-no-files-found: error
           retention-days: 14

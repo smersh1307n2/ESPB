@@ -1,0 +1,176 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import struct
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+TOOLS_DIR = REPO_ROOT / "tools" / "bytecode_groups"
+sys.path.insert(0, str(TOOLS_DIR))
+
+from corpus_manifest import ManifestError, create_manifest, verify_manifest  # noqa: E402
+from make_interpreter_variant import (  # noqa: E402
+    CODE_SECTION_ID,
+    HEADER,
+    HOT,
+    SECTION,
+    make_interpreter_variant,
+)
+
+
+def make_test_module(function_flags: tuple[int, ...] = (HOT, HOT)) -> bytes:
+    code = bytearray(struct.pack("<I", len(function_flags)))
+    for flags in function_flags:
+        code += struct.pack("<I", 8)
+        code += bytes([flags]) + b"\x11\x22\x33\x44\x55\x66\x77"
+    section_offset = HEADER.size + SECTION.size
+    header = HEADER.pack(0x42505345, 1, 0, 0, 1)
+    section = SECTION.pack(CODE_SECTION_ID, 0, 0, section_offset, len(code))
+    return header + section + bytes(code)
+
+
+class InterpreterVariantTests(unittest.TestCase):
+    def test_clears_only_hot_for_every_function(self) -> None:
+        source_data = make_test_module((HOT, HOT | 0x01, HOT | 0x20))
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "jit.espb"
+            destination = Path(temporary) / "interpreter.espb"
+            source.write_bytes(source_data)
+
+            function_count, hot_count = make_interpreter_variant(source, destination)
+
+            expected = bytearray(source_data)
+            code_offset = HEADER.size + SECTION.size
+            cursor = code_offset + 4
+            for _ in range(function_count):
+                body_size = struct.unpack_from("<I", expected, cursor)[0]
+                cursor += 4
+                expected[cursor] &= ~HOT
+                cursor += body_size
+
+            self.assertEqual((function_count, hot_count), (3, 3))
+            self.assertEqual(destination.read_bytes(), bytes(expected))
+
+    def test_rejects_function_without_hot_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "jit.espb"
+            destination = Path(temporary) / "interpreter.espb"
+            source.write_bytes(make_test_module((HOT, 0x20)))
+            with self.assertRaisesRegex(ValueError, "is not HOT"):
+                make_interpreter_variant(source, destination)
+
+    def test_rejects_trailing_code_section_bytes(self) -> None:
+        data = bytearray(make_test_module())
+        data += b"\x00"
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "jit.espb"
+            destination = Path(temporary) / "interpreter.espb"
+            source.write_bytes(data)
+            with self.assertRaisesRegex(ValueError, "trailing bytes"):
+                make_interpreter_variant(source, destination)
+
+    def test_rejects_out_of_bounds_code_section(self) -> None:
+        data = bytearray(make_test_module())
+        SECTION.pack_into(data, HEADER.size, CODE_SECTION_ID, 0, 0, len(data) + 4, 8)
+        with tempfile.TemporaryDirectory() as temporary:
+            source = Path(temporary) / "jit.espb"
+            destination = Path(temporary) / "interpreter.espb"
+            source.write_bytes(data)
+            with self.assertRaisesRegex(ValueError, "out of bounds"):
+                make_interpreter_variant(source, destination)
+
+
+class CorpusManifestTests(unittest.TestCase):
+    def _git(self, cwd: Path, *args: str) -> None:
+        subprocess.run(
+            ["git", *args],
+            cwd=cwd,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    def _make_fixture(self, root: Path) -> tuple[Path, Path, Path]:
+        translator = root / "projects" / "ESP32_PRJ_TO_LLVM"
+        translator.mkdir(parents=True)
+        self._git(root, "init", "-b", "ESPB_WORK")
+        self._git(root, "config", "user.name", "ESPB host tests")
+        self._git(root, "config", "user.email", "espb-tests@example.invalid")
+
+        self._git(translator, "init", "-b", "test-translator")
+        self._git(translator, "config", "user.name", "ESPB host tests")
+        self._git(translator, "config", "user.email", "espb-tests@example.invalid")
+        (translator / "translator.txt").write_text("translator fixture\n", encoding="utf-8")
+        self._git(translator, "add", "translator.txt")
+        self._git(translator, "commit", "-m", "translator fixture")
+
+        source_dir = root / "tests" / "bytecode_groups"
+        source_dir.mkdir(parents=True)
+        (source_dir / "01_basic.c").write_text("int app(void) { return 42; }\n", encoding="utf-8")
+
+        bitcode_dir = root / ".work" / "bytecode_groups"
+        paired_dir = root / ".work" / "paired"
+        bitcode_dir.mkdir(parents=True)
+        paired_dir.mkdir(parents=True)
+        (bitcode_dir / "01_basic.bc").write_bytes(b"bitcode fixture")
+        (paired_dir / "01_basic.jit.espb").write_bytes(b"jit fixture")
+        (paired_dir / "01_basic.interpreter.espb").write_bytes(b"interpreter fixture")
+
+        self._git(root, "add", "tests/bytecode_groups/01_basic.c")
+        self._git(root, "add", "projects/ESP32_PRJ_TO_LLVM")
+        self._git(root, "commit", "-m", "corpus fixture")
+        return bitcode_dir, paired_dir, source_dir
+
+    def test_manifest_binds_source_translator_bitcode_and_both_variants(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bitcode_dir, paired_dir, _ = self._make_fixture(root)
+            manifest = create_manifest(
+                root, bitcode_dir, paired_dir, "smersh1307n2/ESPB", "ESPB_WORK", 12345
+            )
+            output = paired_dir / "manifest.json"
+            import json
+
+            output.write_text(json.dumps(manifest), encoding="utf-8")
+            verified = verify_manifest(
+                root,
+                bitcode_dir,
+                paired_dir,
+                output,
+                "smersh1307n2/ESPB",
+                "ESPB_WORK",
+                expected_run_id=12345,
+                expected_groups=1,
+            )
+            self.assertEqual(verified["producer_run_id"], 12345)
+            self.assertEqual(verified["group_count"], 1)
+
+    def test_manifest_rejects_changed_corpus_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bitcode_dir, paired_dir, source_dir = self._make_fixture(root)
+            manifest = create_manifest(
+                root, bitcode_dir, paired_dir, "smersh1307n2/ESPB", "ESPB_WORK", 12345
+            )
+            output = paired_dir / "manifest.json"
+            import json
+
+            output.write_text(json.dumps(manifest), encoding="utf-8")
+            (source_dir / "01_basic.c").write_text("int app(void) { return 43; }\n", encoding="utf-8")
+            with self.assertRaisesRegex(ManifestError, "Source SHA-256 mismatch"):
+                verify_manifest(
+                    root,
+                    bitcode_dir,
+                    paired_dir,
+                    output,
+                    "smersh1307n2/ESPB",
+                    "ESPB_WORK",
+                )
+
+
+if __name__ == "__main__":
+    unittest.main()
