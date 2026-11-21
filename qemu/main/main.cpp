@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
 #include "espb_api.h"
 #include "espb_interpreter_runtime.h"
