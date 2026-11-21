@@ -10,6 +10,7 @@ on:
       - 'modules/**/*.espb'
       - 'main/test.espb'
       - 'qemu/**'
+      - '.github/workflows/espb-qemu.yml'
       - 'tools/qemu/**'
       - 'projects/ESP32_PRJ_TO_LLVM'
   workflow_dispatch:
