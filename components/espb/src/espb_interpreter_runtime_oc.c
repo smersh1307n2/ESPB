@@ -2628,7 +2628,7 @@ op_0x32: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I64(locals[rd])=V_I64(locals[r1
 op_0x38: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I64(locals[rd])=V_I64(locals[r1])&V_I64(locals[r2]); ESPB_OP_LOG("AND.I64 R%u, R%u, R%u = 0x%016" PRIx64, rd, r1, r2, V_I64(locals[rd])); DISPATCH(); }
 op_0x39: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I64(locals[rd])=V_I64(locals[r1])|V_I64(locals[r2]); ESPB_OP_LOG("OR.I64 R%u, R%u, R%u = 0x%016" PRIx64, rd, r1, r2, V_I64(locals[rd])); DISPATCH(); }
 op_0x3A: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I64(locals[rd])=V_I64(locals[r1])^V_I64(locals[r2]); ESPB_OP_LOG("XOR.I64 R%u, R%u, R%u = 0x%016" PRIx64, rd, r1, r2, V_I64(locals[rd])); DISPATCH(); }
-op_0x3B: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I64(locals[rd])=V_I64(locals[r1])<<(V_I32(locals[r2])&63); ESPB_OP_LOG("SHL.I64 R%u, R%u, R%u = %" PRId64, rd, r1, r2, V_I64(locals[rd])); DISPATCH(); }
+op_0x3B: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I64(locals[rd])=(int64_t)((uint64_t)V_I64(locals[r1])<<(V_I32(locals[r2])&63)); ESPB_OP_LOG("SHL.I64 R%u, R%u, R%u = %" PRId64, rd, r1, r2, V_I64(locals[rd])); DISPATCH(); }
 op_0x3C: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I64(locals[rd])=V_I64(locals[r1])>>(V_I32(locals[r2])&63); ESPB_OP_LOG("SHR.I64 R%u, R%u, R%u = %" PRId64, rd, r1, r2, V_I64(locals[rd])); DISPATCH(); }
 
 op_0x3D: { // USHR.I64 (logical shift - unsigned)
