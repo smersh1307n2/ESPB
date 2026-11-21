@@ -262,6 +262,7 @@ class PairedReuseTests(unittest.TestCase):
                     "branch": "ESPB_WORK",
                     "translator_commit": "a" * 40,
                     "producer_run_id": 123,
+                    "source_commit": "c" * 40,
                     "group_count": 2,
                     "groups": [
                         {
@@ -294,7 +295,7 @@ class PairedReuseTests(unittest.TestCase):
 
             reused, changed = reuse_unchanged_pairs(
                 previous, bitcode, paired,
-                "smersh1307n2/ESPB", "ESPB_WORK", "a" * 40
+                "smersh1307n2/ESPB", "ESPB_WORK", "a" * 40, 123, "c" * 40
             )
 
             self.assertEqual(reused, ["01_a"])
@@ -321,6 +322,8 @@ class PairedReuseTests(unittest.TestCase):
                     "repository": "smersh1307n2/ESPB",
                     "branch": "ESPB_WORK",
                     "translator_commit": "b" * 40,
+                    "producer_run_id": 456,
+                    "source_commit": "d" * 40,
                     "group_count": 0,
                     "groups": [],
                 }),
@@ -329,7 +332,7 @@ class PairedReuseTests(unittest.TestCase):
             with self.assertRaisesRegex(ReuseError, "translator submodule mismatch"):
                 reuse_unchanged_pairs(
                     previous, bitcode, paired,
-                    "smersh1307n2/ESPB", "ESPB_WORK", "a" * 40
+                    "smersh1307n2/ESPB", "ESPB_WORK", "a" * 40, 123, "c" * 40
                 )
 
     def test_rejects_corrupt_previous_module_hash(self) -> None:
@@ -350,6 +353,8 @@ class PairedReuseTests(unittest.TestCase):
                     "repository": "smersh1307n2/ESPB",
                     "branch": "ESPB_WORK",
                     "translator_commit": "a" * 40,
+                    "producer_run_id": 123,
+                    "source_commit": "c" * 40,
                     "group_count": 1,
                     "groups": [{
                         "name": "01_a",
@@ -365,7 +370,7 @@ class PairedReuseTests(unittest.TestCase):
             with self.assertRaisesRegex(ReuseError, "JIT module SHA-256 mismatch"):
                 reuse_unchanged_pairs(
                     previous, bitcode, paired,
-                    "smersh1307n2/ESPB", "ESPB_WORK", "a" * 40
+                    "smersh1307n2/ESPB", "ESPB_WORK", "a" * 40, 123, "c" * 40
                 )
 
 
@@ -454,6 +459,27 @@ class WorkflowContractTests(unittest.TestCase):
             workflow.count("PAIRED_SOURCE_SHA: ${{ steps.paired_run.outputs.source_sha }}"),
             1,
         )
+
+    def test_translator_reuses_only_matching_paired_content(self) -> None:
+        workflow = (
+            REPO_ROOT / ".github" / "workflows" / "build_opcode_groups_espb.yml"
+        ).read_text(encoding="utf-8")
+        helper = (
+            REPO_ROOT / ".github" / "scripts" / "reuse_paired_groups.py"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("previous_pair_run_id=", workflow)
+        self.assertIn("previous_pair_source_sha", workflow)
+        self.assertIn("actions/download-artifact@v4", workflow)
+        self.assertIn("Reuse unchanged paired modules by bitcode SHA-256", workflow)
+        self.assertIn("TRANSLATION_REUSED group=$stem", workflow)
+        self.assertIn("TRANSLATION_REQUIRED group=$stem", workflow)
+        self.assertIn('current_hash != old.get("bitcode_sha256")', helper)
+        self.assertIn('manifest.get("producer_run_id") != expected_run_id', helper)
+        self.assertIn('manifest.get("source_commit") != expected_source_commit', helper)
+        self.assertIn('sha256(old_jit) != jit_hash', helper)
+        self.assertIn('sha256(old_interpreter) != interpreter_hash', helper)
+
 
     def test_qemu_accounts_for_xtensa_atomic_jit_skip(self) -> None:
         workflow = (REPO_ROOT / ".github" / "workflows" / "espb-qemu.yml").read_text(
