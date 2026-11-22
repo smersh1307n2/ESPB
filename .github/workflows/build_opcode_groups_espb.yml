@@ -283,3 +283,5 @@ jobs:
 # [translate-opcode-corpus] Retry selected-group workflow after aligning host contract test.
 
 # [translate-opcode-corpus] Run after fixing selected-pair host assertion.
+
+# Selected FreeRTOS task pair translation retry.
