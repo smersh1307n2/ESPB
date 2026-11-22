@@ -69,7 +69,7 @@ static const char* TAG = "espb_jit_xtensa_inline";
 // TEMP diagnostic: report taken backward branches from generated Xtensa code.
 // Disabled after isolating the control-flow issue.
 #ifndef ESPB_JIT_TRACE_BACKEDGES
-#define ESPB_JIT_TRACE_BACKEDGES 1
+#define ESPB_JIT_TRACE_BACKEDGES 0
 #endif
 #if ESPB_JIT_TRACE_BACKEDGES
 static volatile uint32_t s_jit_backedge_count;
@@ -3379,11 +3379,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
         last_off = (size_t)(pc - start);
         uint8_t op = *pc++;
         // TEMP diagnostic: correlate ALLOCA helper return PCs with bytecode offsets.
-        if (num_vregs == 25 || num_vregs == 30) {
-            printf("[JIT_OPCODE_MAP_XTENSA] base=%p regs=%u bc=%u native=%u op=%02x\n",
-                   (void *)ctx.buffer, (unsigned)num_vregs,
-                   (unsigned)last_off, (unsigned)ctx.offset, (unsigned)op);
-        }
+
         // Flush before recording native-address mapping: every branch target enters
         // with coherent v_regs. Helper/division opcodes never see a dirty cache.
         const bool vcacheable = vcache_function_safe &&
