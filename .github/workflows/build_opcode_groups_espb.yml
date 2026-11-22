@@ -379,3 +379,5 @@ jobs:
           retention-days: 14
 
 # [translate-opcode-corpus] Rerun after updating the translator key-pool contract test.
+
+# [translate-opcode-corpus] Translate latest verified task lifecycle bitcode and publish paired modules.
