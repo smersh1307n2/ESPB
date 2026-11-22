@@ -57,6 +57,7 @@ def main() -> int:
             raise SystemExit(f"Interpreter converter did not create a nonempty module: {interpreter}")
         print(f"PAIRED_TRANSLATION_DONE group={stem}", flush=True)
 
+    expected_count = len(names)
     missing = [
         f"{stem} ({suffix})"
         for stem in names
@@ -69,7 +70,7 @@ def main() -> int:
     print(
         f"PAIRED_CORPUS_READY jit={len(list(args.paired_dir.glob('*.jit.espb')))} "
         f"interpreter={len(list(args.paired_dir.glob('*.interpreter.espb')))} "
-        f"updated={len(names)}",
+        f"updated={expected_count}",
         flush=True,
     )
     return 0
