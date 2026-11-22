@@ -19,11 +19,23 @@ def main() -> int:
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument(
+        "--groups",
+        nargs="+",
+        help="optional group stems to compile; omitted means the complete corpus",
+    )
     args = parser.parse_args()
 
-    sources = sorted(GROUPS.glob("*.c"))
-    if not sources:
+    available = {source.stem: source for source in sorted(GROUPS.glob("*.c"))}
+    if not available:
         raise SystemExit(f"No opcode group sources found in {GROUPS}")
+    if args.groups:
+        unknown = sorted(set(args.groups) - set(available))
+        if unknown:
+            raise SystemExit(f"Unknown opcode group(s): {', '.join(unknown)}")
+        sources = [available[name] for name in dict.fromkeys(args.groups)]
+    else:
+        sources = list(available.values())
     build_example = SUBMODULE / "examples" / EXAMPLE_NAME
     if build_example.exists():
         raise SystemExit(f"Refusing to overwrite existing directory: {build_example}")
