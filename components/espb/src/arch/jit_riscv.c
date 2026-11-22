@@ -1424,8 +1424,17 @@ void jit_call_espb_function(EspbInstance* instance, uint32_t local_func_idx, Val
 
         // Локальный регистровый фрейм для вызываемой функции (семантика CALL)
         // КРИТИЧНО: нельзя выделять 256 Value на каждый рекурсивный вызов (переполнит стек)
-        uint16_t needed_regs = callee_body->header.num_virtual_regs;
+        const uint16_t declared_regs = callee_body->header.num_virtual_regs;
+        const uint16_t max_used = (uint16_t)callee_body->header.max_reg_used + 1u;
+        uint16_t needed_regs = declared_regs;
         if (needed_regs == 0 || needed_regs > 256) needed_regs = 256;
+        if (max_used > needed_regs) needed_regs = max_used;
+
+        // The bytecode emitter reserves R16..R23 for lowering temporaries.
+        // Some translated functions still emit LDC instructions into that range
+        // while their header only counts allocator-owned vregs. Keep the complete
+        // reserved register window inside the CALL frame to avoid stack corruption.
+        if (needed_regs < 24u) needed_regs = 24u;
 
         // Fast-path frame: stack allocation avoids heap work on recursive calls.
         Value *callee_regs = (Value*)alloca((size_t)needed_regs * sizeof(Value));
@@ -1433,9 +1442,7 @@ void jit_call_espb_function(EspbInstance* instance, uint32_t local_func_idx, Val
             goto slow_path;
         }
 
-        uint16_t max_used = (uint16_t)callee_body->header.max_reg_used + 1u;
         uint16_t zero_regs = needed_regs;
-        if (max_used > 0 && max_used < zero_regs) zero_regs = max_used;
         if (zero_regs < num_args) zero_regs = num_args;
         if (zero_regs == 0) zero_regs = 1;
 
@@ -1449,11 +1456,11 @@ void jit_call_espb_function(EspbInstance* instance, uint32_t local_func_idx, Val
         }
 
         if (trace_i32_calls) {
-            printf("[JIT_CALL_BODY] idx=%u code_size=%u vregs=%u max_reg=%u flags=%02x args=%u returns=%u\n",
+            printf("[JIT_CALL_BODY] idx=%u code_size=%u declared_regs=%u max_reg=%u frame_regs=%u flags=%02x args=%u returns=%u\n",
                    (unsigned)local_func_idx, (unsigned)callee_body->code_size,
-                   (unsigned)needed_regs, (unsigned)callee_body->header.max_reg_used,
-                   (unsigned)callee_body->header.flags, (unsigned)sig->num_params,
-                   (unsigned)sig->num_returns);
+                   (unsigned)declared_regs, (unsigned)callee_body->header.max_reg_used,
+                   (unsigned)needed_regs, (unsigned)callee_body->header.flags,
+                   (unsigned)sig->num_params, (unsigned)sig->num_returns);
             printf("[JIT_CALL_BYTECODE] idx=%u ", (unsigned)local_func_idx);
             for (uint32_t i = 0; i < callee_body->code_size; ++i) {
                 printf("%02x", (unsigned)callee_body->code[i]);
