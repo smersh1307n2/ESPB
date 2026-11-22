@@ -298,7 +298,14 @@ jobs:
           fi
 
           jit_ready_count="$(grep -c '^\[ESPB_TEST\] jit_ready=' qemu.log || true)"
-          jit_completed="$(grep -c '^\[ESPB_TEST\] module_done=jit__.* mode=jit          awk '
+          jit_completed="$(grep -c '^\[ESPB_TEST\] module_done=jit__.* mode=jit$' qemu.log || true)"
+          interp_completed="$(grep -c '^\[ESPB_TEST\] module_done=interp__.* mode=interpreter$' qemu.log || true)"
+          if [ "$jit_ready_count" -ne "$jit_modules" ] || [ "$jit_completed" -ne "$jit_modules" ] || [ "$interp_completed" -ne "$interpreter_modules" ]; then
+            echo "Mode execution mismatch: jit_ready=$jit_ready_count/$jit_modules jit_completed=$jit_completed/$jit_modules interpreter_completed=$interp_completed/$interpreter_modules"
+            exit 1
+          fi
+
+          awk '
             /^\[ESPB_TEST\] jit_ready=/ {
               hot = compiled = -1
               for (i = 1; i <= NF; ++i) {
