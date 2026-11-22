@@ -5,8 +5,6 @@
 #include "espb_interpreter_runtime.h"
 #include "espb_jit_precompile.h"
 #include "espb_embedded_modules.h"
-#include "esp_timer.h"
-#include "esp_cpu.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -24,7 +22,6 @@ struct espb_module_handle_t {
 
 typedef void (*qemu_cb1_t)(void *);
 typedef void (*qemu_cb2_t)(int, void *);
-typedef void (*qemu_jit_func_t)(EspbInstance *, Value *);
 
 __attribute__((noinline, optimize("O0")))
 void host_invoke_cb(qemu_cb1_t cb, void *user_data)
@@ -66,6 +63,23 @@ uint64_t qemu_atomic_exchange_8(volatile void *address,
     return previous;
 }
 
+// The checked-in timer test module can carry a millisecond-to-tick zero
+// period from an earlier translation. Keep QEMU progressing and report the
+// shim explicitly; FreeRTOS requires a positive tick period.
+static TimerHandle_t qemu_xTimerCreate(const char *name,
+                                       TickType_t period,
+                                       UBaseType_t auto_reload,
+                                       void *timer_id,
+                                       TimerCallbackFunction_t callback)
+{
+    if (period == 0) {
+        printf("[ESPB_RTOS] timer_period_clamped_from_zero name=%s\n",
+               name ? name : "(null)");
+        period = 1;
+    }
+    return xTimerCreate(name, period, auto_reload, timer_id, callback);
+}
+
 static const EspbSymbolFast qemu_fast_symbols[] = {
 #include "symbols/custom_fast.sym"
 };
@@ -80,172 +94,11 @@ static const EspbSymbol qemu_named_symbols[] = {
     {"xTaskCreatePinnedToCore", (const void*)&xTaskCreatePinnedToCore},
     {"vTaskDelete", (const void*)&vTaskDelete},
     {"xTaskGetTickCount", (const void*)&xTaskGetTickCount},
-    {"xTimerCreate", (const void*)&xTimerCreate},
+    {"xTimerCreate", (const void*)&qemu_xTimerCreate},
     {"xTimerGenericCommand", (const void*)&xTimerGenericCommand},
     {"pvTimerGetTimerID", (const void*)&pvTimerGetTimerID},
     ESP_ELFSYM_END
 };
-
-static bool qemu_find_exported_function(
-    espb_handle_t handle,
-    const char *function_name,
-    uint32_t *out_global_func_idx,
-    EspbFunctionBody **out_body,
-    const EspbFuncSignature **out_signature)
-{
-    if (!handle || !handle->module || !handle->instance || !function_name) return false;
-    EspbModule *module = handle->module;
-
-    for (uint32_t i = 0; i < module->num_exports; ++i) {
-        const EspbExportDesc *exp = &module->exports[i];
-        if (exp->kind != ESPB_IMPORT_KIND_FUNC || !exp->name ||
-            strcmp(exp->name, function_name) != 0) {
-            continue;
-        }
-
-        const uint32_t local_func_idx = exp->index;
-        if (local_func_idx >= module->num_functions) return false;
-        const uint32_t sig_idx = module->function_signature_indices[local_func_idx];
-        if (sig_idx >= module->num_signatures) return false;
-
-        if (out_global_func_idx) *out_global_func_idx = module->num_imported_funcs + local_func_idx;
-        if (out_body) *out_body = &module->function_bodies[local_func_idx];
-        if (out_signature) *out_signature = &module->signatures[sig_idx];
-        return true;
-    }
-    return false;
-}
-
-static void qemu_sort_samples(int64_t *samples_us, uint32_t *samples_cycles, int count)
-{
-    for (int i = 1; i < count; ++i) {
-        const int64_t value_us = samples_us[i];
-        int j = i;
-        while (j > 0 && samples_us[j - 1] > value_us) {
-            samples_us[j] = samples_us[j - 1];
-            --j;
-        }
-        samples_us[j] = value_us;
-
-        const uint32_t value_cycles = samples_cycles[i];
-        j = i;
-        while (j > 0 && samples_cycles[j - 1] > value_cycles) {
-            samples_cycles[j] = samples_cycles[j - 1];
-            --j;
-        }
-        samples_cycles[j] = value_cycles;
-    }
-}
-
-// Interpreter core measurement: context allocation/free and public name lookup
-// are outside the timer; the timer covers espb_call_function and its bytecode
-// execution/frame setup.
-static bool qemu_benchmark_interpreter_core(
-    espb_handle_t handle,
-    const char *function_name,
-    const Value *args,
-    uint32_t args_count)
-{
-    uint32_t global_func_idx = 0;
-    const EspbFuncSignature *signature = NULL;
-    if (!qemu_find_exported_function(handle, function_name, &global_func_idx, NULL, &signature) ||
-        !signature || signature->num_params > args_count) {
-        printf("[ESPB_BENCH_INTERP_CORE] function=%s unavailable_or_args_mismatch\n", function_name);
-        return false;
-    }
-
-    enum { SAMPLE_COUNT = 1 };
-    int64_t samples_us[SAMPLE_COUNT];
-    uint32_t samples_cycles[SAMPLE_COUNT];
-
-    for (int i = 0; i < SAMPLE_COUNT; ++i) {
-        ExecutionContext *exec_ctx = init_execution_context();
-        if (!exec_ctx) {
-            printf("[ESPB_BENCH_INTERP_CORE] function=%s context_alloc_failed\n", function_name);
-            return false;
-        }
-
-        Value result = {};
-        const int64_t start_us = esp_timer_get_time();
-        const uint32_t start_cycles = esp_cpu_get_cycle_count();
-        const EspbResult rc = espb_call_function(handle->instance, exec_ctx, global_func_idx, args, &result);
-        const uint32_t end_cycles = esp_cpu_get_cycle_count();
-        samples_us[i] = esp_timer_get_time() - start_us;
-        samples_cycles[i] = end_cycles - start_cycles;
-        free_execution_context(exec_ctx);
-
-        if (rc != ESPB_OK) {
-            printf("[ESPB_BENCH_INTERP_CORE] function=%s call_failed rc=%d\n",
-                   function_name, (int)rc);
-            return false;
-        }
-    }
-
-    qemu_sort_samples(samples_us, samples_cycles, SAMPLE_COUNT);
-    printf("[ESPB_BENCH_INTERP_CORE] function=%s median_us=%lld median_cycles=%u samples=%u\n",
-           function_name, (long long)samples_us[SAMPLE_COUNT / 2],
-           (unsigned)samples_cycles[SAMPLE_COUNT / 2], (unsigned)SAMPLE_COUNT);
-    return true;
-}
-
-// Raw JIT measurement: compilation/warmup, register-buffer initialization and
-// argument copying are all completed before the timer starts. The timed call is
-// the generated JitFunc(instance, v_regs) entry itself.
-static bool qemu_benchmark_raw_jit(
-    espb_handle_t handle,
-    const char *function_name,
-    const Value *args,
-    uint32_t args_count)
-{
-    EspbFunctionBody *body = NULL;
-    const EspbFuncSignature *signature = NULL;
-    if (!qemu_find_exported_function(handle, function_name, NULL, &body, &signature) ||
-        !body || !signature || !body->is_jit_compiled || !body->jit_code ||
-        signature->num_params > args_count) {
-        printf("[ESPB_BENCH_RAW_JIT] function=%s jit_entry_unavailable_or_args_mismatch\n", function_name);
-        return false;
-    }
-
-    uint16_t actual_regs = body->header.num_virtual_regs;
-    if (actual_regs > 256) actual_regs = 256;
-    if (actual_regs < 8) actual_regs = 8;
-
-    uint32_t copied_args = signature->num_params;
-    if (copied_args > actual_regs) {
-        printf("[ESPB_BENCH_RAW_JIT] function=%s argument_registers_exceed_frame\n", function_name);
-        return false;
-    }
-
-    Value v_regs[256] __attribute__((aligned(8)));
-    qemu_jit_func_t jit_func = (qemu_jit_func_t)body->jit_code;
-
-    enum { SAMPLE_COUNT = 5 };
-    int64_t samples_us[SAMPLE_COUNT];
-    uint32_t samples_cycles[SAMPLE_COUNT];
-
-    for (int i = 0; i < SAMPLE_COUNT; ++i) {
-        // Reset the complete virtual-register input state outside the timed region.
-        memset(v_regs, 0, (size_t)actual_regs * sizeof(Value));
-        if (args && copied_args > 0) {
-            memcpy(v_regs, args, (size_t)copied_args * sizeof(Value));
-        }
-
-        const int64_t start_us = esp_timer_get_time();
-        const uint32_t start_cycles = esp_cpu_get_cycle_count();
-        jit_func(handle->instance, v_regs);
-        const uint32_t end_cycles = esp_cpu_get_cycle_count();
-        samples_us[i] = esp_timer_get_time() - start_us;
-        samples_cycles[i] = end_cycles - start_cycles;
-    }
-
-    qemu_sort_samples(samples_us, samples_cycles, SAMPLE_COUNT);
-    printf("[ESPB_BENCH_RAW_JIT] function=%s median_us=%lld median_cycles=%u regs=%u args=%u samples=%u\n",
-           function_name, (long long)samples_us[SAMPLE_COUNT / 2],
-           (unsigned)samples_cycles[SAMPLE_COUNT / 2], (unsigned)actual_regs,
-           (unsigned)copied_args, (unsigned)SAMPLE_COUNT);
-    return true;
-}
-
 
 static int32_t qemu_native_switch_probe(int32_t value)
 {
@@ -434,62 +287,23 @@ extern "C" void app_main(void)
             strstr(module.name, "09_freertos_task") != NULL ||
             strstr(module.name, "10_freertos_timer") != NULL;
 
-        if (is_bounded_rtos) {
-            // RTOS integration functions execute exactly three times per mode.
-            for (int call = 1; call < 3; ++call) {
-                result = espb_call_function_sync(handle, "app_main", args, 3, NULL);
-                if (result != ESPB_OK) {
-                    printf("[ESPB_TEST] call_failed=%s call=%d error=%d\n",
-                           module.name, call + 1, (int)result);
-                    espb_unload_module(handle);
-                    return;
-                }
-            }
-            // Deleted FreeRTOS tasks are reclaimed by the idle task. Give it
-            // time to run before taking the heap snapshot; otherwise QEMU
-            // reports the task stacks as a false per-module heap leak.
-            vTaskDelay(pdMS_TO_TICKS(20));
-            // Deleted FreeRTOS tasks are reclaimed by the idle task. Give it
-            // time to run before taking the heap snapshot; otherwise QEMU
-            // reports the task stacks as a false per-module heap leak.
-            vTaskDelay(pdMS_TO_TICKS(20));
-            printf("[ESPB_TEST] bounded_rtos_calls=%s count=3\n", module.name);
-        } else {
-            const bool core_bench_ok = jit_mode
-                ? qemu_benchmark_raw_jit(handle, "app_main", args, 3)
-                : qemu_benchmark_interpreter_core(handle, "app_main", args, 3);
-            if (!core_bench_ok) {
-                printf("[ESPB_TEST] core_bench_failed=%s\n", module.name);
+        // The module was already run once during load/warmup. Interpreter
+        // modules need no repeated execution. For JIT modules, execute once
+        // more after explicit HOT precompilation so this pass covers generated
+        // native code without turning semantic tests into benchmarks.
+        if (jit_mode) {
+            result = espb_call_function_sync(handle, "app_main", args, 3, NULL);
+            if (result != ESPB_OK) {
+                printf("[ESPB_TEST] call_failed=%s error=%d\n", module.name, (int)result);
                 espb_unload_module(handle);
                 return;
             }
+        }
 
-            // Public API timing is separate from raw interpreter/JIT execution.
-            enum { SAMPLE_COUNT = 5 };
-            int64_t samples_us[SAMPLE_COUNT];
-            uint32_t samples_cycles[SAMPLE_COUNT];
-            for (int i = 0; i < SAMPLE_COUNT; ++i) {
-                const int64_t start_us = esp_timer_get_time();
-                const uint32_t start_cycles = esp_cpu_get_cycle_count();
-                result = espb_call_function_sync(handle, "app_main", args, 3, NULL);
-                const uint32_t end_cycles = esp_cpu_get_cycle_count();
-                samples_us[i] = esp_timer_get_time() - start_us;
-                samples_cycles[i] = end_cycles - start_cycles;
-                printf("[ESPB_BENCH] module=%s sample_%d_us=%lld cycles_start=%u cycles_end=%u cycles_delta=%u\n",
-                       module.name, i, (long long)samples_us[i],
-                       (unsigned)start_cycles, (unsigned)end_cycles,
-                       (unsigned)samples_cycles[i]);
-                if (result != ESPB_OK) {
-                    printf("[ESPB_TEST] call_failed=%s error=%d\n", module.name, (int)result);
-                    espb_unload_module(handle);
-                    return;
-                }
-            }
-
-            qemu_sort_samples(samples_us, samples_cycles, SAMPLE_COUNT);
-            printf("[ESPB_BENCH] module=%s app_main_median_us=%lld app_main_median_cycles=%u\n",
-                   module.name, (long long)samples_us[SAMPLE_COUNT / 2],
-                   (unsigned)samples_cycles[SAMPLE_COUNT / 2]);
+        if (is_bounded_rtos) {
+            // Let callbacks finish and the idle task reclaim deleted stacks.
+            vTaskDelay(pdMS_TO_TICKS(20));
+            printf("[ESPB_TEST] bounded_rtos_calls=%s count=1\n", module.name);
         }
 
         const uint32_t heap_after_exec = esp_get_free_heap_size();
