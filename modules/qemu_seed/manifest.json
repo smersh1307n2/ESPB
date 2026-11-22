@@ -1,0 +1,107 @@
+{
+  "schema": "espb-qemu-paired-tests/v1",
+  "branch": "ESPB_WORK",
+  "group_count": 10,
+  "groups": [
+    {
+      "name": "01_integer32",
+      "qemu_group": "integer32",
+      "jit": "01_integer32.jit.espb",
+      "jit_git_blob_sha": "d9d261f0281a0d9e0a90309aef39f5e842fe7663",
+      "jit_size_bytes": 2342,
+      "interpreter": "01_integer32.interpreter.espb",
+      "interpreter_git_blob_sha": "e87261a17dd32a799cc952ad8fe27e7efe22f752",
+      "interpreter_size_bytes": 2342
+    },
+    {
+      "name": "02_integer64",
+      "qemu_group": "integer64",
+      "jit": "02_integer64.jit.espb",
+      "jit_git_blob_sha": "05d1aa15817173d3a3ac67efd28955e3d0259472",
+      "jit_size_bytes": 2070,
+      "interpreter": "02_integer64.interpreter.espb",
+      "interpreter_git_blob_sha": "1d5ce68a8f253c401c7750406305bd5bb21fc2ac",
+      "interpreter_size_bytes": 2070
+    },
+    {
+      "name": "03_float",
+      "qemu_group": "float",
+      "jit": "03_float.jit.espb",
+      "jit_git_blob_sha": "0ea1a9ab83c57552cfa642fbc8bbe52167995f04",
+      "jit_size_bytes": 2515,
+      "interpreter": "03_float.interpreter.espb",
+      "interpreter_git_blob_sha": "7b94ad95d80064dc167f2cfda549d71bec69fd4c",
+      "interpreter_size_bytes": 2515
+    },
+    {
+      "name": "04_control_flow",
+      "qemu_group": "control_flow",
+      "jit": "04_control_flow.jit.espb",
+      "jit_git_blob_sha": "2a42da8378788e25cc4ac348f2f4501eb4868476",
+      "jit_size_bytes": 1093,
+      "interpreter": "04_control_flow.interpreter.espb",
+      "interpreter_git_blob_sha": "2b6fe401bf717fbce72666fbdac5be30ab074dfb",
+      "interpreter_size_bytes": 1093
+    },
+    {
+      "name": "05_select_convert",
+      "qemu_group": "select_convert",
+      "jit": "05_select_convert.jit.espb",
+      "jit_git_blob_sha": "7f6d2dfc87dd1ddaf73d8270f12cd32ef9e7b10d",
+      "jit_size_bytes": 2196,
+      "interpreter": "05_select_convert.interpreter.espb",
+      "interpreter_git_blob_sha": "d75d0c9a106e6d9de9946795b6fe44b243b01897",
+      "interpreter_size_bytes": 2196
+    },
+    {
+      "name": "06_memory",
+      "qemu_group": "memory",
+      "jit": "06_memory.jit.espb",
+      "jit_git_blob_sha": "78110587beb97c8c815ab0566edd25ad89b6fdad",
+      "jit_size_bytes": 2203,
+      "interpreter": "06_memory.interpreter.espb",
+      "interpreter_git_blob_sha": "33620e21f204386f565ca202be37064a0f4fcc15",
+      "interpreter_size_bytes": 2203
+    },
+    {
+      "name": "07_calls_callbacks",
+      "qemu_group": "calls_callbacks",
+      "jit": "07_calls_callbacks.jit.espb",
+      "jit_git_blob_sha": "889e2f7e9d786b6c5e4343451cfdf548ea472828",
+      "jit_size_bytes": 2142,
+      "interpreter": "07_calls_callbacks.interpreter.espb",
+      "interpreter_git_blob_sha": "ae87623092cf4da9ff507a0401628b20510b4eda",
+      "interpreter_size_bytes": 2142
+    },
+    {
+      "name": "08_atomics",
+      "qemu_group": "atomics",
+      "jit": "08_atomics.jit.espb",
+      "jit_git_blob_sha": "0cd164ca437d0da020e2054e2c03041b64eab22c",
+      "jit_size_bytes": 1916,
+      "interpreter": "08_atomics.interpreter.espb",
+      "interpreter_git_blob_sha": "20fa3a70aa8a613d5db0d6acabd09d5af4b4fe11",
+      "interpreter_size_bytes": 1916
+    },
+    {
+      "name": "09_freertos_task",
+      "qemu_group": "freertos_task",
+      "jit": "09_freertos_task.jit.espb",
+      "jit_git_blob_sha": "70d285e0a39dae567161a0d4a111cd504a730fc5",
+      "jit_size_bytes": 976,
+      "interpreter": "09_freertos_task.interpreter.espb",
+      "interpreter_git_blob_sha": "75612b88c02835f5aec715224085b39568644c92",
+      "interpreter_size_bytes": 976
+    },
+    {
+      "name": "10_freertos_timer",
+      "qemu_group": "freertos_timer",
+      "jit": "10_freertos_timer.jit.espb",
+      "jit_git_blob_sha": "990b7c7d0b221178a1d60076aff6823ade9368d3",
+      "jit_size_bytes": 1039,
+      "interpreter": "10_freertos_timer.interpreter.espb",
+      "interpreter_git_blob_sha": "3ab4d3de07c2e63a175822c3cff1691f57d71a11",
+      "interpreter_size_bytes": 1039
+    }
+  ]
+}
