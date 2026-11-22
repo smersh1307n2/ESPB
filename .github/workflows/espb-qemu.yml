@@ -282,7 +282,7 @@ jobs:
             exit 1
           fi
 
-          expected_modules="$(sed -n 's/^\[ESPB_TEST\] module_count=//p' qemu.log | tail -n 1)"
+          expected_modules="$(grep -Eo '\[ESPB_TEST\] module_count=[0-9]+' qemu.log | tail -n 1 | sed 's/.*=//')"
           actual_modules="$(grep -c '^\[ESPB_TEST\] module=' qemu.log || true)"
           completed_modules="$(grep -c '^\[ESPB_TEST\] module_done=' qemu.log || true)"
           if [ -z "$expected_modules" ] || [ "$expected_modules" -lt 2 ] || [ "$actual_modules" -ne "$expected_modules" ] || [ "$completed_modules" -ne "$expected_modules" ]; then
