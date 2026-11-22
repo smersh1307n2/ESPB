@@ -4512,13 +4512,16 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 //        (long)(pc - bytecode - 3), rd, rs, align_param);
                 
                 // Генерируем вызов helper: void espb_jit_alloca_ex(EspbInstance*, Value* v_regs, u16 num_regs_allocated, u8 rd, u8 rs, u8 align)
-                // Сохраняем caller-saved регистры t0-t6 и ra в pre-allocated temp area (s0+0..s0+31).
-                // КРИТИЧНО: нельзя делать sp-=32 — это перекроет v_regs на стеке вызывающей функции.
-                // Используем 48-байтный temp_space в нижней части JIT-фрейма (s0 = fp = sp в прологе).
+                // Сохраняем caller-saved t0-t6, ra и базовые s1/s2 в pre-allocated temp area.
+                // Дополнительно сохраняем s1/s2 явно: helper ABI обязан их сохранять,
+                // но на C3 наблюдается повреждение s2 после последовательных ALLOCA.
+                // Используем 48-байтный temp_space в нижней части JIT-фрейма (s0 = fp = sp).
                 // t0-t6 в RISC-V = x5,x6,x7,x28,x29,x30,x31 (НЕ x5..x11!).
                 static const uint8_t t_regs[7] = {5, 6, 7, 28, 29, 30, 31}; // t0-t6
                 for (int i = 0; i < 7; ++i) emit_sw_phys(&ctx, t_regs[i], i * 4, 8); // sw tX, i*4(s0)
                 emit_sw_phys(&ctx, 1, 28, 8); // sw ra, 28(s0) — jalr в emit_call_helper затирает ra
+                emit_sw_phys(&ctx, 9, 32, 8); // preserve s1 (instance)
+                emit_sw_phys(&ctx, 18, 36, 8); // preserve s2 (v_regs)
 
                 // a0 = instance (s1), a1 = v_regs (s2) — оба callee-saved, не трогаются хелпером
                 emit_addi_phys(&ctx, 10, 9, 0);
@@ -4564,7 +4567,8 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 // Восстанавливаем t0-t6 и ra из temp area (s0+0..s0+31)
                 for (int i = 0; i < 7; ++i) emit_lw_phys(&ctx, t_regs[i], i * 4, 8); // lw tX, i*4(s0)
                 emit_lw_phys(&ctx, 1, 28, 8); // lw ra, 28(s0)
-                // s1(x9) и s2(x18) callee-saved — хелпер их сохранил сам, восстанавливать не нужно
+                emit_lw_phys(&ctx, 9, 32, 8); // restore s1 (instance)
+                emit_lw_phys(&ctx, 18, 36, 8); // restore s2 (v_regs)
                 
                 break;
             }
