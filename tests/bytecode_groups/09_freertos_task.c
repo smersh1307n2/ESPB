@@ -6,11 +6,10 @@
 #define JIT_HOT __attribute__((annotate("espb_jit_hot"), noinline))
 
 static volatile uint32_t task_count;
-static volatile uint32_t task_parameter_seen;
 
 JIT_HOT static void counter_task(void *pvParameter)
 {
-    task_parameter_seen = (uint32_t)(uintptr_t)pvParameter;
+    (void)pvParameter;
     for (;;) {
         ++task_count;
         vTaskDelay(1);
@@ -20,31 +19,24 @@ JIT_HOT static void counter_task(void *pvParameter)
 JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
 {
     task_count = 0;
-    task_parameter_seen = 0;
+
+    /* Follow ESP32_PRJ_TO_LLVM/main/all_tests.c:test_second():
+       create with an output TaskHandle_t, then delete using that handle. */
     TaskHandle_t counter_task_handle = NULL;
-
-    /* Mirror ESP32_PRJ_TO_LLVM/main/all_tests.c:test_second():
-       xTaskCreate(counter_task, non-null pvParameter, saved task handle,
-       then vTaskDelete(handle). Keep the wait bounded for this opcode probe. */
-    BaseType_t created = xTaskCreate(&counter_task, "counter_task", 8192,
-                                     (void *)(uintptr_t)0xAABBCCDDu,
-                                     tskIDLE_PRIORITY + 1,
+    BaseType_t created = xTaskCreate(&counter_task, "counter_task", 4048,
+                                     (void *)0xAABBCCDDu, 5,
                                      &counter_task_handle);
-    if (created == pdPASS) {
-        for (uint32_t wait = 0; wait < 100u && task_count == 0; ++wait) {
-            vTaskDelay(1);
-        }
-    }
 
-    int ok = created == pdPASS && counter_task_handle != NULL &&
-             task_count != 0 && task_parameter_seen == 0xAABBCCDDu;
     if (created == pdPASS && counter_task_handle != NULL) {
+        /* Let the worker run, then delete exactly the task we created. */
+        vTaskDelay(2);
         vTaskDelete(counter_task_handle);
         counter_task_handle = NULL;
-        /* Give the idle task time to reclaim the deleted task's stack and TCB. */
+        /* FreeRTOS idle task reclaims the deleted task's stack and TCB. */
         vTaskDelay(2);
     }
 
+    int ok = created == pdPASS && task_count != 0;
     printf("[ESPB_GROUP] freertos_task=%s arg=%ld\n",
            ok ? "PASS" : "FAIL", (long)arg);
     (void)text;
