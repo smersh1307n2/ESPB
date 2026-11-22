@@ -34,6 +34,10 @@ void espb_jit_alloca(EspbInstance *instance, Value *v_regs, uint8_t rd, uint8_t 
 void espb_jit_alloca_ex(EspbInstance *instance, Value *v_regs, uint16_t num_regs_allocated,
                         uint8_t rd, uint8_t rs_size, uint8_t align);
 
+// Shared implementation of the extended HEAP_CALLOC opcode for JIT backends.
+// Matches interpreter overflow handling and avoids calling memset on NULL.
+void* espb_jit_heap_calloc(EspbInstance *instance, uint32_t count, uint32_t size);
+
 #ifdef __cplusplus
 }
 #endif
