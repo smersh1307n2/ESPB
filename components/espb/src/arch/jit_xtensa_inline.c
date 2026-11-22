@@ -766,15 +766,21 @@ static void jit_call_espb_function_xtensa(EspbInstance* instance, uint32_t local
         typedef void (*JitFunc)(EspbInstance*, Value*);
         JitFunc jit_func = (JitFunc)callee_body->jit_code;
         
-        uint16_t needed_regs = callee_body->header.num_virtual_regs;
+        const uint16_t declared_regs = callee_body->header.num_virtual_regs;
+        const uint16_t max_used = (uint16_t)callee_body->header.max_reg_used + 1u;
+        uint16_t needed_regs = declared_regs;
         if (needed_regs == 0 || needed_regs > 256) needed_regs = 256;
+        if (max_used > needed_regs) needed_regs = max_used;
+
+        // Match the bytecode emitter's reserved temporary register window R16..R23.
+        // A few translated functions emit into these slots without including them
+        // in num_virtual_regs, so the CALL frame must cover the full window.
+        if (needed_regs < 24u) needed_regs = 24u;
 
         Value *callee_regs = (Value*)alloca((size_t)needed_regs * sizeof(Value));
         if (!callee_regs) goto slow_path;
 
-        uint16_t max_used = (uint16_t)callee_body->header.max_reg_used + 1u;
         uint16_t zero_regs = needed_regs;
-        if (max_used > 0 && max_used < zero_regs) zero_regs = max_used;
         if (zero_regs < num_args) zero_regs = num_args;
         if (zero_regs == 0) zero_regs = 1;
 
