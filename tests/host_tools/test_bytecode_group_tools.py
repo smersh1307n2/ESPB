@@ -578,7 +578,7 @@ class WorkflowContractTests(unittest.TestCase):
 
         self.assertIn("paired_translation_groups.txt", workflow)
         self.assertIn("translate_selected_pairs.py", workflow)
-        self.assertIn("for group in selected_groups", script)
+        self.assertIn("for stem in names", script)
         self.assertIn("09_freertos_task", selection)
         self.assertIn("expected_count", script)
         self.assertIn("interpreter.espb", script)
