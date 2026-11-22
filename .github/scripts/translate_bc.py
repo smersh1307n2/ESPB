@@ -51,7 +51,11 @@ url = os.environ.get("ESPB_API_URL", "http://espb.runasp.net/api/v1/translate")
 body = json.dumps(payload).encode("utf-8")
 quota_markers = ("quota", "remainingrequests", "daily limit", "request limit", "translation limit", "rate limit")
 
+# Log secret variable names only; never print key material.
 for slot, key in enumerate(keys, 1):
+    names = ("ESPB_API_KEY",) + tuple("ESPB_API_KEY_" + str(i) for i in range(1, 12))
+    sources = [name for name in names if key and os.environ.get(name, "").strip() == key]
+    print("Translator attempt slot=%d; configured_from=%s" % (slot, ",".join(sources) or "aggregate/unknown"))
     req = urllib.request.Request(url, data=body, headers={
         "Authorization": "Bearer " + key,
         "Content-Type": "application/json"
@@ -63,7 +67,7 @@ for slot, key in enumerate(keys, 1):
     except urllib.error.HTTPError as exc:
         raw = exc.read().decode("utf-8", errors="replace")
         if exc.code == 429 or any(marker in raw.lower() for marker in quota_markers):
-            print(f"Key slot {slot}: quota exhausted; trying next key.")
+            print(f"Key slot {slot}: HTTP {exc.code}; quota-like response={raw[:500]!r}; trying next key.")
             continue
         raise SystemExit(f"Translation HTTP {exc.code}: {raw[:2000]}")
     except (urllib.error.URLError, TimeoutError) as exc:
