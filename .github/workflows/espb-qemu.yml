@@ -1,4 +1,5 @@
 name: ESPB_WORK dual-mode QEMU tests
+# Re-run QEMU against refreshed paired 09_freertos_task JIT/interpreter modules.
 # Re-run against signed-shift, Xtensa helper-ABI and per-opcode diagnostics.
 # Exercise updated task-handle cleanup and module-owned callback closure release.
 
