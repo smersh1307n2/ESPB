@@ -183,28 +183,78 @@ jobs:
       # PAIRED_RUN_ID: ${{ steps.paired_run.outputs.run_id }}
       # PAIRED_SOURCE_SHA: ${{ steps.paired_run.outputs.source_sha }}
       # --expected-groups 10
-      - name: Verify full paired corpus from artifact
+      - name: Verify full paired corpus against qemu_seed manifest
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
+          import hashlib
+          import json
           from pathlib import Path
+
+          manifest_path = Path("modules/qemu_seed/manifest.json")
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          if manifest.get("schema") != "espb-qemu-paired-tests/v1":
+              raise SystemExit("Unsupported qemu_seed manifest schema")
+          if manifest.get("branch") != "ESPB_WORK":
+              raise SystemExit("qemu_seed manifest branch mismatch")
+
+          expected_groups = {
+              "01_integer32": "integer32",
+              "02_integer64": "integer64",
+              "03_float": "float",
+              "04_control_flow": "control_flow",
+              "05_select_convert": "select_convert",
+              "06_memory": "memory",
+              "07_calls_callbacks": "calls_callbacks",
+              "08_atomics": "atomics",
+              "09_freertos_task": "freertos_task",
+              "10_freertos_timer": "freertos_timer",
+          }
+          groups = manifest.get("groups")
+          if not isinstance(groups, list) or manifest.get("group_count") != 10 or len(groups) != 10:
+              raise SystemExit("Manifest must contain exactly 10 paired test groups")
+          names = [item.get("name") for item in groups if isinstance(item, dict)]
+          if len(names) != 10 or len(set(names)) != 10 or set(names) != set(expected_groups):
+              raise SystemExit(f"Manifest group set mismatch: {names}")
           paired = Path(".work/paired")
-          expected = [
-              "01_integer32", "02_integer64", "03_float", "04_control_flow",
-              "05_select_convert", "06_memory", "07_calls_callbacks",
-              "08_atomics", "09_freertos_task", "10_freertos_timer",
-          ]
-          for stem in expected:
-              for suffix in ("jit.espb", "interpreter.espb"):
-                  path = paired / f"{stem}.{suffix}"
-                  if not path.is_file() or path.stat().st_size == 0:
-                      raise SystemExit(f"Missing/empty paired module: {path}")
-          jit = list(paired.glob("*.jit.espb"))
-          interp = list(paired.glob("*.interpreter.espb"))
-          if len(jit) != 10 or len(interp) != 10:
-              raise SystemExit(f"Expected 10 complete pairs, got jit={len(jit)} interpreter={len(interp)}")
-          print("PAIRED_CORPUS_VERIFIED groups=10")
+          seed = Path("modules/qemu_seed")
+
+          def git_blob_sha(path):
+              data = path.read_bytes()
+              header = b"blob " + str(len(data)).encode("ascii") + b"\\0"
+              return hashlib.sha1(header + data).hexdigest()
+
+          expected_jit = set()
+          expected_interpreter = set()
+          for item in groups:
+              name = item["name"]
+              if item.get("qemu_group") != expected_groups[name]:
+                  raise SystemExit(f"QEMU semantic group mismatch for {name}")
+              for mode, filename_key, sha_key, size_key in (
+                  ("jit", "jit", "jit_git_blob_sha", "jit_size_bytes"),
+                  ("interpreter", "interpreter", "interpreter_git_blob_sha", "interpreter_size_bytes"),
+              ):
+                  filename = f"{name}.{mode}.espb"
+                  if item.get(filename_key) != filename:
+                      raise SystemExit(f"Unexpected {mode} filename for {name}")
+                  (expected_jit if mode == "jit" else expected_interpreter).add(filename)
+                  for root in (seed, paired):
+                      path = root / filename
+                      if not path.is_file() or path.stat().st_size == 0:
+                          raise SystemExit(f"Missing/empty {mode} module: {path}")
+                      if path.stat().st_size != item.get(size_key):
+                          raise SystemExit(f"Size mismatch for {path}")
+                      if git_blob_sha(path) != item.get(sha_key):
+                          raise SystemExit(f"Git blob SHA mismatch for {path}")
+          actual_jit = {path.name for path in paired.glob("*.jit.espb")}
+          actual_interpreter = {path.name for path in paired.glob("*.interpreter.espb")}
+          if actual_jit != expected_jit or actual_interpreter != expected_interpreter:
+              raise SystemExit(
+                  f"Artifact pair set mismatch: jit={sorted(actual_jit)} "
+                  f"interpreter={sorted(actual_interpreter)}"
+              )
+          print("PAIRED_CORPUS_VERIFIED groups=10 manifest=modules/qemu_seed/manifest.json")
           PY
 
       - name: Stage and validate paired opcode corpus
