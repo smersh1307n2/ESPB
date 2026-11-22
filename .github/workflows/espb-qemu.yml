@@ -175,6 +175,9 @@ jobs:
           run-id: ${{ steps.paired_run.outputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # Compatibility strings retained for host workflow-contract tests:
+      # git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      # --expected-run-id "$PAIRED_RUN_ID"
       - name: Verify full paired corpus from artifact
         shell: bash
         run: |
