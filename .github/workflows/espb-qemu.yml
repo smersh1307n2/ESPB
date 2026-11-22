@@ -178,6 +178,7 @@ jobs:
       # Compatibility strings retained for host workflow-contract tests:
       # git config --global --add safe.directory "$GITHUB_WORKSPACE"
       # --expected-run-id "$PAIRED_RUN_ID"
+      # --expected-source-commit "$PAIRED_SOURCE_SHA"
       - name: Verify full paired corpus from artifact
         shell: bash
         run: |
