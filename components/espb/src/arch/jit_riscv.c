@@ -2906,6 +2906,13 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
         jit_context_add_label(&ctx, bytecode_offset);
         
         uint8_t opcode = *pc++;
+        // TEMP diagnostic: map native offsets for the 30-register memory-test function.
+        // Runtime panic PC can then be matched to its exact ESPB bytecode opcode.
+        if (num_virtual_regs == 30) {
+            printf("[JIT_OPCODE_MAP] func=%u regs=%u bc=%zu native=%zu op=%02x\\n",
+                   (unsigned)func_idx, (unsigned)num_virtual_regs,
+                   bytecode_offset, ctx.offset, (unsigned)opcode);
+        }
 
         // Сохраняем кеш только для группы I32 ALU/IMM8 опов.
         // Любой другой опкод консервативно сбрасывает кеш.
