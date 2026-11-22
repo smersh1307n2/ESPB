@@ -54,6 +54,7 @@ jobs:
           MANUAL_GROUPS: ${{ inputs.groups }}
         run: |
           set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
           if [[ -n "$BEFORE_SHA" && ! "$BEFORE_SHA" =~ ^0+$ ]]; then
             if ! git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
               git fetch --no-tags origin "$BEFORE_SHA"
