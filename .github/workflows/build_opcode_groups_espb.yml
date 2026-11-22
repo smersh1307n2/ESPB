@@ -11,7 +11,7 @@ name: Build paired ESPB opcode-group modules
 # Retry only bitcode groups whose SHA differs from the last verified paired artifact.
 # [translate-opcode-corpus] Build/publish paired hot and non-hot JIT/interpreter modules.
 # Diagnose API quota responses and map attempted slots to configured secret names.
-# Log HTTP-200 API error payloads to verify per-key remaining translation quota.
+# Log HTTP-200 API error payloads to verify per-key remaining translation quota.\n# [translate-opcode-corpus] Retry the single pending FreeRTOS task group with bounded key failover.
 
 on:
   # Quota-consuming push execution is opt-in via a commit-message marker.
