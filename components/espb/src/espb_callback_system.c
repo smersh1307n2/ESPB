@@ -621,6 +621,28 @@ EspbResult espb_free_callback_closure(void *closure_ptr) {
     return ESPB_OK;
 }
 
+/* Release all closures associated with a module instance. Native sources that
+ * can invoke these closures must be stopped/deleted before module unload. */
+void espb_free_callback_closures_for_instance(EspbInstance *instance) {
+    if (!instance || !g_callback_system.initialized) return;
+    for (;;) {
+        void *exec_ptr = NULL;
+        if (xSemaphoreTake(g_callback_system.mutex, portMAX_DELAY) != pdTRUE) return;
+        for (EspbCallbackClosure *it = g_callback_system.active_closures; it; it = it->next) {
+            if (it->instance == instance) {
+                exec_ptr = it->executable_code;
+                break;
+            }
+        }
+        xSemaphoreGive(g_callback_system.mutex);
+        if (!exec_ptr) break;
+        if (espb_free_callback_closure(exec_ptr) != ESPB_OK) {
+            ESP_LOGE(TAG, "Failed to release closure %p for instance %p", exec_ptr, instance);
+            break;
+        }
+    }
+}
+
 bool espb_find_callback_metadata(
     const EspbModule *module,
     uint16_t import_idx,
