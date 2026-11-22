@@ -49,7 +49,7 @@ if not keys:
 
 url = os.environ.get("ESPB_API_URL", "http://espb.runasp.net/api/v1/translate")
 body = json.dumps(payload).encode("utf-8")
-quota_markers = ("quota", ""daily limit", "request limit", "translation limit", "rate limit")
+quota_markers = ("quota", "daily limit", "request limit", "translation limit", "rate limit")
 
 # Log secret variable names only; never print key material.
 for slot, key in enumerate(keys, 1):
