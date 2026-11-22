@@ -287,7 +287,7 @@ extern "C" void app_main(void)
             strstr(module.name, "09_freertos_task") != NULL ||
             strstr(module.name, "10_freertos_timer") != NULL;
 
-        // The module was already run once during load/warmup. Interpreter
+        // This firmware embeds the complete corpus; keep execution single-pass.\n        // The module was already run once during load/warmup. Interpreter
         // modules need no repeated execution. For JIT modules, execute once
         // more after explicit HOT precompilation so this pass covers generated
         // native code without turning semantic tests into benchmarks.
