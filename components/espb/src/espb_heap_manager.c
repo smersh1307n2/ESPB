@@ -86,7 +86,14 @@ void* espb_heap_malloc_aligned(EspbInstance *instance, size_t size, size_t align
     }
     
     size_t total_size = size + alignment - 1 + sizeof(void*);
+    ESP_LOGI(TAG, "[ALIGNED_BEGIN] instance=%p heap=%p size=%u align=%u total=%u mem=%p mem_size=%u static_end=%u",
+             (void *)instance, (void *)instance->heap_ctx.heap_handle,
+             (unsigned)size, (unsigned)alignment, (unsigned)total_size,
+             (void *)instance->memory_data, (unsigned)instance->memory_size_bytes,
+             (unsigned)instance->static_data_end_offset);
     void *raw_ptr = multi_heap_malloc(instance->heap_ctx.heap_handle, total_size);
+    ESP_LOGI(TAG, "[ALIGNED_RAW] heap=%p raw=%p total=%u",
+             (void *)instance->heap_ctx.heap_handle, raw_ptr, (unsigned)total_size);
     
     if (__builtin_expect(raw_ptr == NULL, 0)) {
         return NULL;
@@ -99,6 +106,8 @@ void* espb_heap_malloc_aligned(EspbInstance *instance, size_t size, size_t align
     *orig_storage = raw_ptr;
     
     void *aligned_ptr = (void*)aligned_addr;
+    ESP_LOGI(TAG, "[ALIGNED_DONE] raw=%p aligned=%p orig_slot=%p size=%u",
+             raw_ptr, aligned_ptr, (void *)orig_storage, (unsigned)size);
     
     uintptr_t memory_base = (uintptr_t)instance->memory_data;
     if (__builtin_expect(aligned_addr < memory_base || aligned_addr >= memory_base + instance->memory_size_bytes, 0)) {
