@@ -16,6 +16,15 @@ menu "ESPB Configuration"
             Enable Just-In-Time (JIT) compilation for ESPB functions.
             This can significantly improve performance for frequently called functions.
 
+    config ESPB_JIT_ALLOCA_TRACE
+        bool "Enable JIT ALLOCA diagnostics"
+        depends on ESPB_JIT_ENABLED
+        default n
+        help
+            Emit focused diagnostics for JIT ALLOCA register inputs, requested size,
+            allocation result, and failure path. Enable temporarily when debugging
+            JIT execution, especially on ESP32-C3. Disable for normal builds.
+
     config ESPB_IDF_GPIO
         bool "Enable GPIO symbols in idf_fast table"
         depends on ESPB_INTERPRETER_ENABLED
