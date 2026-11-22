@@ -19,12 +19,6 @@
 
 #include "espb_runtime_alloca.h"
 #include "esp_log.h"
-#include <stdio.h>
-
-// TEMP: force ALLOCA tracing for jit__06_memory hang isolation
-#ifndef ESPB_JIT_ALLOCA_TRACE
-#define ESPB_JIT_ALLOCA_TRACE 1
-#endif
 
 #if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
 static const char *TAG = "espb_jit_alloca";
@@ -35,26 +29,6 @@ static const char *TAG = "espb_jit_alloca";
 void espb_jit_alloca_ex(EspbInstance *instance, Value *v_regs, uint16_t num_regs_allocated,
                         uint8_t rd, uint8_t rs_size, uint8_t align)
 {
-    // TEMP: unbuffered progress marker (survives hang better than ESP_LOG alone)
-    printf("[JIT_ALLOCA] enter rd=%u rs=%u align=%u count=%u regs=%p return_pc=%p\n",
-           (unsigned)rd, (unsigned)rs_size, (unsigned)align,
-           (unsigned)num_regs_allocated, (void *)v_regs,
-           __builtin_return_address(0));
-    fflush(stdout);
-
-    if ((uintptr_t)v_regs < 0x10000u) {
-#if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
-        ESP_LOGE(TAG, "[JIT_ALLOCA_BAD] instance=%p regs=%p count=%u rd=%u rs=%u align=%u",
-                 (void *)instance, (void *)v_regs, (unsigned)num_regs_allocated,
-                 (unsigned)rd, (unsigned)rs_size, (unsigned)align);
-#endif
-        return;
-    }
-#if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
-    ESP_LOGI(TAG, "ENTER instance=%p regs=%p count=%u rd=%u rs=%u align=%u",
-             (void *)instance, (void *)v_regs, (unsigned)num_regs_allocated,
-             (unsigned)rd, (unsigned)rs_size, (unsigned)align);
-#endif
     if (!instance || !v_regs) {
 #if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
         ESP_LOGE(TAG, "null JIT ALLOCA argument");
@@ -68,28 +42,15 @@ void espb_jit_alloca_ex(EspbInstance *instance, Value *v_regs, uint16_t num_regs
 #endif
         return;
     }
-#if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
-    ESP_LOGI(TAG, "size=%u", (unsigned)V_I32(v_regs[rs_size]));
-#endif
+
     EspbResult result = espb_runtime_alloca(instance, NULL, v_regs,
                                             num_regs_allocated, rd, rs_size, align);
 #if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
-    ESP_LOGI(TAG, "[JIT_ALLOCA_CTX] instance=%p regs=%p heap=%p initialized=%u mem=%p mem_size=%u count=%u rd=%u rs=%u size=%u align=%u",
-             (void *)instance, (void *)v_regs, (void *)instance->heap_ctx.heap_handle,
-             (unsigned)instance->heap_ctx.initialized, (void *)instance->memory_data,
-             (unsigned)instance->memory_size_bytes, (unsigned)num_regs_allocated,
-             (unsigned)rd, (unsigned)rs_size, (unsigned)V_I32(v_regs[rs_size]), (unsigned)align);
     ESP_LOGI(TAG, "[JIT_ALLOCA_RESULT] rc=%d rd=%u ptr=%p",
-             (int)result, (unsigned)rd, result == ESPB_OK ? V_PTR(v_regs[rd]) : NULL);
+             (int)result, (unsigned)rd,
+             result == ESPB_OK ? V_PTR(v_regs[rd]) : NULL);
 #endif
-#if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
-    ESP_LOGI(TAG, "EXIT result=%d allocated=%p", (int)result, V_PTR(v_regs[rd]));
-#endif
-    printf("[JIT_ALLOCA] exit rd=%u result=%d ptr=%p\n",
-           (unsigned)rd, (int)result, result == ESPB_OK ? V_PTR(v_regs[rd]) : NULL);
-    fflush(stdout);
 }
-
 
 void espb_jit_alloca(EspbInstance *instance, Value *v_regs, uint8_t rd, uint8_t rs_size, uint8_t align) {
     // Backward-compatible wrapper
