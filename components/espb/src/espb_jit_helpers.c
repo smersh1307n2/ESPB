@@ -20,11 +20,6 @@
 #include "espb_runtime_alloca.h"
 #include "esp_log.h"
 
-// TEMP: force ALLOCA path tracing while isolating jit__06_memory hang
-#ifndef ESPB_JIT_ALLOCA_TRACE
-#define ESPB_JIT_ALLOCA_TRACE 1
-#endif
-
 #if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
 static const char *TAG = "espb_jit_alloca";
 #endif
