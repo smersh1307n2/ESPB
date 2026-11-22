@@ -197,11 +197,11 @@ EspbResult execute_jit_code(EspbInstance *instance, void *jit_code, const Value 
 
     // Выделяем v_regs динамически на стеке (VLA - Variable Length Array)
     Value v_regs[actual_regs] __attribute__((aligned(8)));
-    if (actual_regs >= 25) {
-        printf("[JIT_ENTRY_TRACE] code=%p regs=%p count=%u args=%p argc=%u\\n",
-               jit_code, (void *)v_regs, (unsigned)actual_regs,
-               (void *)args, (unsigned)num_args);
-    }
+    // TEMP: always emit entry/exit for hang isolation (memory module has vregs<25)
+    printf("[JIT_ENTRY_TRACE] code=%p regs=%p count=%u args=%p argc=%u\\n",
+           jit_code, (void *)v_regs, (unsigned)actual_regs,
+           (void *)args, (unsigned)num_args);
+    fflush(stdout);
 
     // Argument registers are overwritten below; clear only the remaining
     // virtual registers to avoid redundant writes on every JIT invocation.
@@ -233,6 +233,9 @@ EspbResult execute_jit_code(EspbInstance *instance, void *jit_code, const Value 
     ESP_LOGD("espb_jit", "Calling JIT function at %p with instance=%p, v_regs=%p", jit_func, instance, v_regs);
     
     jit_func(instance, v_regs);
+    printf("[JIT_EXIT_TRACE] code=%p regs=%p count=%u\\n",
+           jit_code, (void *)v_regs, (unsigned)actual_regs);
+    fflush(stdout);
     ESP_LOGD("espb_jit", "JIT function returned");
     
     // Копируем результаты из регистров обратно (R0 содержит возвращаемое значение)
