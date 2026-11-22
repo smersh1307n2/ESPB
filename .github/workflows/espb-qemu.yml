@@ -30,7 +30,7 @@ permissions:
 
 concurrency:
   group: espb-work-qemu-dual-mode
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   qemu:
