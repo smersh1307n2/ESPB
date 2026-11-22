@@ -72,6 +72,8 @@ void espb_unload_module(espb_handle_t handle) {
     if (handle) {
         printf("--- ESPB Unloading Module ---\n");
         // The API handle owns both the instance and parsed module metadata.
+        // Closures retain pointers to this instance/module; release before freeing either.
+        espb_free_callback_closures_for_instance(handle->instance);
         espb_free_instance(handle->instance);
         espb_free_module(handle->module);
         free(handle);
