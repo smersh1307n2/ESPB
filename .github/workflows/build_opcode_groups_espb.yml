@@ -7,6 +7,7 @@ name: Build paired ESPB opcode-group modules
 # FreeRTOS fixtures use nonzero timer ticks and ESP-IDF byte-sized task stacks.
 # Reuse prior JIT/Interpreter pairs by exact LLVM bitcode SHA; only changed
 # bitcode groups are submitted to the quota-limited translator API.
+# Persist the verified paired corpus into modules/qemu_seed after translation.
 
 on:
   # Quota-consuming push execution is opt-in via a commit-message marker.
@@ -20,7 +21,7 @@ on:
 
 permissions:
   actions: read
-  contents: read
+  contents: write
 
 concurrency:
   group: espb-opcode-group-translation
@@ -46,10 +47,12 @@ jobs:
           ESPB_API_KEY_7: ${{ secrets.ESPB_API_KEY_7 }}
           ESPB_API_KEY_8: ${{ secrets.ESPB_API_KEY_8 }}
           ESPB_API_KEY_9: ${{ secrets.ESPB_API_KEY_9 }}
+          ESPB_API_KEY_11: ${{ secrets.ESPB_API_KEY_11 }}
+          ESPB_API_KEY_10: ${{ secrets.ESPB_API_KEY_10 }}
         shell: bash
         run: |
           set -euo pipefail
-          if [[ -z "$ESPB_TRANSLATOR_KEYS" && -z "$ESPB_API_KEY" && -z "$ESPB_API_KEY_1" && -z "$ESPB_API_KEY_2" && -z "$ESPB_API_KEY_3" && -z "$ESPB_API_KEY_4" && -z "$ESPB_API_KEY_5" && -z "$ESPB_API_KEY_6" && -z "$ESPB_API_KEY_7" && -z "$ESPB_API_KEY_8" && -z "$ESPB_API_KEY_9" ]]; then
+          if [[ -z "$ESPB_TRANSLATOR_KEYS" && -z "$ESPB_API_KEY" && -z "$ESPB_API_KEY_1" && -z "$ESPB_API_KEY_2" && -z "$ESPB_API_KEY_3" && -z "$ESPB_API_KEY_4" && -z "$ESPB_API_KEY_5" && -z "$ESPB_API_KEY_6" && -z "$ESPB_API_KEY_7" && -z "$ESPB_API_KEY_8" && -z "$ESPB_API_KEY_9" && -z "$ESPB_API_KEY_10" && -z "$ESPB_API_KEY_11" ]]; then
             echo "::error::No translator credentials configured."
             exit 1
           fi
@@ -317,6 +320,26 @@ jobs:
             --branch "$GITHUB_REF_NAME" \
             --run-id "$GITHUB_RUN_ID" \
             --expected-source-commit "$GITHUB_SHA"
+
+
+      - name: Publish verified paired modules to qemu_seed
+        shell: bash
+        run: |
+          set -euo pipefail
+          for jit_module in .work/paired/*.jit.espb; do
+            stem="$(basename "$jit_module" .jit.espb)"
+            cp "$jit_module" "modules/qemu_seed/$stem.jit.espb"
+            cp ".work/paired/$stem.interpreter.espb" "modules/qemu_seed/$stem.interpreter.espb"
+          done
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add modules/qemu_seed/*.jit.espb modules/qemu_seed/*.interpreter.espb
+          if git diff --cached --quiet; then
+            echo "qemu_seed already matches translated paired corpus"
+          else
+            git commit -m "Update paired qemu_seed modules from verified translator artifact"
+            git push origin HEAD:ESPB_WORK
+          fi
 
       - name: Upload paired ESPB modules and provenance
         uses: actions/upload-artifact@v4
