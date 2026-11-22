@@ -5870,50 +5870,23 @@ divs_i64_general_case:
                     }
                     
                     case 0x09: { // HEAP_CALLOC Rd(u8), Rcount(u8), Rsize(u8)
+                        if (pc + 3 > end) { ctx.error = true; break; }
                         uint8_t rd = *pc++;
                         uint8_t rcount = *pc++;
                         uint8_t rsize = *pc++;
-                        
-                        // Calculate total size: num * size (with overflow check)
-                        // Load num and size
-                        emit_lw_phys(&ctx, 5, rcount * 8, 18);  // t0 = num
-                        emit_lw_phys(&ctx, 6, rsize * 8, 18);   // t1 = size
-                        
-                        // mul t2, t0, t1 (total = num * size)
-                        emit_instr(&ctx, (0x01 << 25) | (6 << 20) | (5 << 15) | (0x0 << 12) | (7 << 7) | 0b0110011);
-                        
-                        // a0 = instance
-                        emit_addi_phys(&ctx, 10, 9, 0);
-                        
-                        // a1 = total size
-                        emit_addi_phys(&ctx, 11, 7, 0);
-                        
-                        // Call espb_heap_malloc
-                        emit_call_helper(&ctx, (uintptr_t)&espb_heap_malloc);
-                        
-                        // Now we need to zero the memory: memset(ptr, 0, total)
-                        // Save pointer
-                        emit_addi_phys(&ctx, 28, 10, 0);  // t3 = ptr
-                        
-                        // a0 = ptr (already in t3, move to a0)
-                        emit_addi_phys(&ctx, 10, 28, 0);
-                        
-                        // a1 = 0 (value to fill)
-                        emit_addi_phys(&ctx, 11, 0, 0);
-                        
-                        // a2 = total size (still in t2/x7)
-                        emit_addi_phys(&ctx, 12, 7, 0);
-                        
-                        // Call memset
-                        emit_call_helper(&ctx, (uintptr_t)&memset);
-                        
-                        // Result pointer is in t3, store it
-                        emit_sw_phys(&ctx, 28, rd * 8, 18);
+
+                        // The shared helper mirrors interpreter overflow and OOM semantics.
+                        // It also avoids keeping temporary registers live across CALL.
+                        emit_addi_phys(&ctx, 10, 9, 0); // a0 = instance
+                        emit_lw_phys(&ctx, 11, rcount * 8, 18); // a1 = count
+                        emit_lw_phys(&ctx, 12, rsize * 8, 18); // a2 = element size
+                        emit_call_helper(&ctx, (uintptr_t)&espb_jit_heap_calloc);
+
+                        emit_sw_phys(&ctx, 10, rd * 8, 18);
                         emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
-                        
                         break;
                     }
-                    
+
                     case 0x16: { // TABLE.COPY tableD(u8), tableS(u8), Rd(u8), Rs(u8), Rn(u8)
                         uint8_t dst_table_idx = *pc++;
                         uint8_t src_table_idx = *pc++;
