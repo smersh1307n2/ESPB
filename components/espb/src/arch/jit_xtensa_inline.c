@@ -7787,27 +7787,20 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         uint8_t rcount = *pc++;
                         uint8_t rsize = *pc++;
 
-                        // total = rcount * rsize (use 0x22 mull sequence from MUL.I32)
-                        emit_l32i(&ctx, 8, 6, (uint16_t)(rcount * 8));
-                        emit_l32i(&ctx, 9, 6, (uint16_t)(rsize * 8));
-                        emit_u8(&ctx, 0x90);  // (at << 4) | 0, at=a9
-                        emit_u8(&ctx, 0x88);  // (as << 4) | ar, as=a8, ar=a8
-                        emit_u8(&ctx, 0x82);  // (op2 << 4) | 0x2, op2=0x8 (mull)
+                        // Keep allocation and zero-initialization inside one C helper.
+                        // The previous inline sequence reused a8 after CALLX8, although
+                        // a8 is volatile and contains the callee return address there.
+                        // It also called memset(NULL, ...) on allocation failure.
+                        emit_load_u32_to_a8(&ctx, &litpool,
+                                            (uint32_t)(uintptr_t)&espb_jit_heap_calloc);
+                        emit_mov_n(&ctx, 7, 8); // preserve helper address across literal setup
+                        emit_l32i(&ctx, 10, 1, 4); // instance
+                        emit_l32i(&ctx, 11, 6, (uint16_t)(rcount * 8));
+                        emit_l32i(&ctx, 12, 6, (uint16_t)(rsize * 8));
+                        emit_mov_n(&ctx, 8, 7);
+                        emit_callx8_a8(&ctx);
 
-                        // espb_heap_malloc(instance, total)
-                        emit_l32i(&ctx, 10, 1, 4);
-                        emit_mov_n(&ctx, 11, 8);
-                        emit_call_helper(&ctx, &litpool, (void*)&espb_heap_malloc);
-
-                        // memset(ptr, 0, total)
-                        emit_mov_n(&ctx, 12, 8); // save total in a12
-                        emit_mov_n(&ctx, 8, 10); // save ptr in a8
-                        emit_mov_n(&ctx, 10, 8);
-                        emit_movi_n(&ctx, 11, 0);
-                        emit_call_helper(&ctx, &litpool, (void*)&memset);
-
-                        // store result pointer from a8
-                        emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
+                        emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8));
                         emit_s32i(&ctx, 0, 6, (uint16_t)(rd * 8 + 4));
                         break;
                     }
