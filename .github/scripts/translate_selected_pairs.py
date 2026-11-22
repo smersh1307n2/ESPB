@@ -57,11 +57,11 @@ def main() -> int:
             raise SystemExit(f"Interpreter converter did not create a nonempty module: {interpreter}")
         print(f"PAIRED_TRANSLATION_DONE group={stem}", flush=True)
 
-    expected = len(names)
+    expected_count = len(names)
     jit_count = len(list(args.paired_dir.glob("*.jit.espb")))
     interpreter_count = len(list(args.paired_dir.glob("*.interpreter.espb")))
-    if jit_count != expected or interpreter_count != expected:
-        raise SystemExit(f"Expected exactly {expected} selected pairs; found jit={jit_count}, interpreter={interpreter_count}")
+    if jit_count != expected_count or interpreter_count != expected_count:
+        raise SystemExit(f"Expected exactly {expected_count} selected pairs; found jit={jit_count}, interpreter={interpreter_count}")
     return 0
 
 
