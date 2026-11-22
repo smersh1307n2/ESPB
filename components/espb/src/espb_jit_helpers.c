@@ -50,6 +50,14 @@ void espb_jit_alloca_ex(EspbInstance *instance, Value *v_regs, uint16_t num_regs
 #if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
     ESP_LOGI(TAG, "size=%u", (unsigned)V_I32(v_regs[rs_size]));
 #endif
+    ESP_LOGI(TAG, "[JIT_ALLOCA_CTX] instance=%p regs=%p heap=%p initialized=%u mem=%p mem_size=%u count=%u rd=%u rs=%u size=%u align=%u",
+             (void *)instance, (void *)v_regs,
+             instance ? (void *)instance->heap_ctx.heap_handle : NULL,
+             instance ? (unsigned)instance->heap_ctx.initialized : 0u,
+             instance ? (void *)instance->memory_data : NULL,
+             instance ? (unsigned)instance->memory_size_bytes : 0u,
+             (unsigned)num_regs_allocated, (unsigned)rd, (unsigned)rs_size,
+             (unsigned)V_I32(v_regs[rs_size]), (unsigned)align);
     EspbResult result = espb_runtime_alloca(instance, NULL, v_regs,
                                             num_regs_allocated, rd, rs_size, align);
 #if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
