@@ -9,6 +9,12 @@ on:
       - 'tools/bytecode_groups/**'
       - '.github/workflows/build_opcode_groups.yml'
   workflow_dispatch:
+    inputs:
+      groups:
+        description: "Group stems to build (comma/space separated); blank builds all"
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -39,13 +45,69 @@ jobs:
           echo "$(dirname "$CLANG")" >> "$GITHUB_PATH"
           echo "ESPB_CLANG=$CLANG" >> "$GITHUB_ENV"
 
-      - name: Build each opcode group as a separate LLVM bitcode module
+      - name: Select only changed opcode groups
+        id: groups
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE_SHA: ${{ github.event.before }}
+          MANUAL_GROUPS: ${{ inputs.groups }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          source_dir = Path("tests/bytecode_groups")
+          available = sorted(path.stem for path in source_dir.glob("*.c"))
+          selected = []
+          manual = os.environ.get("MANUAL_GROUPS", "").strip()
+          if manual:
+              requested = [name for name in re.split(r"[\\s,]+", manual) if name]
+              unknown = sorted(set(requested) - set(available))
+              if unknown:
+                  raise SystemExit("Unknown group(s): " + ", ".join(unknown))
+              selected = list(dict.fromkeys(requested))
+          elif os.environ.get("EVENT_NAME") == "push":
+              before = os.environ.get("BEFORE_SHA", "")
+              if before and not set(before) == {"0"}:
+                  changed = subprocess.check_output(
+                      ["git", "diff", "--name-only", before, "HEAD"], text=True
+                  ).splitlines()
+                  if any(path.startswith("tools/bytecode_groups/") or
+                         path == ".github/workflows/build_opcode_groups.yml"
+                         for path in changed):
+                      selected = available
+                  else:
+                      selected = [
+                          Path(path).stem for path in changed
+                          if path.startswith("tests/bytecode_groups/")
+                          and path.endswith(".c")
+                      ]
+          if not selected:
+              selected = available
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write("names=" + " ".join(selected) + "\\n")
+          print("BITCODE_GROUPS_SELECTED=" + ",".join(selected), flush=True)
+          PY
+
+      - name: Build selected opcode groups as separate LLVM bitcode modules
+        shell: bash
+        env:
+          SELECTED_GROUPS: ${{ steps.groups.outputs.names }}
         run: |
           set -euo pipefail
           . "$IDF_PATH/export.sh"
-          python tools/bytecode_groups/build.py --output-dir "$GITHUB_WORKSPACE/.work/bytecode_groups"
-          test "$(find .work/bytecode_groups -maxdepth 1 -name '*.bc' -type f | wc -l)" -eq 10
+          read -r -a groups <<< "$SELECTED_GROUPS"
+          python tools/bytecode_groups/build.py \
+            --output-dir "$GITHUB_WORKSPACE/.work/bytecode_groups" \
+            --groups "${groups[@]}"
+          expected="${#groups[@]}"
+          actual="$(find .work/bytecode_groups -maxdepth 1 -name '*.bc' -type f | wc -l)"
+          test "$actual" -eq "$expected"
+          echo "BITCODE_GROUPS_BUILT=$actual"
 
       - name: Upload LLVM bitcode modules
         uses: actions/upload-artifact@v4
