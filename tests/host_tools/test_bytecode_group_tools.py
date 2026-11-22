@@ -565,29 +565,23 @@ class WorkflowContractTests(unittest.TestCase):
             1,
         )
 
-    def test_translator_reuses_only_matching_paired_content(self) -> None:
+    def test_translator_uses_only_selected_pair_groups(self) -> None:
         workflow = (
             REPO_ROOT / ".github" / "workflows" / "build_opcode_groups_espb.yml"
         ).read_text(encoding="utf-8")
-        helper = (
-            REPO_ROOT / ".github" / "scripts" / "reuse_paired_groups.py"
+        script = (
+            REPO_ROOT / ".github" / "scripts" / "translate_selected_pairs.py"
+        ).read_text(encoding="utf-8")
+        selection = (
+            REPO_ROOT / ".github" / "paired_translation_groups.txt"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("previous_pair_run_id=", workflow)
-        self.assertIn("previous_pair_source_sha", workflow)
-        self.assertIn("PREVIOUS_PAIR_RUN_ID: ${{ steps.bitcode.outputs.previous_pair_run_id }}", workflow)
-        self.assertIn("PREVIOUS_PAIR_SOURCE_SHA: ${{ steps.bitcode.outputs.previous_pair_source_sha }}", workflow)
-        self.assertIn('--expected-run-id "$PREVIOUS_PAIR_RUN_ID"', workflow)
-        self.assertIn('--expected-source-commit "$PREVIOUS_PAIR_SOURCE_SHA"', workflow)
-        self.assertIn("actions/download-artifact@v4", workflow)
-        self.assertIn("Reuse unchanged paired modules by bitcode SHA-256", workflow)
-        self.assertIn("TRANSLATION_REUSED group=$stem", workflow)
-        self.assertIn("TRANSLATION_REQUIRED group=$stem", workflow)
-        self.assertIn('current_hash != old.get("bitcode_sha256")', helper)
-        self.assertIn('manifest.get("producer_run_id") != expected_run_id', helper)
-        self.assertIn('manifest.get("source_commit") != expected_source_commit', helper)
-        self.assertIn('sha256(old_jit) != jit_hash', helper)
-        self.assertIn('sha256(old_interpreter) != interpreter_hash', helper)
+        self.assertIn("paired_translation_groups.txt", workflow)
+        self.assertIn("translate_selected_pairs.py", workflow)
+        self.assertIn("for group in selected_groups", script)
+        self.assertIn("09_freertos_task", selection)
+        self.assertIn("expected_count", script)
+        self.assertIn("interpreter.espb", script)
 
 
     def test_interpreter_reserves_and_rewinds_root_shadow_stack_frame(self) -> None:
