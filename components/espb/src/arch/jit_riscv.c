@@ -1393,12 +1393,7 @@ void jit_call_espb_function(EspbInstance* instance, uint32_t local_func_idx, Val
     EspbFuncSignature* sig = &module->signatures[sig_idx];
     uint8_t num_args = sig->num_params;
     if (num_args > 8) num_args = 8; // Ограничиваем первыми 8 аргументами
-    const bool trace_i32_calls = (local_func_idx == 1u || local_func_idx == 2u) && num_args == 2u;
-    if (trace_i32_calls) {
-        printf("[JIT_CALL_ARGS] idx=%u a0=%08" PRIx32 " a1=%08" PRIx32 " regs=%p\n",
-               (unsigned)local_func_idx, (uint32_t)V_I32(v_regs[0]),
-               (uint32_t)V_I32(v_regs[1]), (void *)v_regs);
-    }
+
 
     EspbFunctionBody *callee_body = &((EspbModule*)module)->function_bodies[local_func_idx];
     
@@ -1467,41 +1462,9 @@ void jit_call_espb_function(EspbInstance* instance, uint32_t local_func_idx, Val
                    (size_t)(zero_regs - num_args) * sizeof(Value));
         }
 
-        if (trace_i32_calls) {
-            printf("[JIT_CALL_BODY] idx=%u code_size=%u declared_regs=%u max_reg=%u frame_regs=%u flags=%02x args=%u returns=%u\n",
-                   (unsigned)local_func_idx, (unsigned)callee_body->code_size,
-                   (unsigned)declared_regs, (unsigned)callee_body->header.max_reg_used,
-                   (unsigned)needed_regs, (unsigned)callee_body->header.flags,
-                   (unsigned)sig->num_params, (unsigned)sig->num_returns);
-            printf("[JIT_CALL_BYTECODE] idx=%u ", (unsigned)local_func_idx);
-            for (uint32_t i = 0; i < callee_body->code_size; ++i) {
-                printf("%02x", (unsigned)callee_body->code[i]);
-            }
-            printf("\n");
-        }
+
         jit_func(instance, callee_regs);
-        if (trace_i32_calls) {
-            printf("[JIT_CALL_RET] idx=%u ret=%08" PRIx32 " regs=%p\n",
-                   (unsigned)local_func_idx, (uint32_t)V_I32(callee_regs[0]),
-                   (void *)callee_regs);
-            for (uint16_t i = 0; i < needed_regs && i < 12; ++i) {
-                printf("[JIT_CALL_VREG] idx=%u r%u=%08" PRIx32 "\n",
-                       (unsigned)local_func_idx, (unsigned)i,
-                       (uint32_t)V_I32(callee_regs[i]));
-            }
-            Value debug_args[8];
-            for (uint8_t i = 0; i < num_args; ++i) debug_args[i] = v_regs[i];
-            Value debug_result;
-            memset(&debug_result, 0, sizeof(debug_result));
-            EspbResult debug_rc = ESPB_ERR_INVALID_OPERAND;
-            if (!temp_exec_ctx) temp_exec_ctx = init_execution_context();
-            if (temp_exec_ctx) {
-                debug_rc = espb_call_function(instance, temp_exec_ctx, global_func_idx,
-                                               debug_args, &debug_result);
-            }
-            printf("[JIT_CALL_INTERP] idx=%u rc=%d ret=%08" PRIx32 "\n",
-                   (unsigned)local_func_idx, (int)debug_rc, (uint32_t)V_I32(debug_result));
-        }
+
 
         if (sig->num_returns > 0) {
             v_regs[0] = callee_regs[0];
@@ -2909,11 +2872,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
         // TEMP diagnostic: map the failing integer64 (26/47 vregs) and memory
         // functions. Include the generated-code base so a runtime PC/return address
         // can be translated to the exact bytecode instruction.
-        if (num_virtual_regs == 26 || num_virtual_regs == 30 || num_virtual_regs == 47) {
-            printf("[JIT_OPCODE_MAP] base=%p func=%u regs=%u bc=%zu native=%zu op=%02x\\n",
-                   (void *)exec_buffer, (unsigned)func_idx, (unsigned)num_virtual_regs,
-                   bytecode_offset, ctx.offset, (unsigned)opcode);
-        }
+
 
         // Сохраняем кеш только для группы I32 ALU/IMM8 опов.
         // Любой другой опкод консервативно сбрасывает кеш.
@@ -5870,7 +5829,6 @@ divs_i64_general_case:
                     }
                     
                     case 0x09: { // HEAP_CALLOC Rd(u8), Rcount(u8), Rsize(u8)
-                        if (pc + 3 > end) { ctx.error = true; break; }
                         uint8_t rd = *pc++;
                         uint8_t rcount = *pc++;
                         uint8_t rsize = *pc++;
