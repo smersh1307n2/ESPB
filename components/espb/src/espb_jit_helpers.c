@@ -38,7 +38,7 @@ void espb_jit_alloca_ex(EspbInstance *instance, Value *v_regs, uint16_t num_regs
     // TEMP: unbuffered progress marker (survives hang better than ESP_LOG alone)
     printf("[JIT_ALLOCA] enter rd=%u rs=%u align=%u count=%u regs=%p\n",
            (unsigned)rd, (unsigned)rs_size, (unsigned)align,
-           (unsigned)num_regs_allocated, (void *)v_regs);
+           (unsigned)num_regs_allocated, (void *)v_regs,\n           __builtin_return_address(0));
     fflush(stdout);
 
     if ((uintptr_t)v_regs < 0x10000u) {
