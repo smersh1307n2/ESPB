@@ -281,3 +281,5 @@ jobs:
 # [translate-opcode-corpus] Execute only groups listed in paired_translation_groups.txt.
 
 # [translate-opcode-corpus] Retry selected-group workflow after aligning host contract test.
+
+# [translate-opcode-corpus] Run after fixing selected-pair host assertion.
