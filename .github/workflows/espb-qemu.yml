@@ -247,6 +247,7 @@ jobs:
           timeout --signal=INT --kill-after=5s 90s idf.py -C qemu qemu > qemu.log 2>&1
           qemu_status=$?
           set -e
+          tr -d '\r' < qemu.log > qemu.log.tmp && mv qemu.log.tmp qemu.log
           cat qemu.log
 
           if grep -Eq "Guru Meditation Error|panic'ed|LoadProhibited|StoreProhibited|Load access fault|Store access fault" qemu.log; then

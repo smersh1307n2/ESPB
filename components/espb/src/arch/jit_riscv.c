@@ -2652,9 +2652,8 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
     if (stable_cache_enabled) {
         saved_regs_size += 16; // s4..s7 (stable cache regs, 2-entry cache)
     }
-    if (!is_leaf) {
-        saved_regs_size += 4; // +4 для ra
-    }
+    (void)is_leaf;
+    saved_regs_size += 4; // Always save ra: emit_call_helper() clobbers ra even in leaf functions
 
     // NO_SPILL fast-path: save s3..s10 (8 regs * 4)
     if (no_spill_fastpath) {
@@ -2689,11 +2688,9 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
         }
     }
     
-    // Сохраняем ra только если функция НЕ leaf
-    if (!is_leaf) {
-        offset -= 4;
-        emit_sw_phys(&ctx, 1, offset, 2); // sw ra, offset(sp)
-    }
+    // Always save ra (emit_call_helper clobbers ra even in leaf functions)
+    offset -= 4;
+    emit_sw_phys(&ctx, 1, offset, 2); // sw ra, offset(sp)
     
     // Сохраняем fp (s0)
     offset -= 4;
@@ -2917,6 +2914,9 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 peephole_alu = false;
             }
         }
+        if (peephole_alu && (vcache0.kind != VC_NONE || vcache1.kind != VC_NONE)) {
+            VCACHE_FLUSH_ALL();
+        }
         if (!peephole_alu && !is_branch) {
             // Barrier: любой не-ALU опкод может читать v_regs[] напрямую или быть целью ветвления.
             // Поэтому принудительно синхронизируем dirty значения с памятью.
@@ -3104,6 +3104,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
             }
             
             case 0x03: { // BR_IF Rcond, offset16 (условный переход если Rcond != 0)
+                VCACHE_FLUSH_ALL();
                 // peephole: перед ветвлением делаем selective flush
                 // (но cache в любом случае сбрасываем после BR_IF)
                 if (no_spill_fastpath) {
@@ -3429,7 +3430,11 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 if (offset >= -2048 && offset < 2048) {
                     emit_lw_phys(&ctx, 5, offset, 5);
                 } else {
-                    emit_addi_phys(&ctx, 6, 0, offset);
+                    int32_t off32 = (int32_t)offset;
+                    uint32_t hi = (((uint32_t)off32 + 0x800) & 0xFFFFF000);
+                    int16_t lo = (int16_t)(off32 - (int32_t)hi);
+                    emit_lui_phys(&ctx, 6, hi);
+                    if (lo != 0) emit_addi_phys(&ctx, 6, 6, lo);
                     emit_add_phys(&ctx, 5, 5, 6);
                     emit_lw_phys(&ctx, 5, 0, 5);
                 }
@@ -3447,7 +3452,11 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 if (offset >= -2048 && offset < 2048) {
                     emit_lw_phys(&ctx, 5, offset, 5);
                 } else {
-                    emit_addi_phys(&ctx, 6, 0, offset);
+                    int32_t off32 = (int32_t)offset;
+                    uint32_t hi = (((uint32_t)off32 + 0x800) & 0xFFFFF000);
+                    int16_t lo = (int16_t)(off32 - (int32_t)hi);
+                    emit_lui_phys(&ctx, 6, hi);
+                    if (lo != 0) emit_addi_phys(&ctx, 6, 6, lo);
                     emit_add_phys(&ctx, 5, 5, 6);
                     emit_lw_phys(&ctx, 5, 0, 5);
                 }
@@ -3515,9 +3524,9 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 emit_sw_phys(&ctx, 6, rd * 8, 18);
 
                 // high word
-                int16_t offset_hi = (int16_t)(offset + 4);
+                int32_t offset_hi = (int32_t)offset + 4;
                 if (offset_hi >= -2048 && offset_hi < 2048) {
-                    emit_lw_phys(&ctx, 6, offset_hi, 5);
+                    emit_lw_phys(&ctx, 6, (int16_t)offset_hi, 5);
                 } else {
                     int32_t off32 = (int32_t)offset + 4;
                     uint32_t hi = (((uint32_t)off32 + 0x800) & 0xFFFFF000);
@@ -5106,7 +5115,9 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                     emit_add_phys(&ctx, 6, 6, 29);  // t1 += carry
                     
                     // Арифметический сдвиг вправо (64-bit)
-                    if (shift < 32) {
+                    if (shift == 0) {
+                        // Divide by 1: no-op
+                    } else if (shift < 32) {
                         // Сдвиг менее 32 бит
                         emit_srli_phys(&ctx, 5, 5, shift);  // low >>= shift
                         emit_slli_phys(&ctx, 29, 6, 32 - shift);  // temp = high << (32-shift)
@@ -5186,7 +5197,9 @@ divs_i64_general_case:
                     emit_lw_phys(&ctx, 6, r1 * 8 + 4, 18);  // t1 = high
                     
                     // Логический сдвиг вправо (64-bit unsigned)
-                    if (shift < 32) {
+                    if (shift == 0) {
+                        // Divide by 1: no-op
+                    } else if (shift < 32) {
                         // Сдвиг менее 32 бит
                         emit_srli_phys(&ctx, 5, 5, shift);  // low >>= shift
                         emit_slli_phys(&ctx, 29, 6, 32 - shift);  // temp = high << (32-shift)
@@ -6787,7 +6800,8 @@ divs_i64_general_case:
                 // sh &= 63
                 emit_instr(&ctx, (63u << 20) | (7u << 15) | (0b111u << 12) | (7u << 7) | 0b0010011u); // andi x7,x7,63
 
-                // if sh < 32 -> lt32, if sh==32 -> eq32, else gt32
+                // if sh == 0 -> end, if sh < 32 -> lt32, if sh==32 -> eq32, else gt32
+                size_t br_zero = ctx.offset; emit_beq_phys(&ctx, 7, 0, 0);
                 emit_addi_phys(&ctx, 28, 0, 32);
                 size_t br_lt = ctx.offset; emit_bltu_phys(&ctx, 7, 28, 0);
                 size_t br_eq = ctx.offset; emit_beq_phys(&ctx, 7, 28, 0);
@@ -6827,8 +6841,12 @@ divs_i64_general_case:
 
                 // Patch local branches/jals
                 {
+                    int32_t d_zero = (int32_t)(off_end - br_zero);
+                    uint32_t ins = encode_branch_instr(0b000, 7, 0, (int16_t)d_zero);
+                    memcpy(ctx.buffer + br_zero, &ins, 4);
+
                     int32_t d_lt = (int32_t)(off_lt - br_lt);
-                    uint32_t ins = encode_branch_instr(0b110, 7, 28, (int16_t)d_lt);
+                    ins = encode_branch_instr(0b110, 7, 28, (int16_t)d_lt);
                     memcpy(ctx.buffer + br_lt, &ins, 4);
 
                     int32_t d_eq = (int32_t)(off_eq - br_eq);
@@ -6859,6 +6877,7 @@ divs_i64_general_case:
                 emit_lw_phys(&ctx, 7, r2 * 8, 18);
                 emit_instr(&ctx, (63u << 20) | (7u << 15) | (0b111u << 12) | (7u << 7) | 0b0010011u); // andi sh
 
+                size_t br_zero = ctx.offset; emit_beq_phys(&ctx, 7, 0, 0);
                 emit_addi_phys(&ctx, 28, 0, 32);
                 size_t br_lt = ctx.offset; emit_bltu_phys(&ctx, 7, 28, 0);
                 size_t br_eq = ctx.offset; emit_beq_phys(&ctx, 7, 28, 0);
@@ -6900,6 +6919,9 @@ divs_i64_general_case:
                 // Patch branches/jals
                 {
                     uint32_t ins;
+                    int32_t d_zero = (int32_t)(off_end - br_zero);
+                    ins = encode_branch_instr(0b000, 7, 0, (int16_t)d_zero);
+                    memcpy(ctx.buffer + br_zero, &ins, 4);
                     int32_t d_lt = (int32_t)(off_lt - br_lt);
                     ins = encode_branch_instr(0b110, 7, 28, (int16_t)d_lt);
                     memcpy(ctx.buffer + br_lt, &ins, 4);
@@ -6929,6 +6951,7 @@ divs_i64_general_case:
                 emit_lw_phys(&ctx, 7, r2 * 8, 18);
                 emit_instr(&ctx, (63u << 20) | (7u << 15) | (0b111u << 12) | (7u << 7) | 0b0010011u);
 
+                size_t br_zero = ctx.offset; emit_beq_phys(&ctx, 7, 0, 0);
                 emit_addi_phys(&ctx, 28, 0, 32);
                 size_t br_lt = ctx.offset; emit_bltu_phys(&ctx, 7, 28, 0);
                 size_t br_eq = ctx.offset; emit_beq_phys(&ctx, 7, 28, 0);
@@ -6966,6 +6989,9 @@ divs_i64_general_case:
                 // Patch
                 {
                     uint32_t ins;
+                    int32_t d_zero = (int32_t)(off_end - br_zero);
+                    ins = encode_branch_instr(0b000, 7, 0, (int16_t)d_zero);
+                    memcpy(ctx.buffer + br_zero, &ins, 4);
                     int32_t d_lt = (int32_t)(off_lt - br_lt);
                     ins = encode_branch_instr(0b110, 7, 28, (int16_t)d_lt);
                     memcpy(ctx.buffer + br_lt, &ins, 4);
@@ -7969,6 +7995,7 @@ divs_i64_general_case:
                 emit_instr(&ctx, sltiu_instr);
 
                 emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
                 break;
             }
             
@@ -7998,6 +8025,7 @@ divs_i64_general_case:
                 emit_instr(&ctx, sltu_instr);
 
                 emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
                 break;
             }
             
@@ -8012,21 +8040,22 @@ divs_i64_general_case:
                 // Загружаем условие
                 emit_lw_phys(&ctx, 5, rcond * 8, 18);  // t0 = condition
                 
-                // Загружаем true значение
-                emit_lw_phys(&ctx, 6, rtrue * 8, 18);  // t1 = true_val
+                // Копируем полный 64-битный слот Value (корректно и для F64/I64, и для F32/PTR)
+                emit_lw_phys(&ctx, 6, rtrue * 8, 18);      // t1 = true_lo
+                emit_lw_phys(&ctx, 28, rtrue * 8 + 4, 18); // t3 = true_hi
+                emit_lw_phys(&ctx, 7, rfalse * 8, 18);     // t2 = false_lo
+                emit_lw_phys(&ctx, 29, rfalse * 8 + 4, 18);// t4 = false_hi
                 
-                // Загружаем false значение
-                emit_lw_phys(&ctx, 7, rfalse * 8, 18); // t2 = false_val
-                
-                // Если condition != 0, выбираем true, иначе false
-                // beq t0, x0, skip_true (если condition == 0)
-                emit_beq_phys(&ctx, 5, 0, 8); // skip next instruction
-                
-                // Выбираем true: mv t2, t1
+                // Если condition == 0, пропускаем выбор true
+                size_t br_skip = ctx.offset;
+                emit_beq_phys(&ctx, 5, 0, 0);
                 emit_addi_phys(&ctx, 7, 6, 0);
+                emit_addi_phys(&ctx, 29, 28, 0);
+                uint32_t br_ins = encode_branch_instr(0b000, 5, 0, (int16_t)(ctx.offset - br_skip));
+                memcpy(ctx.buffer + br_skip, &br_ins, 4);
                 
-                // skip_true: сохраняем результат
                 emit_sw_phys(&ctx, 7, rd * 8, 18);
+                emit_sw_phys(&ctx, 29, rd * 8 + 4, 18);
                 
                 break;
             }
@@ -8034,17 +8063,8 @@ divs_i64_general_case:
             case 0x0F: { // END - генерируем эпилог и возврат
                 // peephole: убедимся что dirty значения записаны в v_regs
                 ph_flush(&ctx, &ph);
-                // Flush stable vcache
-                if (vcache.kind != VC_NONE && vcache.dirty) {
-                    if (vcache.kind == VC_F32) {
-                        emit_sw_phys(&ctx, 20, vcache.vreg * 8, 18);
-                    } else if (vcache.kind == VC_F64) {
-                        emit_sw_phys(&ctx, 20, vcache.vreg * 8, 18);
-                        emit_sw_phys(&ctx, 21, vcache.vreg * 8 + 4, 18);
-                    }
-                }
-                vcache.kind = VC_NONE;
-                vcache.dirty = false;
+                // Flush both stable vcache slots
+                VCACHE_FLUSH_ALL();
                 if (no_spill_fastpath) {
                     // return value assumed in v0 -> a0
                     // epilogue will restore regs/sp and ret
@@ -8103,11 +8123,9 @@ divs_i64_general_case:
                     }
                 }
 
-                // ra only if non-leaf
-                if (!is_leaf) {
-                    restore_offset -= 4;
-                    emit_lw_phys(&ctx, 1, restore_offset, 2);
-                }
+                // Always restore ra
+                restore_offset -= 4;
+                emit_lw_phys(&ctx, 1, restore_offset, 2);
 
                 // s0, s1, s2
                 restore_offset -= 4;
@@ -8199,8 +8217,11 @@ divs_i64_general_case:
             case 0xBE: { // SELECT.I32
                 uint8_t rd = *pc++; uint8_t rcond = *pc++; uint8_t rtrue = *pc++; uint8_t rfalse = *pc++;
                 emit_lw_phys(&ctx, 5, rcond * 8, 18); emit_lw_phys(&ctx, 6, rtrue * 8, 18); emit_lw_phys(&ctx, 7, rfalse * 8, 18);
-                emit_instr(&ctx, (0 << 20) | (5 << 15) | (0b000 << 12) | (8 << 7) | 0b1100011);
+                size_t br_skip = ctx.offset;
+                emit_beq_phys(&ctx, 5, 0, 0);
                 emit_addi_phys(&ctx, 7, 6, 0);
+                uint32_t br_ins = encode_branch_instr(0b000, 5, 0, (int16_t)(ctx.offset - br_skip));
+                memcpy(ctx.buffer + br_skip, &br_ins, 4);
                 emit_sw_phys(&ctx, 7, rd * 8, 18); emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
                 break;
             }
@@ -8209,8 +8230,11 @@ divs_i64_general_case:
                 emit_lw_phys(&ctx, 5, rcond * 8, 18);
                 emit_lw_phys(&ctx, 6, rtrue * 8, 18); emit_lw_phys(&ctx, 28, rtrue * 8 + 4, 18);
                 emit_lw_phys(&ctx, 7, rfalse * 8, 18); emit_lw_phys(&ctx, 29, rfalse * 8 + 4, 18);
-                emit_instr(&ctx, (0 << 20) | (5 << 15) | (0b000 << 12) | (16 << 7) | 0b1100011);
+                size_t br_skip = ctx.offset;
+                emit_beq_phys(&ctx, 5, 0, 0);
                 emit_addi_phys(&ctx, 7, 6, 0); emit_addi_phys(&ctx, 29, 28, 0);
+                uint32_t br_ins = encode_branch_instr(0b000, 5, 0, (int16_t)(ctx.offset - br_skip));
+                memcpy(ctx.buffer + br_skip, &br_ins, 4);
                 emit_sw_phys(&ctx, 7, rd * 8, 18); emit_sw_phys(&ctx, 29, rd * 8 + 4, 18);
                 break;
             }
@@ -8242,10 +8266,8 @@ divs_i64_general_case:
             }
         }
 
-        if (!is_leaf) {
-            restore_offset -= 4;
-            emit_lw_phys(&ctx, 1, restore_offset, 2);
-        }
+        restore_offset -= 4;
+        emit_lw_phys(&ctx, 1, restore_offset, 2);
 
         restore_offset -= 4;
         emit_lw_phys(&ctx, 8, restore_offset, 2);

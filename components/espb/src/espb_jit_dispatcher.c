@@ -193,7 +193,7 @@ EspbResult execute_jit_code(EspbInstance *instance, void *jit_code, const Value 
     // ОПТИМИЗАЦИЯ: Выделяем только необходимое количество регистров из метаданных функции
     // Ограничиваем максимум 256 регистров для безопасности
     uint16_t actual_regs = num_virtual_regs > 256 ? 256 : num_virtual_regs;
-    if (actual_regs < 8) actual_regs = 8; // Минимум 8 для аргументов
+    if (actual_regs < 24) actual_regs = 24; // Reserve space for R16..R23 temporaries
 
     // Выделяем v_regs динамически на стеке (VLA - Variable Length Array)
     Value v_regs[actual_regs] __attribute__((aligned(8)));
