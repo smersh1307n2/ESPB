@@ -5360,7 +5360,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_l32i(&ctx, 8, 6, r1_off);
 
                 // a9 = imm32 (sign-extended from imm8)
-                emit_load_imm32(&ctx, &litpool, 9, (int32_t)imm8);
+                emit_movi(&ctx, 9, (int16_t)imm8);
 
                 // mull a8, a8, a9
                 emit_u8(&ctx, 0x90);  // (at << 4) | 0, at=a9
@@ -5391,7 +5391,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // a8 = v_regs[r1].low32
                 emit_l32i(&ctx, 8, 6, r1_off);
                 // a9 = imm32 (sign-extended)
-                emit_load_imm32(&ctx, &litpool, 9, (int32_t)imm8);
+                emit_movi(&ctx, 9, (int16_t)imm8);
 
                 // Save v_regs pointer across helper call
 
@@ -5431,7 +5431,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // a8 = v_regs[r1].low32
                 emit_l32i(&ctx, 8, 6, r1_off);
                 // a9 = imm32 (zero-extended from imm8)
-                emit_load_imm32(&ctx, &litpool, 9, (uint32_t)(uint8_t)imm8);
+                emit_movi(&ctx, 9, (int16_t)(uint8_t)imm8);
 
                 // Save v_regs pointer across helper call
 
@@ -5471,7 +5471,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // a8 = v_regs[r1].low32
                 emit_l32i(&ctx, 8, 6, r1_off);
                 // a9 = imm32 (sign-extended from imm8)
-                emit_load_imm32(&ctx, &litpool, 9, (int32_t)imm8);
+                emit_movi(&ctx, 9, (int16_t)imm8);
 
                 // Save v_regs pointer across helper call
 
@@ -5511,7 +5511,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // a8 = v_regs[r1].low32
                 emit_l32i(&ctx, 8, 6, r1_off);
                 // a9 = imm32 (zero-extended from imm8)
-                emit_load_imm32(&ctx, &litpool, 9, (uint32_t)(uint8_t)imm8);
+                emit_movi(&ctx, 9, (int16_t)(uint8_t)imm8);
 
                 // Save v_regs pointer across helper call
 
@@ -5606,7 +5606,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_l32i(&ctx, 8, 6, r1_off);
 
                 // a9 = imm32 (sign-extended from imm8)
-                emit_load_imm32(&ctx, &litpool, 9, (int32_t)imm8);
+                emit_movi(&ctx, 9, (int16_t)imm8);
 
                 // a8 = a8 & a9
                 emit_u8(&ctx, 0x90);  // (at << 4) | 0
@@ -5638,7 +5638,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_l32i(&ctx, 8, 6, r1_off);
 
                 // a9 = imm32 (sign-extended from imm8)
-                emit_load_imm32(&ctx, &litpool, 9, (int32_t)imm8);
+                emit_movi(&ctx, 9, (int16_t)imm8);
 
                 // a8 = a8 | a9
                 emit_u8(&ctx, 0x90);  // (at << 4) | 0
@@ -5670,7 +5670,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_l32i(&ctx, 8, 6, r1_off);
 
                 // a9 = imm32 (sign-extended from imm8)
-                emit_load_imm32(&ctx, &litpool, 9, (int32_t)imm8);
+                emit_movi(&ctx, 9, (int16_t)imm8);
 
                 // a8 = a8 ^ a9
                 emit_u8(&ctx, 0x90);  // (at << 4) | 0
