@@ -1028,7 +1028,19 @@ static inline uint8_t ph_ensure_loaded(JitContext* ctx, PeepholeRegCache* ph, ui
     int found = ph_find(ph, vreg);
     if (found == 5 || found == 6) return (uint8_t)found;
 
-    // load into target
+    // Loading a cache miss may evict a dirty value from the chosen physical
+    // register. Spill it before the load; spilling after the load would write
+    // the new operand over the old vreg and lose the pending result.
+    if (target_phys == 5 && ph->x5_valid && ph->x5_dirty &&
+        ph->x5_vreg != vreg) {
+        emit_sw_phys(ctx, 5, (int16_t)(ph->x5_vreg * 8), 18);
+        ph->x5_dirty = false;
+    } else if (target_phys == 6 && ph->x6_valid && ph->x6_dirty &&
+               ph->x6_vreg != vreg) {
+        emit_sw_phys(ctx, 6, (int16_t)(ph->x6_vreg * 8), 18);
+        ph->x6_dirty = false;
+    }
+
     emit_lw_phys(ctx, target_phys, (int16_t)(vreg * 8), 18);
     ph_set(ph, target_phys, vreg, false);
     return target_phys;
