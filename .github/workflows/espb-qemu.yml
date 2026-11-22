@@ -1,5 +1,6 @@
 name: ESPB_WORK dual-mode QEMU tests
 # Re-run against signed-shift, Xtensa helper-ABI and per-opcode diagnostics.
+# Trigger fresh diagnostic run after enabling JIT ALLOCA tracing.
 
 on:
   push:
