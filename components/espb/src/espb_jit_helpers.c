@@ -60,6 +60,9 @@ void espb_jit_alloca_ex(EspbInstance *instance, Value *v_regs, uint16_t num_regs
              (unsigned)V_I32(v_regs[rs_size]), (unsigned)align);
     EspbResult result = espb_runtime_alloca(instance, NULL, v_regs,
                                             num_regs_allocated, rd, rs_size, align);
+    ESP_LOGI(TAG, "[JIT_ALLOCA_RESULT] rc=%d rd=%u ptr=%p",
+             (int)result, (unsigned)rd,
+             result == ESPB_OK ? V_PTR(v_regs[rd]) : NULL);
 #if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
     ESP_LOGI(TAG, "EXIT result=%d allocated=%p", (int)result, V_PTR(v_regs[rd]));
 #endif
