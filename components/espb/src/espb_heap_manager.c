@@ -21,6 +21,10 @@
 
 static const char *TAG = "espb_heap";
 
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+static uint32_t s_aligned_alloc_seq;
+#endif
+
 EspbResult espb_heap_init(EspbInstance *instance, uint32_t heap_start_offset) {
     uint32_t aligned_offset = (heap_start_offset + 7) & ~7;
     
@@ -86,9 +90,23 @@ void* espb_heap_malloc_aligned(EspbInstance *instance, size_t size, size_t align
     }
     
     size_t total_size = size + alignment - 1 + sizeof(void*);
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+    const uint32_t alloc_seq = ++s_aligned_alloc_seq;
+    if (!multi_heap_check(instance->heap_ctx.heap_handle, false)) {
+        ESP_LOGE(TAG, "C3 aligned alloc #%u: heap corrupt BEFORE malloc; heap=%p size=%u align=%u total=%u",
+                 (unsigned)alloc_seq, instance->heap_ctx.heap_handle,
+                 (unsigned)size, (unsigned)alignment, (unsigned)total_size);
+        return NULL;
+    }
+#endif
     void *raw_ptr = multi_heap_malloc(instance->heap_ctx.heap_handle, total_size);
     
     if (__builtin_expect(raw_ptr == NULL, 0)) {
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+        ESP_LOGE(TAG, "C3 aligned alloc #%u failed: heap=%p size=%u align=%u total=%u",
+                 (unsigned)alloc_seq, instance->heap_ctx.heap_handle,
+                 (unsigned)size, (unsigned)alignment, (unsigned)total_size);
+#endif
         return NULL;
     }
     
@@ -99,6 +117,14 @@ void* espb_heap_malloc_aligned(EspbInstance *instance, size_t size, size_t align
     *orig_storage = raw_ptr;
     
     void *aligned_ptr = (void*)aligned_addr;
+#if defined(CONFIG_IDF_TARGET_ESP32C3)
+    if (!multi_heap_check(instance->heap_ctx.heap_handle, false)) {
+        ESP_LOGE(TAG, "C3 aligned alloc #%u: heap corrupt AFTER malloc/header; raw=%p aligned=%p size=%u align=%u total=%u",
+                 (unsigned)alloc_seq, raw_ptr, aligned_ptr,
+                 (unsigned)size, (unsigned)alignment, (unsigned)total_size);
+        return NULL;
+    }
+#endif
     
     uintptr_t memory_base = (uintptr_t)instance->memory_data;
     if (__builtin_expect(aligned_addr < memory_base || aligned_addr >= memory_base + instance->memory_size_bytes, 0)) {
