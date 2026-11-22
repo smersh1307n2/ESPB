@@ -49,7 +49,7 @@ if not keys:
 
 url = os.environ.get("ESPB_API_URL", "http://espb.runasp.net/api/v1/translate")
 body = json.dumps(payload).encode("utf-8")
-quota_markers = ("quota", "remainingrequests", "daily limit", "request limit", "translation limit", "rate limit")
+quota_markers = ("quota", ""daily limit", "request limit", "translation limit", "rate limit")
 
 # Log secret variable names only; never print key material.
 for slot, key in enumerate(keys, 1):
@@ -89,10 +89,13 @@ for slot, key in enumerate(keys, 1):
     error = str(result.get("errorMessage", result))
     if any(marker in response_text.lower() for marker in quota_markers):
         print(
-            f"Key slot {slot}: API rejected translation; "
+            f"Key slot {slot}: API rejected translation for quota; "
             f"response={response_text[:1500]!r}; trying next key."
         )
         continue
+    log = result.get("translationLog")
+    if log:
+        print("Translator diagnostic log (tail):\\n" + str(log)[-12000:])
     raise SystemExit("Translation failed: " + error[:2000])
 else:
     raise SystemExit("All configured API keys are quota-exhausted.")
