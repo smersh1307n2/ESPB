@@ -230,6 +230,23 @@ jobs:
           run-id: ${{ steps.bitcode.outputs.previous_pair_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Restore unchanged bitcode from previous paired corpus
+        if: steps.bitcode.outputs.previous_pair_run_id != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .work/bytecode_groups
+          restored=0
+          for previous_bc in .work/previous/bytecode_groups/*.bc; do
+            [[ -f "$previous_bc" ]] || continue
+            current_bc=".work/bytecode_groups/$(basename "$previous_bc")"
+            if [[ ! -s "$current_bc" ]]; then
+              cp "$previous_bc" "$current_bc"
+              restored=$((restored + 1))
+            fi
+          done
+          echo "BITCODE_GROUPS_RESTORED=$restored"
+
       - name: Reuse unchanged paired modules by bitcode SHA-256
         if: steps.bitcode.outputs.previous_pair_run_id != ''
         shell: bash
