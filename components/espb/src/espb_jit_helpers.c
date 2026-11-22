@@ -18,7 +18,10 @@
 #include "espb_jit_helpers.h"
 
 #include "espb_runtime_alloca.h"
+#include "espb_heap_manager.h"
 #include "esp_log.h"
+
+#include <string.h>
 
 #if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
 static const char *TAG = "espb_jit_alloca";
@@ -50,6 +53,22 @@ void espb_jit_alloca_ex(EspbInstance *instance, Value *v_regs, uint16_t num_regs
              (int)result, (unsigned)rd,
              result == ESPB_OK ? V_PTR(v_regs[rd]) : NULL);
 #endif
+}
+
+
+__attribute__((noinline))
+void* espb_jit_heap_calloc(EspbInstance *instance, uint32_t count, uint32_t size)
+{
+    size_t total;
+    if (__builtin_mul_overflow((size_t)count, (size_t)size, &total)) {
+        return NULL;
+    }
+
+    void *ptr = espb_heap_malloc(instance, total);
+    if (ptr) {
+        memset(ptr, 0, total);
+    }
+    return ptr;
 }
 
 void espb_jit_alloca(EspbInstance *instance, Value *v_regs, uint8_t rd, uint8_t rs_size, uint8_t align) {
