@@ -64,3 +64,8 @@ target_compile_options(${COMPONENT_LIB} PRIVATE $<$<COMPILE_LANGUAGE:CXX>:-std=g
 # JIT debug statistics (helper calls)
 target_compile_definitions(${COMPONENT_LIB} PRIVATE JIT_STATS=1)
 
+# Focused runtime diagnostics for ALLOCA in JIT-generated code.
+if(CONFIG_ESPB_JIT_ALLOCA_TRACE)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE ESPB_JIT_ALLOCA_TRACE=1)
+endif()
+
