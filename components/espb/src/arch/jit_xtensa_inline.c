@@ -66,6 +66,23 @@
 
 static const char* TAG = "espb_jit_xtensa_inline";
 
+// TEMP diagnostic: report taken backward branches from generated Xtensa code.
+// Disabled after isolating the control-flow issue.
+#ifndef ESPB_JIT_TRACE_BACKEDGES
+#define ESPB_JIT_TRACE_BACKEDGES 1
+#endif
+#if ESPB_JIT_TRACE_BACKEDGES
+static volatile uint32_t s_jit_backedge_count;
+static void jit_xtensa_trace_backedge(uint32_t source_bc, uint32_t target_bc, uint32_t opcode)
+{
+    uint32_t n = ++s_jit_backedge_count;
+    if (n == 1 || (n & 31u) == 0) {
+        ESP_LOGI(TAG, "[JIT_BACKEDGE] n=%u op=0x%02x src=%u target=%u",
+                 (unsigned)n, (unsigned)opcode, (unsigned)source_bc, (unsigned)target_bc);
+    }
+}
+#endif
+
 // ===== Debug helpers (called from JIT code) =====
 // ===== C helpers for complex ops (called from JIT code) =====
 // Keep these helpers in C to avoid relying on uncalibrated Xtensa encodings for address arithmetic
@@ -2850,6 +2867,21 @@ static void emit_call8_rel(XtensaJitContext* ctx, uintptr_t pc_abs, uintptr_t ta
     ctx->error = true;
 }
 
+#if ESPB_JIT_TRACE_BACKEDGES
+static void emit_trace_backedge(XtensaJitContext* ctx, XtensaLiteralPool* pool,
+                                uint32_t source_bc, uint32_t target_bc, uint8_t opcode)
+{
+    emit_load_u32_to_a8(ctx, pool, source_bc);
+    emit_mov_n(ctx, 10, 8);
+    emit_load_u32_to_a8(ctx, pool, target_bc);
+    emit_mov_n(ctx, 11, 8);
+    emit_movi_n(ctx, 12, (int8_t)opcode);
+    emit_call_helper(ctx, pool, (void*)&jit_xtensa_trace_backedge);
+    // Restore the generated-code convention: a11 holds the v_regs pointer.
+    emit_l32i(ctx, 11, 1, 8);
+}
+#endif
+
 static void emit_call_helper(XtensaJitContext* ctx, XtensaLiteralPool* pool, void* helper_func) {
     uintptr_t pc_abs = (uintptr_t)(ctx->buffer + ctx->offset);
     uintptr_t tgt_abs = (uintptr_t)helper_func;
@@ -3565,10 +3597,15 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 uint32_t beqz_pos = emit_beqz_n_a8_placeholder(&ctx);
 
+                // The BEQZ skips this block when the branch is not taken.
+                // Therefore the diagnostic helper observes only executed backward edges.
                 // Emit jump to bytecode target (immediate if known else fixup)
                 if (bc_to_native[target_bc] != XTENSA_BC_UNSET) {
                     uint32_t tgt_native = bc_to_native[target_bc];
                     bool backward = (tgt_native < (uint32_t)ctx.offset);
+#if ESPB_JIT_TRACE_BACKEDGES
+                    if (backward) emit_trace_backedge(&ctx, &litpool, source_bc, target_bc, 0x03);
+#endif
                     emit_jump_to_target(&ctx, &litpool, tgt_native, backward);
                 } else {
                     uint32_t j_pos = emit_j_placeholder(&ctx);
@@ -3630,6 +3667,9 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 if (bc_to_native[target_bc] != XTENSA_BC_UNSET) {
                     uint32_t target_native = bc_to_native[target_bc];
                     bool backward = (target_native < (uint32_t)ctx.offset);
+#if ESPB_JIT_TRACE_BACKEDGES
+                    if (backward) emit_trace_backedge(&ctx, &litpool, source_bc, target_bc, 0x02);
+#endif
                     emit_jump_to_target(&ctx, &litpool, target_native, backward);
                 } else {
                     // Forward branch: emit placeholder and patch later
