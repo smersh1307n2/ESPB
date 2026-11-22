@@ -32,7 +32,7 @@ jobs:
       - name: Checkout ESPB_WORK and translator source project
         uses: actions/checkout@v4
         with:
-          ref: ESPB_WORK
+          ref: ${{ github.sha }}
           submodules: recursive
           fetch-depth: 0
 
@@ -54,6 +54,11 @@ jobs:
           MANUAL_GROUPS: ${{ inputs.groups }}
         run: |
           set -euo pipefail
+          if [[ -n "$BEFORE_SHA" && ! "$BEFORE_SHA" =~ ^0+$ ]]; then
+            if ! git cat-file -e "$BEFORE_SHA^{commit}" 2>/dev/null; then
+              git fetch --no-tags origin "$BEFORE_SHA"
+            fi
+          fi
           python - <<'PY'
           import os
           import re
