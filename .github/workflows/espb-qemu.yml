@@ -308,7 +308,7 @@ jobs:
         run: |
           . "$IDF_PATH/export.sh"
           set +e
-          timeout --signal=INT --kill-after=5s 600s idf.py -C qemu qemu > qemu.log 2>&1
+          timeout --signal=INT --kill-after=5s 120s idf.py -C qemu qemu > qemu.log 2>&1
           qemu_status=$?
           set -e
           tr -d '\r' < qemu.log > qemu.log.tmp && mv qemu.log.tmp qemu.log
@@ -391,7 +391,63 @@ jobs:
               exit 1
             fi
           done
-          rtos_calls="$(grep -c '^\[ESPB_TEST\] bounded_rtos_calls=.*count=3$' qemu.log || true)"
+          rtos_calls="$(grep -c '^\[ESPB_TEST\] bounded_rtos_calls=.*count=1 qemu.log || true)"
+          if [ "$rtos_calls" -ne 4 ]; then
+            echo "Expected exactly four bounded RTOS module runs (one execution per mode), found $rtos_calls"
+            exit 1
+          fi
+
+          fibonacci_pass_count="$(grep -F -c 'Result is CORRECT.' qemu.log || true)"
+          if [ "$fibonacci_pass_count" -lt 2 ]; then
+            echo "Expected interpreter and JIT Fibonacci checks (at least 2), found $fibonacci_pass_count"
+            exit 1
+          fi
+
+          memory_count="$(grep -Ec '^\[ESPB_MEM\] module=' qemu.log || true)"
+          if [ "$memory_count" -ne "$expected_modules" ]; then
+            echo "Memory metric count mismatch: expected=$expected_modules actual=$memory_count"
+            exit 1
+          fi
+          awk -v expected="$expected_modules" '
+            /^\[ESPB_MEM\]/ {
+              before=ready=exec_heap=after=0
+              for (i = 1; i <= NF; ++i) {
+                split($i, kv, "=")
+                if (kv[1] == "heap_before") before = kv[2] + 0
+                else if (kv[1] == "heap_ready") ready = kv[2] + 0
+                else if (kv[1] == "heap_after_exec") exec_heap = kv[2] + 0
+                else if (kv[1] == "heap_after_unload") after = kv[2] + 0
+              }
+              if (before > 0 && after + 512 < before) {
+                printf "Heap recovery regression: before=%u after_unload=%u\n", before, after
+                failed = 1
+              }
+              if (ready > 0 && exec_heap + 512 < ready) {
+                printf "Heap growth during execution: ready=%u after_exec=%u\n", ready, exec_heap
+                failed = 1
+              }
+              count++
+            }
+            END {
+              if (count != expected) {
+                printf "Heap metric records mismatch: expected=%u actual=%u\n", expected, count
+                failed = 1
+              }
+              exit failed
+            }
+          ' qemu.log
+
+      - name: Upload QEMU execution log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: espb-qemu-${{ matrix.target }}-${{ github.run_id }}
+          path: |
+            qemu.log
+            qemu/build/ESPB_QEMU.elf
+          if-no-files-found: ignore
+          retention-days: 14
+ qemu.log || true)"
           if [ "$rtos_calls" -ne 4 ]; then
             echo "Expected exactly four bounded RTOS module runs, found $rtos_calls"
             exit 1
