@@ -50,6 +50,15 @@ static uint8_t espb_get_declared_num_args_for_local(const EspbInstance *instance
     const EspbFuncSignature *sig = &m->signatures[sig_idx];
     return sig ? sig->num_params : 0;
 }
+static inline uint16_t espb_jit_frame_regs(const EspbFunctionBody *body) {
+    uint16_t regs = body->header.num_virtual_regs;
+    if (regs == 0 || regs > 256) regs = 256;
+    uint16_t max_used = (uint16_t)body->header.max_reg_used + 1u;
+    if (max_used > regs) regs = max_used;
+    if (regs < 24u) regs = 24u;
+    return regs;
+}
+
 EspbResult espb_execute_function(EspbInstance *instance, ExecutionContext *exec_ctx, uint32_t func_idx, const Value *args, Value *results) {
 #if CONFIG_ESPB_JIT_ENABLED
     if (!instance || !instance->module) {
@@ -80,7 +89,7 @@ EspbResult espb_execute_function(EspbInstance *instance, ExecutionContext *exec_
     if (body->is_jit_compiled && body->jit_code != NULL) {
         // JIT-путь
         uint8_t num_args = espb_get_declared_num_args_for_local(instance, local_func_idx);
-        return execute_jit_code(instance, body->jit_code, args, num_args, results, body->header.num_virtual_regs);
+        return execute_jit_code(instance, body->jit_code, args, num_args, results, espb_jit_frame_regs(body));
     }
     
     // Функция НЕ скомпилирована
@@ -109,7 +118,7 @@ EspbResult espb_execute_function(EspbInstance *instance, ExecutionContext *exec_
         
         // Выполняем через JIT
         uint8_t num_args = espb_get_declared_num_args_for_local(instance, local_func_idx);
-        return execute_jit_code(instance, body->jit_code, args, num_args, results, body->header.num_virtual_regs);
+        return execute_jit_code(instance, body->jit_code, args, num_args, results, espb_jit_frame_regs(body));
     } else {
         // Если JIT-компиляция не удалась, выполняем в интерпретаторе
         printf("[JIT] Failed to compile HOT function %u (error %d), using interpreter\n", (unsigned)func_idx, jit_res);
@@ -139,7 +148,7 @@ EspbResult espb_execute_function_jit_only(EspbInstance *instance, ExecutionConte
     // Если уже скомпилировано — сразу выполняем.
     if (body->is_jit_compiled && body->jit_code != NULL) {
         uint8_t num_args = espb_get_declared_num_args_for_local(instance, local_func_idx);
-        return execute_jit_code(instance, body->jit_code, args, num_args, results, body->header.num_virtual_regs);
+        return execute_jit_code(instance, body->jit_code, args, num_args, results, espb_jit_frame_regs(body));
     }
 
     // Пытаемся скомпилировать. Если не вышло — возвращаем ошибку (без interpreter fallback).
@@ -157,7 +166,7 @@ EspbResult espb_execute_function_jit_only(EspbInstance *instance, ExecutionConte
     body->is_jit_compiled = true;
 
     uint8_t num_args = espb_get_declared_num_args_for_local(instance, local_func_idx);
-    return execute_jit_code(instance, body->jit_code, args, num_args, results, body->header.num_virtual_regs);
+    return execute_jit_code(instance, body->jit_code, args, num_args, results, espb_jit_frame_regs(body));
 #else
     return ESPB_ERR_UNSUPPORTED; // JIT is disabled
 #endif

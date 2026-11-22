@@ -4566,12 +4566,15 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 // ВАЖНО: нельзя использовать просто (max_reg_used+1) — bytecode может ссылаться
                 // на регистры с большими индексами (например R16). Если значение слишком маленькое,
                 // espb_jit_alloca_ex не найдёт слот для rd и оставит его нулевым → store по адресу 0.
-                // execute_jit_code allocates v_regs using num_virtual_regs (minimum 8).
-                // Never advertise a larger capacity to the helper: doing so lets ALLOCA
-                // write beyond the actual VLA when malformed/inconsistent bytecode metadata
-                // contains a register index outside the function's declared register file.
+                // Both execute_jit_code and jit_call_espb_function allocate at least 24
+                // Value slots (reserving R16..R23 for lowering temporaries) and at least
+                // max_reg_used + 1 slots (capped at 256).
                 uint16_t num_regs_allocated = num_virtual_regs;
-                if (num_regs_allocated < 8) num_regs_allocated = 8;
+                if (num_regs_allocated == 0 || num_regs_allocated > 256) num_regs_allocated = 256;
+                if ((uint16_t)max_reg_used + 1u > num_regs_allocated) {
+                    num_regs_allocated = (uint16_t)max_reg_used + 1u;
+                }
+                if (num_regs_allocated < 24) num_regs_allocated = 24;
                 if (rd >= num_regs_allocated || rs >= num_regs_allocated) {
                     printf("[JIT ERROR] ALLOCA register out of range: rd=%u rs=%u regs=%u func=%u\\n",
                            (unsigned)rd, (unsigned)rs, (unsigned)num_regs_allocated,

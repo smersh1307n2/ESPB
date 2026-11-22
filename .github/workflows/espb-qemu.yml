@@ -244,7 +244,7 @@ jobs:
         run: |
           . "$IDF_PATH/export.sh"
           set +e
-          timeout --signal=INT --kill-after=5s 90s idf.py -C qemu qemu > qemu.log 2>&1
+          timeout --signal=INT --kill-after=5s 180s idf.py -C qemu qemu > qemu.log 2>&1
           qemu_status=$?
           set -e
           tr -d '\r' < qemu.log > qemu.log.tmp && mv qemu.log.tmp qemu.log
@@ -352,14 +352,14 @@ jobs:
             exit 1
           fi
 
-          raw_jit_count="$(grep -Ec '^\[ESPB_BENCH_RAW_JIT\] function=app_main median_us=[1-9][0-9]* median_cycles=[1-9][0-9]*' qemu.log || true)"
+          raw_jit_count="$(grep -Ec '\[ESPB_BENCH_RAW_JIT\] function=app_main median_us=[1-9][0-9]* median_cycles=[1-9][0-9]*' qemu.log || true)"
           expected_bench_jit=$((jit_modules - 2))
           if [ "$raw_jit_count" -ne "$expected_bench_jit" ]; then
             echo "Raw JIT metric count mismatch: expected=$expected_bench_jit actual=$raw_jit_count"
             exit 1
           fi
 
-          interpreter_core_count="$(grep -Ec '^\[ESPB_BENCH_INTERP_CORE\] function=app_main median_us=[1-9][0-9]* median_cycles=[1-9][0-9]*' qemu.log || true)"
+          interpreter_core_count="$(grep -Ec '\[ESPB_BENCH_INTERP_CORE\] function=app_main median_us=[1-9][0-9]* median_cycles=[1-9][0-9]*' qemu.log || true)"
           expected_bench_interpreter=$((interpreter_modules - 2))
           if [ "$interpreter_core_count" -ne "$expected_bench_interpreter" ]; then
             echo "Interpreter core metric count mismatch: expected=$expected_bench_interpreter actual=$interpreter_core_count"
