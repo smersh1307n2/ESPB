@@ -1383,7 +1383,7 @@ void jit_call_espb_function(EspbInstance* instance, uint32_t local_func_idx, Val
     if (num_args > 8) num_args = 8; // Ограничиваем первыми 8 аргументами
     const bool trace_i32_calls = (local_func_idx == 1u || local_func_idx == 2u) && num_args == 2u;
     if (trace_i32_calls) {
-        printf("[JIT_CALL_ARGS] idx=%u a0=%08" PRIx32 " a1=%08" PRIx32 " regs=%p\\n",
+        printf("[JIT_CALL_ARGS] idx=%u a0=%08" PRIx32 " a1=%08" PRIx32 " regs=%p\n",
                (unsigned)local_func_idx, (uint32_t)V_I32(v_regs[0]),
                (uint32_t)V_I32(v_regs[1]), (void *)v_regs);
     }
@@ -1448,11 +1448,36 @@ void jit_call_espb_function(EspbInstance* instance, uint32_t local_func_idx, Val
                    (size_t)(zero_regs - num_args) * sizeof(Value));
         }
 
+        if (trace_i32_calls) {
+            printf("[JIT_CALL_BODY] idx=%u code_size=%u vregs=%u max_reg=%u flags=%02x args=%u returns=%u\\n",
+                   (unsigned)local_func_idx, (unsigned)callee_body->code_size,
+                   (unsigned)needed_regs, (unsigned)callee_body->header.max_reg_used,
+                   (unsigned)callee_body->header.flags, (unsigned)sig->num_params,
+                   (unsigned)sig->num_returns);
+            printf("[JIT_CALL_BYTECODE] idx=%u ", (unsigned)local_func_idx);
+            for (uint32_t i = 0; i < callee_body->code_size; ++i) {
+                printf("%02x", (unsigned)callee_body->code[i]);
+            }
+            printf("\\n");
+        }
         jit_func(instance, callee_regs);
         if (trace_i32_calls) {
             printf("[JIT_CALL_RET] idx=%u ret=%08" PRIx32 " regs=%p\\n",
                    (unsigned)local_func_idx, (uint32_t)V_I32(callee_regs[0]),
                    (void *)callee_regs);
+            for (uint16_t i = 0; i < needed_regs && i < 12; ++i) {
+                printf("[JIT_CALL_VREG] idx=%u r%u=%08" PRIx32 "\\n",
+                       (unsigned)local_func_idx, (unsigned)i,
+                       (uint32_t)V_I32(callee_regs[i]));
+            }
+            Value debug_args[8];
+            for (uint8_t i = 0; i < num_args; ++i) debug_args[i] = v_regs[i];
+            Value debug_result;
+            memset(&debug_result, 0, sizeof(debug_result));
+            EspbResult debug_rc = espb_call_function(instance, temp_exec_ctx, global_func_idx,
+                                                      debug_args, &debug_result);
+            printf("[JIT_CALL_INTERP] idx=%u rc=%d ret=%08" PRIx32 "\\n",
+                   (unsigned)local_func_idx, (int)debug_rc, (uint32_t)V_I32(debug_result));
         }
 
         if (sig->num_returns > 0) {
