@@ -4498,6 +4498,14 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
                 uint8_t align_param = *pc++;
+
+                // ALLOCA reads/writes v_regs through the C helper. Flush both
+                // compiler-side caches before the call so the size operand is
+                // current and the destination cannot be overwritten by a stale
+                // cached value on a later instruction.
+                ph_flush(&ctx, &ph);
+                ph_reset(&ph);
+                VCACHE_FLUSH_ALL();
                 
                 // ОПТИМИЗАЦИЯ #6: Убрана отладка из hot path
                 // printf("[JIT-COMPILE] ALLOCA at offset %ld: rd=%u, rs=%u, align=%u\n", 
