@@ -159,7 +159,7 @@ static int32_t qemu_native_atomic_i32_probe(void)
 
 extern "C" void app_main(void)
 {
-    // All test modules are linked into this one firmware image by CMake.\n    // Iterate the embedded module table; never rebuild/reboot per test.\n    printf("--- ESPB dual-mode QEMU tests ---\n");
+    // All test modules are linked into this one firmware image by CMake.\n    // Iterate the embedded module table; never rebuild/reboot per test.\n    // Keep CI's semantic run bounded; the workflow validates the full pair set.\n    printf("--- ESPB dual-mode QEMU tests ---\n");
     espb_register_custom_index_symbol_table(qemu_fast_symbols);
     espb_register_symbol_table(0, qemu_named_symbols);
 
