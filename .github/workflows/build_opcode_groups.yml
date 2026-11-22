@@ -65,7 +65,7 @@ jobs:
           selected = []
           manual = os.environ.get("MANUAL_GROUPS", "").strip()
           if manual:
-              requested = [name for name in re.split(r"[\\s,]+", manual) if name]
+              requested = [name for name in re.split(r"[\s,]+", manual) if name]
               unknown = sorted(set(requested) - set(available))
               if unknown:
                   raise SystemExit("Unknown group(s): " + ", ".join(unknown))
@@ -89,7 +89,7 @@ jobs:
           if not selected:
               selected = available
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-              output.write("names=" + " ".join(selected) + "\\n")
+              output.write("names=" + " ".join(selected) + "\n")
           print("BITCODE_GROUPS_SELECTED=" + ",".join(selected), flush=True)
           PY
 
