@@ -37,14 +37,14 @@ with open(source, "rb") as f:
 keys = collect_translator_keys(os.environ)
 if not keys:
     key_names = ("ESPB_API_KEY",) + tuple(
-        f"ESPB_API_KEY_{index}" for index in range(1, 10)
+        f"ESPB_API_KEY_{index}" for index in range(1, 12)
     )
     keys = [os.environ.get(name, "").strip() for name in key_names]
     keys = [key for key in keys if key]
 if not keys:
     raise SystemExit(
         "No ESPB API keys configured. Set ESPB_TRANSLATOR_KEYS or "
-        "ESPB_API_KEY through ESPB_API_KEY_9."
+        "ESPB_API_KEY through ESPB_API_KEY_11."
     )
 
 url = os.environ.get("ESPB_API_URL", "http://espb.runasp.net/api/v1/translate")
@@ -82,9 +82,16 @@ for slot, key in enumerate(keys, 1):
         print(f"Translation succeeded using key slot {slot}; output: {destination}")
         break
 
+    # HTTP 200 may still carry a quota/limit error. Print the response body
+    # (which contains API diagnostics, never the submitted secret) so we can
+    # distinguish exhausted quota from invalid key, server policy, etc.
+    response_text = json.dumps(result, ensure_ascii=False, sort_keys=True)
     error = str(result.get("errorMessage", result))
-    if any(marker in json.dumps(result).lower() for marker in quota_markers):
-        print(f"Key slot {slot}: quota exhausted; trying next key.")
+    if any(marker in response_text.lower() for marker in quota_markers):
+        print(
+            f"Key slot {slot}: API rejected translation; "
+            f"response={response_text[:1500]!r}; trying next key."
+        )
         continue
     raise SystemExit("Translation failed: " + error[:2000])
 else:
