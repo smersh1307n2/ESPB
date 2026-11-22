@@ -222,7 +222,7 @@ jobs:
 
           def git_blob_sha(path):
               data = path.read_bytes()
-              header = b"blob " + str(len(data)).encode("ascii") + b"\\0"
+              header = b"blob " + str(len(data)).encode("ascii") + b"\0"
               return hashlib.sha1(header + data).hexdigest()
 
           expected_jit = set()
