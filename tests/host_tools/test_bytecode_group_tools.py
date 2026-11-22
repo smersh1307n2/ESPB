@@ -646,7 +646,7 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn('git config --global --add safe.directory "$GITHUB_WORKSPACE"', workflow)
 
 
-    def test_translator_key_pool_includes_slots_one_through_nine(self) -> None:
+    def test_translator_key_pool_includes_slots_one_through_eleven(self) -> None:
         script = (REPO_ROOT / ".github" / "scripts" / "translate_bc.py").read_text(
             encoding="utf-8"
         )
@@ -654,13 +654,13 @@ class WorkflowContractTests(unittest.TestCase):
             REPO_ROOT / ".github" / "workflows" / "build_opcode_groups_espb.yml"
         ).read_text(encoding="utf-8")
 
-        self.assertIn('range(1, 10)', script)
+        self.assertIn('range(1, 12)', script)
         self.assertIn('"ESPB_API_KEY"', script)
-        self.assertIn("ESPB_API_KEY_9", script)
-        for index in range(1, 10):
+        self.assertIn("ESPB_API_KEY_11", script)
+        for index in range(1, 12):
             name = f"ESPB_API_KEY_{index}"
             self.assertIn(name, workflow)
-        self.assertIn("through ESPB_API_KEY_9", script)
+        self.assertIn("through ESPB_API_KEY_11", script)
 
 
 if __name__ == "__main__":
