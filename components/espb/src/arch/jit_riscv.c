@@ -45,8 +45,9 @@ static Value *espb_jit_alloca_ex_return_regs(EspbInstance *instance, Value *v_re
     espb_jit_alloca_ex(instance, v_regs, num_regs_allocated, rd, rs_size, align);
 #if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
     if (rd == 16 && rs_size == 19) {
-        printf("[JIT_ALLOCA_WRAPPER] v_regs=%p rd=%u rs=%u\\n",
+        printf("[JIT_ALLOCA_WRAPPER] v_regs=%p rd=%u rs=%u\n",
                (void *)v_regs, (unsigned)rd, (unsigned)rs_size);
+        fflush(stdout);
     }
 #endif
     return v_regs;
@@ -2516,10 +2517,11 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
     JitContext ctx;
     jit_context_init(&ctx, exec_buffer, jit_buffer_size);
 #if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
-    size_t trace_alloca_native_start = 0;
-    size_t trace_alloca_native_end = 0;
-    size_t trace_alloca_bc_offset = 0;
-    int trace_alloca_found = 0;
+    size_t trace_alloca_native_start[8] = {0};
+    size_t trace_alloca_native_end[8] = {0};
+    size_t trace_alloca_bc_offset[8] = {0};
+    uint32_t trace_alloca_func[8] = {0};
+    size_t trace_alloca_count = 0;
 #endif
     
     // CMP+BR_IF: Инициализация трекера
@@ -4605,11 +4607,12 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 // a0 is the wrapper's v_regs return value and the restore loads above do not clobber it.
                 emit_addi_phys(&ctx, 18, 10, 0); // s2 = a0 (v_regs)
 #if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
-                if (func_idx == 1 && rd == 16 && rs == 19) {
-                    trace_alloca_native_start = alloca_native_start;
-                    trace_alloca_native_end = ctx.offset;
-                    trace_alloca_bc_offset = (size_t)(pc - bytecode) - 4;
-                    trace_alloca_found = 1;
+                if (rd == 16 && rs == 19 && trace_alloca_count < 8) {
+                    size_t trace_i = trace_alloca_count++;
+                    trace_alloca_native_start[trace_i] = alloca_native_start;
+                    trace_alloca_native_end[trace_i] = ctx.offset;
+                    trace_alloca_bc_offset[trace_i] = (size_t)(pc - bytecode) - 4;
+                    trace_alloca_func[trace_i] = func_idx;
                 }
 #endif
                 break;
@@ -8294,22 +8297,25 @@ divs_i64_general_case:
     // Фиксируем все переходы (теперь вызывается всегда в конце)
     jit_context_patch_branches(&ctx, bytecode, body->code_size);
 #if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
-    if (trace_alloca_found) {
-        size_t dump_start = trace_alloca_native_start > 16 ? trace_alloca_native_start - 16 : 0;
-        size_t dump_end = trace_alloca_native_end + 128;
+    for (size_t trace_i = 0; trace_i < trace_alloca_count; ++trace_i) {
+        size_t dump_start = trace_alloca_native_start[trace_i] > 16 ? trace_alloca_native_start[trace_i] - 16 : 0;
+        size_t dump_end = trace_alloca_native_end[trace_i] + 128;
         if (dump_end > ctx.offset) dump_end = ctx.offset;
-        printf("[JIT_ALLOCA_CODE] func=%u bc=%zu base=%p start=%zu end=%zu len=%zu\\n",
-               (unsigned)func_idx, trace_alloca_bc_offset, (void *)exec_buffer,
-               trace_alloca_native_start, trace_alloca_native_end,
-               dump_end - dump_start);
+        printf("[JIT_ALLOCA_CODE] func=%u bc=%zu base=%p code_size=%zu start=%zu end=%zu window=%zu..%zu\\n",
+               (unsigned)trace_alloca_func[trace_i], trace_alloca_bc_offset[trace_i],
+               (void *)exec_buffer, ctx.offset,
+               trace_alloca_native_start[trace_i], trace_alloca_native_end[trace_i],
+               dump_start, dump_end);
         for (size_t off = dump_start; off < dump_end; off += 16) {
-            printf("[JIT_ALLOCA_BYTES] off=%04zx", off);
+            printf("[JIT_ALLOCA_BYTES] func=%u off=%04zx",
+                   (unsigned)trace_alloca_func[trace_i], off);
             for (size_t k = off; k < dump_end && k < off + 16; ++k) {
                 printf(" %02x", exec_buffer[k]);
             }
             printf("\\n");
         }
     }
+    fflush(stdout);
 #endif
     
     // Освобождаем ресурсы
