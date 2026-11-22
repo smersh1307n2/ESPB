@@ -383,19 +383,20 @@ jobs:
               }
               if (before > 0 && after + 512 < before) {
                 printf "Heap recovery regression: before=%u after_unload=%u\n", before, after
-                exit 1
+                failed = 1
               }
               if (ready > 0 && exec_heap + 512 < ready) {
                 printf "Heap growth during execution: ready=%u after_exec=%u\n", ready, exec_heap
-                exit 1
+                failed = 1
               }
               count++
             }
             END {
               if (count != expected) {
                 printf "Heap metric records mismatch: expected=%u actual=%u\n", expected, count
-                exit 1
+                failed = 1
               }
+              exit failed
             }
           ' qemu.log
 
