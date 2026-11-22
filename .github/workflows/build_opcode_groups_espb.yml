@@ -277,6 +277,8 @@ jobs:
           ESPB_API_KEY_7: ${{ secrets.ESPB_API_KEY_7 }}
           ESPB_API_KEY_8: ${{ secrets.ESPB_API_KEY_8 }}
           ESPB_API_KEY_9: ${{ secrets.ESPB_API_KEY_9 }}
+          ESPB_API_KEY_10: ${{ secrets.ESPB_API_KEY_10 }}
+          ESPB_API_KEY_11: ${{ secrets.ESPB_API_KEY_11 }}
         shell: bash
         run: |
           set -euo pipefail
