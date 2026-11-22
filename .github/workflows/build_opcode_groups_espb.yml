@@ -15,6 +15,7 @@ name: Build paired ESPB opcode-group modules
 # [translate-opcode-corpus] Retry after host workflow contract assertion alignment.
 # [translate-opcode-corpus] Start fresh complete-pair replacement pass.
 # [translate-opcode-corpus] Re-run after preserving QEMU provenance contract checks.
+# [translate-opcode-corpus] Retry after consolidating QEMU host-contract anchors.
 # Diagnose API quota responses and map attempted slots to configured secret names.
 # [translate-opcode-corpus] Retry after correcting translator Python syntax.
 # Log HTTP-200 API error payloads to verify per-key remaining translation quota.\n# [translate-opcode-corpus] Retry the single pending FreeRTOS task group with bounded key failover.
