@@ -118,6 +118,8 @@ EspbResult espb_create_callback_closure(
  * @return ESPB_OK при успехе
  */
 EspbResult espb_free_callback_closure(void *closure_ptr);
+/* Quiesce native callback sources before releasing closures for an instance. */
+void espb_free_callback_closures_for_instance(EspbInstance *instance);
 
 /**
  * Универсальный обработчик callback замыканий
