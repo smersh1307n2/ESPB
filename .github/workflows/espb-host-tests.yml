@@ -1,4 +1,5 @@
 name: ESPB host-side test tools
+# Re-run host-side validation for the refreshed paired task corpus.
 
 on:
   push:
