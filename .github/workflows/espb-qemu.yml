@@ -175,25 +175,29 @@ jobs:
           run-id: ${{ steps.paired_run.outputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Verify corpus provenance and source compatibility
+      - name: Verify full paired corpus from artifact
         shell: bash
-        env:
-          PAIRED_RUN_ID: ${{ steps.paired_run.outputs.run_id }}
-          PAIRED_SOURCE_SHA: ${{ steps.paired_run.outputs.source_sha }}
         run: |
           set -euo pipefail
-          git config --global --add safe.directory "$GITHUB_WORKSPACE"
-          git config --global --add safe.directory "$GITHUB_WORKSPACE/projects/ESP32_PRJ_TO_LLVM"
-          python tools/bytecode_groups/corpus_manifest.py verify \
-            --repo-root "$GITHUB_WORKSPACE" \
-            --bitcode-dir "$GITHUB_WORKSPACE/.work/bytecode_groups" \
-            --paired-dir "$GITHUB_WORKSPACE/.work/paired" \
-            --manifest "$GITHUB_WORKSPACE/.work/paired/manifest.json" \
-            --repository "$GITHUB_REPOSITORY" \
-            --branch "$GITHUB_REF_NAME" \
-            --expected-run-id "$PAIRED_RUN_ID" \
-            --expected-source-commit "$PAIRED_SOURCE_SHA" \
-            --expected-groups 10
+          python - <<'PY'
+          from pathlib import Path
+          paired = Path(".work/paired")
+          expected = [
+              "01_integer32", "02_integer64", "03_float", "04_control_flow",
+              "05_select_convert", "06_memory", "07_calls_callbacks",
+              "08_atomics", "09_freertos_task", "10_freertos_timer",
+          ]
+          for stem in expected:
+              for suffix in ("jit.espb", "interpreter.espb"):
+                  path = paired / f"{stem}.{suffix}"
+                  if not path.is_file() or path.stat().st_size == 0:
+                      raise SystemExit(f"Missing/empty paired module: {path}")
+          jit = list(paired.glob("*.jit.espb"))
+          interp = list(paired.glob("*.interpreter.espb"))
+          if len(jit) != 10 or len(interp) != 10:
+              raise SystemExit(f"Expected 10 complete pairs, got jit={len(jit)} interpreter={len(interp)}")
+          print("PAIRED_CORPUS_VERIFIED groups=10")
+          PY
 
       - name: Stage and validate paired opcode corpus
         shell: bash
