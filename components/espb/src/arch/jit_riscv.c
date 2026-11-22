@@ -43,6 +43,12 @@ static Value *espb_jit_alloca_ex_return_regs(EspbInstance *instance, Value *v_re
                                               uint8_t rd, uint8_t rs_size, uint8_t align)
 {
     espb_jit_alloca_ex(instance, v_regs, num_regs_allocated, rd, rs_size, align);
+#if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
+    if (rd == 16 && rs_size == 19) {
+        printf("[JIT_ALLOCA_WRAPPER] v_regs=%p rd=%u rs=%u\\n",
+               (void *)v_regs, (unsigned)rd, (unsigned)rs_size);
+    }
+#endif
     return v_regs;
 }
 
@@ -2509,6 +2515,12 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
 
     JitContext ctx;
     jit_context_init(&ctx, exec_buffer, jit_buffer_size);
+#if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
+    size_t trace_alloca_native_start = 0;
+    size_t trace_alloca_native_end = 0;
+    size_t trace_alloca_bc_offset = 0;
+    int trace_alloca_found = 0;
+#endif
     
     // CMP+BR_IF: Инициализация трекера
     ctx.last_cmp_result_reg = 0xFF;  // Нет последнего CMP
@@ -4509,6 +4521,9 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
                 uint8_t align_param = *pc++;
+#if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
+                size_t alloca_native_start = ctx.offset;
+#endif
 
                 // ALLOCA reads/writes v_regs through the C helper. Flush both
                 // compiler-side caches before the call so the size operand is
@@ -4523,9 +4538,8 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 //        (long)(pc - bytecode - 3), rd, rs, align_param);
                 
                 // Генерируем вызов wrapper: он возвращает v_regs в a0 для явного восстановления s2.
-                // Сохраняем caller-saved t0-t6, ra и базовые s1/s2 в pre-allocated temp area.
-                // Дополнительно сохраняем s1/s2 явно: helper ABI обязан их сохранять,
-                // но на C3 наблюдается повреждение s2 после последовательных ALLOCA.
+                // Сохраняем caller-saved t0-t6, ra и s1 в pre-allocated temp area.
+                // s2 будет восстановлен из явного return value wrapper после всех restore-инструкций.
                 // Используем 48-байтный temp_space в нижней части JIT-фрейма (s0 = fp = sp).
                 // t0-t6 в RISC-V = x5,x6,x7,x28,x29,x30,x31 (НЕ x5..x11!).
                 static const uint8_t t_regs[7] = {5, 6, 7, 28, 29, 30, 31}; // t0-t6
@@ -4573,15 +4587,22 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 emit_addi_phys(&ctx, 15, 0, align_param);
                 
                 emit_call_helper(&ctx, (uintptr_t)&espb_jit_alloca_ex_return_regs);
-                // Restore the v_regs base from the wrapper's return value before
-                // any subsequent bytecode instruction can access v_regs[] through s2.
-                emit_addi_phys(&ctx, 18, 10, 0); // s2 = a0 (v_regs)
 
                 // Восстанавливаем t0-t6 и ra из temp area (s0+0..s0+31)
                 for (int i = 0; i < 7; ++i) emit_lw_phys(&ctx, t_regs[i], i * 4, 8); // lw tX, i*4(s0)
                 emit_lw_phys(&ctx, 1, 28, 8); // lw ra, 28(s0)
                 emit_lw_phys(&ctx, 9, 32, 8); // restore s1 (instance)
-                
+                // Make s2 restoration the final instruction in this helper sequence.
+                // a0 is the wrapper's v_regs return value and the restore loads above do not clobber it.
+                emit_addi_phys(&ctx, 18, 10, 0); // s2 = a0 (v_regs)
+#if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
+                if (func_idx == 1 && rd == 16 && rs == 19) {
+                    trace_alloca_native_start = alloca_native_start;
+                    trace_alloca_native_end = ctx.offset;
+                    trace_alloca_bc_offset = (size_t)(pc - bytecode) - 4;
+                    trace_alloca_found = 1;
+                }
+#endif
                 break;
             }
             
@@ -8250,6 +8271,24 @@ divs_i64_general_case:
     
     // Фиксируем все переходы (теперь вызывается всегда в конце)
     jit_context_patch_branches(&ctx, bytecode, body->code_size);
+#if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
+    if (trace_alloca_found) {
+        size_t dump_start = trace_alloca_native_start > 16 ? trace_alloca_native_start - 16 : 0;
+        size_t dump_end = trace_alloca_native_end + 128;
+        if (dump_end > ctx.offset) dump_end = ctx.offset;
+        printf("[JIT_ALLOCA_CODE] func=%u bc=%zu base=%p start=%zu end=%zu len=%zu\\n",
+               (unsigned)func_idx, trace_alloca_bc_offset, (void *)exec_buffer,
+               trace_alloca_native_start, trace_alloca_native_end,
+               dump_end - dump_start);
+        for (size_t off = dump_start; off < dump_end; off += 16) {
+            printf("[JIT_ALLOCA_BYTES] off=%04zx", off);
+            for (size_t k = off; k < dump_end && k < off + 16; ++k) {
+                printf(" %02x", exec_buffer[k]);
+            }
+            printf("\\n");
+        }
+    }
+#endif
     
     // Освобождаем ресурсы
     jit_context_free(&ctx);

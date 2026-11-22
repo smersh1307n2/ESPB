@@ -49,9 +49,11 @@ EspbResult espb_runtime_alloca(EspbInstance *instance,
 
     size_t required_alignment = (align > 8) ? align : 8;
 #if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
-    ESP_LOGI(TAG, "[ALLOCA_REQUEST] ctx=%p regs=%p rd=%u rs=%u size=%" PRIu32 " align=%u required_align=%u",
-             (void *)exec_ctx, (void *)regs, (unsigned)rd, (unsigned)rs_size,
-             size_to_alloc, (unsigned)align, (unsigned)required_alignment);
+    if ((rd == 17 && rs_size == 18) || (rd == 16 && rs_size == 19)) {
+        ESP_LOGI(TAG, "[ALLOCA_REQUEST] ctx=%p regs=%p rd=%u rs=%u size=%" PRIu32 " align=%u required_align=%u",
+                 (void *)exec_ctx, (void *)regs, (unsigned)rd, (unsigned)rs_size,
+                 size_to_alloc, (unsigned)align, (unsigned)required_alignment);
+    }
 #endif
     void *allocated_ptr = espb_heap_malloc_aligned(instance, size_to_alloc, required_alignment);
     if (!allocated_ptr) {
@@ -62,8 +64,10 @@ EspbResult espb_runtime_alloca(EspbInstance *instance,
         return ESPB_ERR_OUT_OF_MEMORY;
     }
 #if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
-    ESP_LOGI(TAG, "[ALLOCA_ALLOC_OK] ptr=%p size=%" PRIu32 " ctx=%p",
-             allocated_ptr, size_to_alloc, (void *)exec_ctx);
+    if ((rd == 17 && rs_size == 18) || (rd == 16 && rs_size == 19)) {
+        ESP_LOGI(TAG, "[ALLOCA_ALLOC_OK] ptr=%p size=%" PRIu32 " ctx=%p",
+                 allocated_ptr, size_to_alloc, (void *)exec_ctx);
+    }
 #endif
 
     memset(allocated_ptr, 0, size_to_alloc);

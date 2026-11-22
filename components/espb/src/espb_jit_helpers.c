@@ -48,16 +48,20 @@ void espb_jit_alloca_ex(EspbInstance *instance, Value *v_regs, uint16_t num_regs
     }
 
 #if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
-    ESP_LOGI(TAG, "[JIT_ALLOCA_ENTER] instance=%p regs=%p rd=%u rs=%u count=%u size=%" PRId32 " align=%u",
-             (void *)instance, (void *)v_regs, (unsigned)rd, (unsigned)rs_size,
-             (unsigned)num_regs_allocated, V_I32(v_regs[rs_size]), (unsigned)align);
+    if ((rd == 17 && rs_size == 18) || (rd == 16 && rs_size == 19)) {
+        ESP_LOGI(TAG, "[JIT_ALLOCA_ENTER] instance=%p regs=%p rd=%u rs=%u count=%u size=%" PRId32 " align=%u",
+                 (void *)instance, (void *)v_regs, (unsigned)rd, (unsigned)rs_size,
+                 (unsigned)num_regs_allocated, V_I32(v_regs[rs_size]), (unsigned)align);
+    }
 #endif
     EspbResult result = espb_runtime_alloca(instance, NULL, v_regs,
                                             num_regs_allocated, rd, rs_size, align);
 #if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
-    ESP_LOGI(TAG, "[JIT_ALLOCA_RESULT] rc=%d rd=%u ptr=%p",
-             (int)result, (unsigned)rd,
-             result == ESPB_OK ? V_PTR(v_regs[rd]) : NULL);
+    if ((rd == 17 && rs_size == 18) || (rd == 16 && rs_size == 19)) {
+        ESP_LOGI(TAG, "[JIT_ALLOCA_RESULT] rc=%d rd=%u ptr=%p",
+                 (int)result, (unsigned)rd,
+                 result == ESPB_OK ? V_PTR(v_regs[rd]) : NULL);
+    }
 #endif
 }
 
