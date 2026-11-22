@@ -57,11 +57,21 @@ def main() -> int:
             raise SystemExit(f"Interpreter converter did not create a nonempty module: {interpreter}")
         print(f"PAIRED_TRANSLATION_DONE group={stem}", flush=True)
 
-    expected_count = len(names)
-    jit_count = len(list(args.paired_dir.glob("*.jit.espb")))
-    interpreter_count = len(list(args.paired_dir.glob("*.interpreter.espb")))
-    if jit_count != expected_count or interpreter_count != expected_count:
-        raise SystemExit(f"Expected exactly {expected_count} selected pairs; found jit={jit_count}, interpreter={interpreter_count}")
+    missing = [
+        f"{stem} ({suffix})"
+        for stem in names
+        for suffix in ("jit.espb", "interpreter.espb")
+        if not (args.paired_dir / f"{stem}.{suffix}").is_file()
+        or (args.paired_dir / f"{stem}.{suffix}").stat().st_size == 0
+    ]
+    if missing:
+        raise SystemExit("Selected paired modules missing or empty: " + ", ".join(missing))
+    print(
+        f"PAIRED_CORPUS_READY jit={len(list(args.paired_dir.glob('*.jit.espb')))} "
+        f"interpreter={len(list(args.paired_dir.glob('*.interpreter.espb')))} "
+        f"updated={len(names)}",
+        flush=True,
+    )
     return 0
 
 
