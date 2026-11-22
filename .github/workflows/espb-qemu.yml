@@ -179,6 +179,9 @@ jobs:
       # git config --global --add safe.directory "$GITHUB_WORKSPACE"
       # --expected-run-id "$PAIRED_RUN_ID"
       # --expected-source-commit "$PAIRED_SOURCE_SHA"
+      # PAIRED_RUN_ID: ${{ steps.paired_run.outputs.run_id }}
+      # PAIRED_SOURCE_SHA: ${{ steps.paired_run.outputs.source_sha }}
+      # --expected-groups 10
       - name: Verify full paired corpus from artifact
         shell: bash
         run: |
