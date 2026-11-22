@@ -20,6 +20,7 @@
 #include "espb_runtime_alloca.h"
 #include "espb_heap_manager.h"
 #include "esp_log.h"
+#include "esp_rom_sys.h"
 
 #include <string.h>
 
@@ -46,8 +47,21 @@ void espb_jit_alloca_ex(EspbInstance *instance, Value *v_regs, uint16_t num_regs
         return;
     }
 
+#if CONFIG_IDF_TARGET_ESP32C3
+    esp_rom_printf("[JIT_ALLOCA_C3] instance=%p heap=%p initialized=%u regs=%p n=%u rd=%u rs=%u align=%u size=%u\\n",
+                   (void *)instance,
+                   instance ? (void *)instance->heap_ctx.heap_handle : NULL,
+                   instance ? (unsigned)instance->heap_ctx.initialized : 0u,
+                   (void *)v_regs, (unsigned)num_regs_allocated,
+                   (unsigned)rd, (unsigned)rs_size, (unsigned)align,
+                   (unsigned)V_I32(v_regs[rs_size]));
+#endif
     EspbResult result = espb_runtime_alloca(instance, NULL, v_regs,
                                             num_regs_allocated, rd, rs_size, align);
+#if CONFIG_IDF_TARGET_ESP32C3
+    esp_rom_printf("[JIT_ALLOCA_C3_RESULT] rc=%d ptr=%p\\n", (int)result,
+                   result == ESPB_OK ? V_PTR(v_regs[rd]) : NULL);
+#endif
 #if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
     ESP_LOGI(TAG, "[JIT_ALLOCA_RESULT] rc=%d rd=%u ptr=%p",
              (int)result, (unsigned)rd,
