@@ -4551,6 +4551,13 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 // a5 = align
                 emit_addi_phys(&ctx, 15, 0, align_param);
                 
+                // ALLOCA mutates v_regs[rd] in the runtime helper. Flush and
+                // invalidate the stable F32/F64 cache before the call so a stale
+                // cached value cannot overwrite the newly allocated pointer.
+                VCACHE_SPILL(vcache0, VC0_LO, VC0_HI);
+                VCACHE_SPILL(vcache1, VC1_LO, VC1_HI);
+                ph_reset(&ph);
+
                 emit_call_helper(&ctx, (uintptr_t)&espb_jit_alloca_ex);
 
                 // Восстанавливаем t0-t6 и ra из temp area (s0+0..s0+31)
