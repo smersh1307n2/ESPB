@@ -2868,6 +2868,8 @@ static void emit_call8_rel(XtensaJitContext* ctx, uintptr_t pc_abs, uintptr_t ta
 }
 
 #if ESPB_JIT_TRACE_BACKEDGES
+static void emit_call_helper(XtensaJitContext* ctx, XtensaLiteralPool* pool, void* helper_func);
+
 static void emit_trace_backedge(XtensaJitContext* ctx, XtensaLiteralPool* pool,
                                 uint32_t source_bc, uint32_t target_bc, uint8_t opcode)
 {
