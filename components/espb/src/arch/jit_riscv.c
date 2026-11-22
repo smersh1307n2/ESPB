@@ -1474,8 +1474,12 @@ void jit_call_espb_function(EspbInstance* instance, uint32_t local_func_idx, Val
             for (uint8_t i = 0; i < num_args; ++i) debug_args[i] = v_regs[i];
             Value debug_result;
             memset(&debug_result, 0, sizeof(debug_result));
-            EspbResult debug_rc = espb_call_function(instance, temp_exec_ctx, global_func_idx,
-                                                      debug_args, &debug_result);
+            EspbResult debug_rc = ESPB_ERR_INTERNAL;
+            if (!temp_exec_ctx) temp_exec_ctx = init_execution_context();
+            if (temp_exec_ctx) {
+                debug_rc = espb_call_function(instance, temp_exec_ctx, global_func_idx,
+                                               debug_args, &debug_result);
+            }
             printf("[JIT_CALL_INTERP] idx=%u rc=%d ret=%08" PRIx32 "\\n",
                    (unsigned)local_func_idx, (int)debug_rc, (uint32_t)V_I32(debug_result));
         }
