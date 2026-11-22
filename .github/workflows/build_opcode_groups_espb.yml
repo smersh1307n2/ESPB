@@ -245,6 +245,21 @@ jobs:
             --json-out .work/paired/emitted-opcode-audit.json \
             --markdown-out .work/paired/emitted-opcode-audit.md
 
+      - name: Create paired corpus provenance manifest
+        shell: bash
+        env:
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python tools/bytecode_groups/corpus_manifest.py create \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --bitcode-dir "$GITHUB_WORKSPACE/.work/bytecode_groups" \
+            --paired-dir "$GITHUB_WORKSPACE/.work/paired" \
+            --repository "$GITHUB_REPOSITORY" \
+            --branch "ESPB_WORK" \
+            --run-id "$GITHUB_RUN_ID" \
+            --expected-source-commit "$EXPECTED_SOURCE_SHA"
+
       - name: Publish verified paired modules to qemu_seed
         shell: bash
         run: |
@@ -269,9 +284,8 @@ jobs:
         with:
           name: espb-opcode-groups-paired
           path: |
-            .work/paired/*.espb
-            .work/paired/emitted-opcode-audit.json
-            .work/paired/emitted-opcode-audit.md
+            .work/paired/**
+            .work/bytecode_groups/**
           if-no-files-found: error
           retention-days: 14
 
