@@ -277,3 +277,5 @@ jobs:
 # [translate-opcode-corpus] Rerun after updating the translator key-pool contract test.
 
 # [translate-opcode-corpus] Translate latest verified task lifecycle bitcode and publish paired modules.
+
+# [translate-opcode-corpus] Execute only groups listed in paired_translation_groups.txt.
