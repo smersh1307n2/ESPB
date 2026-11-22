@@ -13,7 +13,7 @@ def collect_translator_keys(environ: Mapping[str, str]) -> list[str]:
         if value.strip()
     ]
     names = ("ESPB_API_KEY",) + tuple(
-        f"ESPB_API_KEY_{index}" for index in range(1, 10)
+        f"ESPB_API_KEY_{index}" for index in range(1, 12)
     )
     candidates.extend(
         value.strip() for name in names
