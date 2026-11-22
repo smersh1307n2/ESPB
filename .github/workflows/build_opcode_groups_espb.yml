@@ -376,3 +376,5 @@ jobs:
             .work/bytecode_groups/*.bc
           if-no-files-found: error
           retention-days: 14
+
+# [translate-opcode-corpus] Rerun after updating the translator key-pool contract test.
