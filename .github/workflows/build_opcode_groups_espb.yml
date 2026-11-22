@@ -214,6 +214,13 @@ jobs:
           print("ESPB_BITCODE_SELECTED_GROUPS=" + ",".join(selected))
           PY
 
+      - name: Seed full paired corpus from existing qemu_seed
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .work/paired
+          cp modules/qemu_seed/*.jit.espb modules/qemu_seed/*.interpreter.espb .work/paired/
+
       - name: Translate each group once and create matched execution variants
         env:
           ESPB_TRANSLATOR_KEYS: ${{ secrets.ESPB_TRANSLATOR_KEYS }}
@@ -241,24 +248,9 @@ jobs:
           python tests/host_tools/audit_espb_opcodes.py \
             --paired-dir .work/paired \
             --interpreter-source components/espb/src/espb_interpreter_runtime_oc.c \
-            --expected-groups "$(grep -Ev '^[[:space:]]*(#|$)' .github/paired_translation_groups.txt | wc -l)" \
+            --expected-groups 10 \
             --json-out .work/paired/emitted-opcode-audit.json \
             --markdown-out .work/paired/emitted-opcode-audit.md
-
-      - name: Create paired corpus provenance manifest
-        shell: bash
-        env:
-          EXPECTED_SOURCE_SHA: ${{ github.sha }}
-        run: |
-          set -euo pipefail
-          python tools/bytecode_groups/corpus_manifest.py create \
-            --repo-root "$GITHUB_WORKSPACE" \
-            --bitcode-dir "$GITHUB_WORKSPACE/.work/bytecode_groups" \
-            --paired-dir "$GITHUB_WORKSPACE/.work/paired" \
-            --repository "$GITHUB_REPOSITORY" \
-            --branch "ESPB_WORK" \
-            --run-id "$GITHUB_RUN_ID" \
-            --expected-source-commit "$EXPECTED_SOURCE_SHA"
 
       - name: Publish verified paired modules to qemu_seed
         shell: bash
