@@ -35,6 +35,17 @@
 #include "esp_cache.h"  // from esp_mm
 #include "esp_memory_utils.h"  // for esp_ptr_executable, esp_ptr_in_iram, esp_ptr_in_dram
 
+// Return the virtual-register base explicitly across the native helper boundary.
+// Some C3 helper paths have returned with s2 altered; the generated caller uses
+// this return value to re-establish s2 before executing the next bytecode op.
+static Value *espb_jit_alloca_ex_return_regs(EspbInstance *instance, Value *v_regs,
+                                              uint16_t num_regs_allocated,
+                                              uint8_t rd, uint8_t rs_size, uint8_t align)
+{
+    espb_jit_alloca_ex(instance, v_regs, num_regs_allocated, rd, rs_size, align);
+    return v_regs;
+}
+
 ffi_type* espb_type_to_ffi_type(EspbValueType es_type) {
     switch (es_type) {
         case ESPB_TYPE_VOID: return &ffi_type_void;
@@ -4511,7 +4522,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 // printf("[JIT-COMPILE] ALLOCA at offset %ld: rd=%u, rs=%u, align=%u\n", 
                 //        (long)(pc - bytecode - 3), rd, rs, align_param);
                 
-                // Генерируем вызов helper: void espb_jit_alloca_ex(EspbInstance*, Value* v_regs, u16 num_regs_allocated, u8 rd, u8 rs, u8 align)
+                // Генерируем вызов wrapper: он возвращает v_regs в a0 для явного восстановления s2.
                 // Сохраняем caller-saved t0-t6, ra и базовые s1/s2 в pre-allocated temp area.
                 // Дополнительно сохраняем s1/s2 явно: helper ABI обязан их сохранять,
                 // но на C3 наблюдается повреждение s2 после последовательных ALLOCA.
@@ -4521,7 +4532,6 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 for (int i = 0; i < 7; ++i) emit_sw_phys(&ctx, t_regs[i], i * 4, 8); // sw tX, i*4(s0)
                 emit_sw_phys(&ctx, 1, 28, 8); // sw ra, 28(s0) — jalr в emit_call_helper затирает ra
                 emit_sw_phys(&ctx, 9, 32, 8); // preserve s1 (instance)
-                emit_sw_phys(&ctx, 18, 36, 8); // preserve s2 (v_regs)
 
                 // a0 = instance (s1), a1 = v_regs (s2) — оба callee-saved, не трогаются хелпером
                 emit_addi_phys(&ctx, 10, 9, 0);
@@ -4562,13 +4572,15 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 // a5 = align
                 emit_addi_phys(&ctx, 15, 0, align_param);
                 
-                emit_call_helper(&ctx, (uintptr_t)&espb_jit_alloca_ex);
+                emit_call_helper(&ctx, (uintptr_t)&espb_jit_alloca_ex_return_regs);
+                // Restore the v_regs base from the wrapper's return value before
+                // any subsequent bytecode instruction can access v_regs[] through s2.
+                emit_addi_phys(&ctx, 18, 10, 0); // s2 = a0 (v_regs)
 
                 // Восстанавливаем t0-t6 и ra из temp area (s0+0..s0+31)
                 for (int i = 0; i < 7; ++i) emit_lw_phys(&ctx, t_regs[i], i * 4, 8); // lw tX, i*4(s0)
                 emit_lw_phys(&ctx, 1, 28, 8); // lw ra, 28(s0)
                 emit_lw_phys(&ctx, 9, 32, 8); // restore s1 (instance)
-                emit_lw_phys(&ctx, 18, 36, 8); // restore s2 (v_regs)
                 
                 break;
             }
