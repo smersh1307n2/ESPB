@@ -449,6 +449,10 @@ extern "C" void app_main(void)
             // time to run before taking the heap snapshot; otherwise QEMU
             // reports the task stacks as a false per-module heap leak.
             vTaskDelay(pdMS_TO_TICKS(20));
+            // Deleted FreeRTOS tasks are reclaimed by the idle task. Give it
+            // time to run before taking the heap snapshot; otherwise QEMU
+            // reports the task stacks as a false per-module heap leak.
+            vTaskDelay(pdMS_TO_TICKS(20));
             printf("[ESPB_TEST] bounded_rtos_calls=%s count=3\n", module.name);
         } else {
             const bool core_bench_ok = jit_mode
