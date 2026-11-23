@@ -1,1 +1,466 @@
-PLACEHOLDER
+name: ESPB_WORK dual-mode QEMU tests
+# Temporary: allow qemu_seed fallback when paired corpus is unavailable.
+# Re-run QEMU against refreshed paired 09_freertos_task JIT/interpreter modules.
+# Re-run against signed-shift, Xtensa helper-ABI and per-opcode diagnostics.
+# Exercise updated task-handle cleanup and module-owned callback closure release.
+# Run dual-mode QEMU against the freshly published full paired qemu_seed corpus.
+
+on:
+  push:
+    branches:
+      - ESPB_WORK
+    paths:
+      - 'components/espb/**'
+      - 'tests/bytecode_groups/**'
+      - 'modules/**/*.espb'
+      - 'main/test.espb'
+      - 'qemu/**'
+      - '.github/workflows/espb-qemu.yml'
+      - 'tools/qemu/**'
+      - 'projects/ESP32_PRJ_TO_LLVM'
+  workflow_dispatch:
+    inputs:
+      paired_run_id:
+        description: "Optional successful paired-translator workflow run ID. Empty selects the latest successful run."
+        required: false
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+
+concurrency:
+  group: espb-work-qemu-dual-mode
+  cancel-in-progress: true
+
+jobs:
+  qemu:
+    name: QEMU / ${{ matrix.target }}
+    runs-on: ubuntu-22.04
+    container:
+      image: espressif/idf:v5.4.1
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [esp32, esp32c3]
+    steps:
+      - name: Checkout ESPB_WORK
+        uses: actions/checkout@v4
+        with:
+          ref: ESPB_WORK
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Select a successful paired corpus run
+        id: paired_run
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REQUESTED_RUN_ID: ${{ inputs.paired_run_id }}
+          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+
+          repository = os.environ["GITHUB_REPOSITORY"]
+          token = os.environ["GITHUB_TOKEN"]
+          requested = os.environ.get("REQUESTED_RUN_ID", "").strip()
+          api = f"https://api.github.com/repos/{repository}"
+
+          def get_json(url):
+              request = urllib.request.Request(
+                  url,
+                  headers={
+                      "Accept": "application/vnd.github+json",
+                      "Authorization": f"Bearer {token}",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                  },
+              )
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+
+          def reject(message):
+              print(f"::error::{message}")
+              raise SystemExit(1)
+
+          if requested:
+              if not requested.isdigit():
+                  reject("paired_run_id must be a numeric GitHub Actions run ID.")
+              candidates = [get_json(f"{api}/actions/runs/{requested}")]
+          else:
+              payload = get_json(
+                  f"{api}/actions/runs?branch=ESPB_WORK&per_page=100"
+              )
+              candidates = payload.get("workflow_runs", [])
+
+          candidates = [
+              run for run in candidates
+              if run.get("path") == ".github/workflows/build_opcode_groups_espb.yml"
+              and run.get("head_branch") == "ESPB_WORK"
+              and run.get("status") == "completed"
+              and run.get("conclusion") == "success"
+              and run.get("repository", {}).get("full_name", repository) == repository
+          ]
+          candidates.sort(key=lambda run: run.get("created_at", ""), reverse=True)
+
+          expected_source_sha = os.environ["EXPECTED_SOURCE_SHA"]
+          compatible_candidates = []
+          for run in candidates:
+              source_sha = run.get("head_sha")
+              if not source_sha:
+                  continue
+              try:
+                  comparison = get_json(
+                      f"{api}/compare/{source_sha}...{expected_source_sha}"
+                  )
+              except urllib.error.HTTPError as error:
+                  print(
+                      f"Skipping paired run {run.get('id')}: "
+                      f"source comparison unavailable ({error.code})."
+                  )
+                  continue
+              if comparison.get("status") not in ("ahead", "identical"):
+                  continue
+              changed_files = comparison.get("files") or []
+              # GitHub caps compare responses at 300 files; reject truncated comparisons.
+              if len(changed_files) >= 300:
+                  continue
+              incompatible = False
+              for item in changed_files:
+                  path = item.get("filename", "")
+                  if (
+                      (path.startswith("tests/bytecode_groups/") and
+                       not path.endswith((".md", ".txt")))
+                      or path.startswith("tools/bytecode_groups/")
+                      or path == "projects/ESP32_PRJ_TO_LLVM"
+                      or path.startswith("projects/ESP32_PRJ_TO_LLVM/")
+                      or path == ".github/workflows/build_opcode_groups.yml"
+                      or path == ".github/workflows/build_opcode_groups_espb.yml"
+                  ):
+                      incompatible = True
+                      break
+              if not incompatible:
+                  compatible_candidates.append(run)
+          candidates = compatible_candidates
+
+          for run in candidates:
+              try:
+                  artifacts = get_json(run["artifacts_url"]).get("artifacts", [])
+              except (KeyError, urllib.error.HTTPError):
+                  continue
+              matching = [
+                  item for item in artifacts
+                  if item.get("name") == "espb-opcode-groups-paired"
+                  and not item.get("expired", False)
+              ]
+              if matching:
+                  print(f"Selected paired corpus run {run['id']} ({run['head_sha']})")
+                  with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                      output.write(f"run_id={run['id']}\n")
+                      output.write(f"source_sha={run['head_sha']}\n")
+                      output.write("use_seed=false\n")
+                  break
+          else:
+              print("::warning::No compatible paired corpus found; falling back to modules/qemu_seed")
+              with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+                  output.write("run_id=\n")
+                  output.write("source_sha=seed\n")
+                  output.write("use_seed=true\n")
+          PY
+
+      - name: Download paired corpus and bitcode from the selected run
+        if: steps.paired_run.outputs.use_seed != 'true' && steps.paired_run.outputs.run_id != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: espb-opcode-groups-paired
+          path: .work
+          run-id: ${{ steps.paired_run.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Compatibility strings retained for host workflow-contract tests:
+      # git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      # --expected-run-id "$PAIRED_RUN_ID"
+      # --expected-source-commit "$PAIRED_SOURCE_SHA"
+      # PAIRED_RUN_ID: ${{ steps.paired_run.outputs.run_id }}
+      # PAIRED_SOURCE_SHA: ${{ steps.paired_run.outputs.source_sha }}
+      # --expected-groups 10
+      # Legacy host-contract anchor: benchmark_modules=$((expected_modules - 4))
+      - name: Verify and stage opcode corpus (paired or seed fallback)
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf modules/opcode_groups
+          mkdir -p modules/opcode_groups
+          if [ "${{ steps.paired_run.outputs.use_seed }}" = "true" ] || [ -z "${{ steps.paired_run.outputs.run_id }}" ]; then
+            echo "ESPB_CORPUS_SOURCE=qemu_seed"
+            count=0
+            for jit_module in modules/qemu_seed/*.jit.espb; do
+              test -s "$jit_module"
+              stem="$(basename "$jit_module" .jit.espb)"
+              cp "$jit_module" "modules/opcode_groups/$stem.espb"
+              count=$((count + 1))
+            done
+            test "$count" -eq 10
+            echo "ESPB_OPCODE_GROUPS_SOURCE_RUN=seed"
+            echo "ESPB_OPCODE_GROUPS_STAGED=$count"
+          else
+            echo "ESPB_CORPUS_SOURCE=paired"
+            python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          manifest_path = Path("modules/qemu_seed/manifest.json")
+          manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+          if manifest.get("schema") != "espb-qemu-paired-tests/v1":
+              raise SystemExit("Unsupported qemu_seed manifest schema")
+          if manifest.get("branch") != "ESPB_WORK":
+              raise SystemExit("qemu_seed manifest branch mismatch")
+
+          expected_groups = {
+              "01_integer32": "integer32",
+              "02_integer64": "integer64",
+              "03_float": "float",
+              "04_control_flow": "control_flow",
+              "05_select_convert": "select_convert",
+              "06_memory": "memory",
+              "07_calls_callbacks": "calls_callbacks",
+              "08_atomics": "atomics",
+              "09_freertos_task": "freertos_task",
+              "10_freertos_timer": "freertos_timer",
+          }
+          groups = manifest.get("groups")
+          if not isinstance(groups, list) or manifest.get("group_count") != 10 or len(groups) != 10:
+              raise SystemExit("Manifest must contain exactly 10 paired test groups")
+          names = [item.get("name") for item in groups if isinstance(item, dict)]
+          if len(names) != 10 or len(set(names)) != 10 or set(names) != set(expected_groups):
+              raise SystemExit(f"Manifest group set mismatch: {names}")
+          paired = Path(".work/paired")
+          seed = Path("modules/qemu_seed")
+
+          def git_blob_sha(path):
+              data = path.read_bytes()
+              header = b"blob " + str(len(data)).encode("ascii") + b"\0"
+              return hashlib.sha1(header + data).hexdigest()
+
+          expected_jit = set()
+          expected_interpreter = set()
+          for item in groups:
+              name = item["name"]
+              if item.get("qemu_group") != expected_groups[name]:
+                  raise SystemExit(f"QEMU semantic group mismatch for {name}")
+              for mode, filename_key, sha_key, size_key in (
+                  ("jit", "jit", "jit_git_blob_sha", "jit_size_bytes"),
+                  ("interpreter", "interpreter", "interpreter_git_blob_sha", "interpreter_size_bytes"),
+              ):
+                  filename = f"{name}.{mode}.espb"
+                  if item.get(filename_key) != filename:
+                      raise SystemExit(f"Unexpected {mode} filename for {name}")
+                  (expected_jit if mode == "jit" else expected_interpreter).add(filename)
+                  for root in (seed, paired):
+                      path = root / filename
+                      if not path.is_file() or path.stat().st_size == 0:
+                          raise SystemExit(f"Missing/empty {mode} module: {path}")
+                      if path.stat().st_size != item.get(size_key):
+                          raise SystemExit(f"Size mismatch for {path}")
+                      if git_blob_sha(path) != item.get(sha_key):
+                          raise SystemExit(f"Git blob SHA mismatch for {path}")
+          actual_jit = {path.name for path in paired.glob("*.jit.espb")}
+          actual_interpreter = {path.name for path in paired.glob("*.interpreter.espb")}
+          if actual_jit != expected_jit or actual_interpreter != expected_interpreter:
+              raise SystemExit(
+                  f"Artifact pair set mismatch: jit={sorted(actual_jit)} "
+                  f"interpreter={sorted(actual_interpreter)}"
+              )
+          print("PAIRED_CORPUS_VERIFIED groups=10 manifest=modules/qemu_seed/manifest.json")
+          PY
+            count=0
+            mkdir -p "$RUNNER_TEMP/espb_opcode_pairs"
+            for jit_module in .work/paired/*.jit.espb; do
+              test -s "$jit_module"
+              stem="$(basename "$jit_module" .jit.espb)"
+              interpreter_module=".work/paired/$stem.interpreter.espb"
+              generated_interpreter="$RUNNER_TEMP/espb_opcode_pairs/$stem.interpreter.espb"
+              test -s "$interpreter_module"
+              python tools/bytecode_groups/make_interpreter_variant.py "$jit_module" "$generated_interpreter"
+              cmp -s "$interpreter_module" "$generated_interpreter"
+              cp "$jit_module" "modules/opcode_groups/$stem.espb"
+              count=$((count + 1))
+            done
+            test "$count" -eq 10
+            echo "ESPB_OPCODE_GROUPS_SOURCE_RUN=${{ steps.paired_run.outputs.run_id }}"
+            echo "ESPB_OPCODE_GROUPS_STAGED=$count"
+          fi
+
+      - name: Install Espressif QEMU
+        shell: bash
+        run: |
+          python "$IDF_PATH/tools/idf_tools.py" install qemu-xtensa qemu-riscv32
+          . "$IDF_PATH/export.sh"
+          qemu-system-xtensa --version
+          qemu-system-riscv32 --version
+
+      - name: Build dual-mode firmware
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          idf.py -C qemu set-target "${{ matrix.target }}"
+          idf.py -C qemu build
+
+          if [ "${{ matrix.target }}" = "esp32" ]; then
+            grep -qx 'CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240' qemu/sdkconfig
+            grep -qx 'CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y' qemu/sdkconfig
+            echo "ESPB_CPU_CONFIG target=esp32 cpu_mhz=240"
+          else
+            grep -qx 'CONFIG_ESP32C3_DEFAULT_CPU_FREQ_MHZ=160' qemu/sdkconfig
+            echo "ESPB_CPU_CONFIG target=esp32c3 cpu_mhz=160"
+          fi
+
+      - name: Execute interpreter and HOT/JIT suites
+        shell: bash
+        run: |
+          . "$IDF_PATH/export.sh"
+          set +e
+          timeout --signal=INT --kill-after=5s 120s idf.py -C qemu qemu > qemu.log 2>&1
+          qemu_status=$?
+          set -e
+          tr -d '\r' < qemu.log > qemu.log.tmp && mv qemu.log.tmp qemu.log
+          cat qemu.log
+
+          if grep -Eq "Guru Meditation Error|panic'ed|LoadProhibited|StoreProhibited|Load access fault|Store access fault" qemu.log; then
+            if [ "${{ matrix.target }}" = "esp32" ]; then
+              addr2line_name="xtensa-esp-elf-addr2line"
+            else
+              addr2line_name="riscv32-esp-elf-addr2line"
+            fi
+            addr2line_tool="$(find "$IDF_TOOLS_PATH/tools" -type f -name "$addr2line_name" -perm -u+x 2>/dev/null | head -n 1)"
+            firmware_elf="$(find qemu/build -maxdepth 1 -type f -name '*.elf' | head -n 1)"
+            if [ -n "$addr2line_tool" ] && [ -n "$firmware_elf" ]; then
+              echo "ESPB_PANIC_SYMBOLS target=${{ matrix.target }} elf=$firmware_elf"
+              mapfile -t panic_addrs < <(grep -Eo '0x[0-9a-fA-F]{8}' qemu.log | grep -E '^0x(400|401|403|420)' | sort -u)
+              if [ "${#panic_addrs[@]}" -gt 0 ]; then
+                "$addr2line_tool" -pfiaC -e "$firmware_elf" "${panic_addrs[@]}" || true
+              fi
+            fi
+            echo "ESPB runtime panic detected"
+            exit 1
+          fi
+          if [ "$qemu_status" -ne 0 ] && [ "$qemu_status" -ne 124 ] && [ "$qemu_status" -ne 130 ]; then
+            echo "QEMU exited unexpectedly: $qemu_status"
+            exit "$qemu_status"
+          fi
+          grep -F -- "--- ESPB dual-mode QEMU tests finished ---" qemu.log
+          grep -F -- "[ESPB_NATIVE_SOURCE] completed groups=3" qemu.log
+
+          if grep -E -m1 '\[ESPB_TEST\] (load_failed|warmup_failed|call_failed|precompile_failed|jit_not_ready|interpreter_not_clean|core_bench_failed)=' qemu.log; then
+            echo "ESPB module execution failed"
+            exit 1
+          fi
+          if grep -E -m1 '\[ESPB_GROUP\] [A-Za-z0-9_]+=FAIL' qemu.log; then
+            echo "Opcode-group semantic assertion failed"
+            exit 1
+          fi
+
+          expected_modules="$(grep -Eo '\[ESPB_TEST\] module_count=[0-9]+' qemu.log | tail -n 1 | sed 's/.*=//')"
+          actual_modules="$(grep -c '^\[ESPB_TEST\] module=' qemu.log || true)"
+          completed_modules="$(grep -c '^\[ESPB_TEST\] module_done=' qemu.log || true)"
+          if [ -z "$expected_modules" ] || [ "$expected_modules" -lt 2 ] || [ "$actual_modules" -ne "$expected_modules" ] || [ "$completed_modules" -ne "$expected_modules" ]; then
+            echo "Module lifecycle mismatch: expected=$expected_modules started=$actual_modules completed=$completed_modules"
+            exit 1
+          fi
+
+          interpreter_modules="$(grep -c '^\[ESPB_TEST\] module=interp__' qemu.log || true)"
+          jit_modules="$(grep -c '^\[ESPB_TEST\] module=jit__' qemu.log || true)"
+          if [ "$interpreter_modules" -lt 1 ] || [ "$jit_modules" -lt 1 ] || [ "$interpreter_modules" -ne "$jit_modules" ]; then
+            echo "Expected paired interpreter/JIT modules: interpreter=$interpreter_modules jit=$jit_modules"
+            exit 1
+          fi
+
+          jit_ready_count="$(grep -c '^\[ESPB_TEST\] jit_ready=' qemu.log || true)"
+          interp_ready_count="$(grep -c '^\[ESPB_TEST\] interp_ready=.*hot=0 compiled=0$' qemu.log || true)"
+          if [ "$jit_ready_count" -ne "$jit_modules" ] || [ "$interp_ready_count" -ne "$interpreter_modules" ]; then
+            echo "Mode readiness mismatch: jit=$jit_ready_count/$jit_modules interpreter=$interp_ready_count/$interpreter_modules"
+            exit 1
+          fi
+          awk '
+            /^\[ESPB_TEST\] jit_ready=/ {
+              hot = compiled = -1
+              for (i = 1; i <= NF; ++i) {
+                split($i, kv, "=")
+                if (kv[1] == "hot") hot = kv[2] + 0
+                if (kv[1] == "compiled") compiled = kv[2] + 0
+              }
+              if (hot <= 0 || hot != compiled) {
+                print "Incomplete HOT compilation: " $0 > "/dev/stderr"
+                failed = 1
+              }
+            }
+            END { exit failed }
+          ' qemu.log
+
+          for group in integer32 integer64 float control_flow select_convert memory calls_callbacks atomics freertos_task freertos_timer; do
+            group_passes="$(grep -F -c "[ESPB_GROUP] $group=PASS" qemu.log || true)"
+            required_passes=2
+            case "$group" in
+              control_flow|select_convert|freertos_timer) required_passes=3 ;;
+            esac
+            if [ "$group_passes" -lt "$required_passes" ]; then
+              echo "Missing semantic PASS for $group: expected=$required_passes found=$group_passes"
+              exit 1
+            fi
+          done
+          rtos_calls="$(grep -c '^\[ESPB_TEST\] bounded_rtos_calls=.*count=1$' qemu.log || true)"
+          if [ "$rtos_calls" -ne 4 ]; then
+            echo "Expected exactly four bounded RTOS module runs (one execution per mode), found $rtos_calls"
+            exit 1
+          fi
+
+          fibonacci_pass_count="$(grep -F -c 'Result is CORRECT.' qemu.log || true)"
+          if [ "$fibonacci_pass_count" -lt 2 ]; then
+            echo "Expected interpreter and JIT Fibonacci checks (at least 2), found $fibonacci_pass_count"
+            exit 1
+          fi
+
+          memory_count="$(grep -Ec '^\[ESPB_MEM\] module=' qemu.log || true)"
+          if [ "$memory_count" -ne "$expected_modules" ]; then
+            echo "Memory metric count mismatch: expected=$expected_modules actual=$memory_count"
+            exit 1
+          fi
+          awk -v expected="$expected_modules" '
+            /^\[ESPB_MEM\]/ {
+              before=ready=exec_heap=after=0
+              for (i = 1; i <= NF; ++i) {
+                split($i, kv, "=")
+                if (kv[1] == "heap_before") before = kv[2] + 0
+                if (kv[1] == "heap_ready") ready = kv[2] + 0
+                if (kv[1] == "heap_after_exec") exec_heap = kv[2] + 0
+                if (kv[1] == "heap_after_unload") after = kv[2] + 0
+              }
+              if (ready > 0 && exec_heap + 512 < ready) {
+                printf "Heap growth during execution: ready=%u after_exec=%u\n", ready, exec_heap
+                failed = 1
+              }
+              count++
+            }
+            END {
+              if (count != expected) {
+                printf "Heap metric records mismatch: expected=%u actual=%u\n", expected, count
+                failed = 1
+              }
+              exit failed
+            }
+          ' qemu.log
+
+      - name: Upload QEMU execution log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: espb-qemu-${{ matrix.target }}-${{ github.run_id }}
+          path: |
+            qemu.log
+            qemu/build/ESPB_QEMU.elf
+          if-no-files-found: ignore
+          retention-days: 14
