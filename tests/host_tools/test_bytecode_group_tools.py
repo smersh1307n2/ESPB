@@ -532,7 +532,9 @@ class WorkflowContractTests(unittest.TestCase):
         )
         self.assertNotIn("GLOB_RECURSE ESPB_GENERATED_SOURCE_MODULES", cmake)
         self.assertIn('strncmp(module.name, "jit__", 5) == 0', main)
-        self.assertIn("enum { SAMPLE_COUNT = 1 };", main)
+        self.assertIn("for (size_t execution_index = 0; execution_index < espb_embedded_module_count;", main)
+        self.assertIn('const bool jit_mode = strncmp(module.name, "jit__", 5) == 0;', main)
+        self.assertIn('espb_call_function_sync(handle, "app_main"', main)
 
     def test_qemu_selects_successful_provenance_bound_pair_run(self) -> None:
         workflow = (REPO_ROOT / ".github" / "workflows" / "espb-qemu.yml").read_text(
@@ -633,7 +635,9 @@ class WorkflowContractTests(unittest.TestCase):
 
         self.assertNotIn("jit_skipped_unsupported", harness)
         self.assertNotIn("jit_skipped_count", workflow)
-        self.assertIn('group_passes" -lt 2', workflow)
+        self.assertIn("required_passes=2", workflow)
+        self.assertIn('if [ "$group_passes" -lt "$required_passes" ]; then', workflow)
+        self.assertIn('case "$group" in', workflow)
         self.assertIn("benchmark_modules=$((expected_modules - 4))", workflow)
         self.assertIn("expected_bench_jit=$((jit_modules - 2))", workflow)
         self.assertIn('if [ "$memory_count" -ne "$expected_modules" ]', workflow)
