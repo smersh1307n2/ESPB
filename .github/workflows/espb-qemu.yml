@@ -349,6 +349,17 @@ jobs:
             echo "ESPB runtime panic detected"
             exit 1
           fi
+          # ESP-IDF's QEMU target does not exit the emulator when app_main returns.
+          # The timeout sends SIGINT; QEMU prints "terminating on signal 2" and
+          # aborts with 134 after the firmware has already completed. Accept only
+          # that specific shutdown sequence, never an arbitrary QEMU abort.
+          if [ "$qemu_status" -eq 134 ] &&
+             grep -Fq -- "--- ESPB dual-mode QEMU tests finished ---" qemu.log &&
+             grep -Fq -- "Returned from app_main()" qemu.log &&
+             grep -Fq -- "terminating on signal 2" qemu.log; then
+            echo "QEMU shutdown after successful app_main completion (timeout SIGINT)"
+            qemu_status=0
+          fi
           if [ "$qemu_status" -ne 0 ] && [ "$qemu_status" -ne 124 ] && [ "$qemu_status" -ne 130 ]; then
             echo "QEMU exited unexpectedly: $qemu_status"
             exit "$qemu_status"
