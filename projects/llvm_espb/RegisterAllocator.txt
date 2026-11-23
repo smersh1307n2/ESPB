@@ -1,0 +1,351 @@
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using LLVMSharp.Interop;
+
+namespace ESPB_Runtime
+{
+    #region Helper Classes for Allocation
+    
+    /// <summary>
+    /// Представляет "время жизни" SSA-значения в виде интервала инструкций.
+    /// </summary>
+    public class LiveInterval
+    {
+        public LLVMValueRef Value { get; } // SSA-значение
+        public int Start { get; set; }     // Индекс инструкции определения (def)
+        public int End { get; set; }       // Индекс инструкции последнего использования (last use)
+        
+        // Результаты аллокации
+        public bool IsSpilled { get; set; } = false;
+        public byte AssignedRegister { get; set; }
+        public int SpillSlotOffset { get; set; }
+
+        public LiveInterval(LLVMValueRef value, int start)
+        {
+            Value = value;
+            Start = start;
+            End = start; 
+        }
+        
+        public override string ToString() => $"[Start: {Start}, End: {End}] {(IsSpilled ? $"Spilled@{SpillSlotOffset}" : $"Reg: R{AssignedRegister}")} for {Value.Name}";
+    }
+
+    /// <summary>
+    /// Базовый класс для местоположения значения после аллокации.
+    /// </summary>
+    public abstract class AllocationLocation { }
+
+    public class RegisterLocation : AllocationLocation
+    {
+        public byte Register { get; }
+        public RegisterLocation(byte register) { Register = register; }
+    }
+
+    public class SpillSlotLocation : AllocationLocation
+    {
+        public int Offset { get; }
+        public uint Size { get; }
+        public SpillSlotLocation(int offset, uint size) { Offset = offset; Size = size; }
+    }
+
+    /// <summary>
+    /// Содержит полные результаты работы аллокатора для одной функции.
+    /// </summary>
+    public class AllocationResult
+    {
+        public Dictionary<LLVMValueRef, AllocationLocation> Locations { get; } = new Dictionary<LLVMValueRef, AllocationLocation>();
+        public int TotalSpillSlotSize { get; set; }
+        public int PeakLiveRegisters { get; set; }
+        public byte MaxRegisterIndex { get; set; }
+    }
+    
+    #endregion
+
+    /// <summary>
+    /// Реализует production-ready алгоритм линейного сканирования для аллокации регистров,
+    /// включая полный dataflow-анализ времени жизни, обработку PHI-узлов и spilling.
+    /// </summary>
+    public class LinearScanAllocator
+    {
+        // === REGISTER ALLOCATION CONFIGURATION (shared with LLVMTranslator) ===
+        // NOTE: Keep these constants in sync with LLVMTranslator.cs
+        private const int TOTAL_VIRTUAL_REGS = 255;                        // Total registers per function - MAXIMUM POSSIBLE (byte limit)
+        private const int ALLOCA_REGS_START = 0;                           // ALLOCA and system registers start (fixed)
+        private const int ALLOCA_REGS_END = 15;                            // ALLOCA and system registers end (fixed)
+        private const int LINEARSCAN_REGS_START = 16;                      // LinearScan registers start (fixed)
+        // CORRECTED: Temporary registers INSIDE the LinearScan range, not outside runtime bounds
+        private const int TEMP_REGS_COUNT = 32;                           // Number of temporary registers (optimized for memory efficiency)
+        private const int TEMP_REGS_START = LINEARSCAN_REGS_START;        // Temporary registers start (R16)
+        private const int TEMP_REGS_END = 31; // Увеличим пул временных регистров для большей безопасности
+        private const int LINEARSCAN_REGS_END = TOTAL_VIRTUAL_REGS - 1;   // LinearScan registers end (R254) - uses remaining space
+        
+
+        private Stack<byte> _free32BitRegisters = new Stack<byte>();
+        private Stack<byte> _free64BitRegisters = new Stack<byte>();
+        
+        private readonly LLVMValueRef _function;
+        private readonly LLVMTargetDataRef _targetData;
+        
+        private readonly Dictionary<LLVMValueRef, int> _instrIndices = new Dictionary<LLVMValueRef, int>();
+        private readonly Dictionary<LLVMValueRef, LiveInterval> _intervals = new Dictionary<LLVMValueRef, LiveInterval>();
+        private readonly Dictionary<LLVMBasicBlockRef, List<LLVMValueRef>> _phiDefs = new Dictionary<LLVMBasicBlockRef, List<LLVMValueRef>>();
+
+        private readonly TextWriter _logger;
+
+        public LinearScanAllocator(LLVMValueRef function, LLVMTargetDataRef targetData, FunctionHints? hints, TextWriter logger)
+        {
+            _function = function;
+            _targetData = targetData;
+            _logger = logger;
+            // TODO: Интеграция с hints для `max_regs`
+        }
+
+        public unsafe AllocationResult Allocate()
+        {
+            BuildLiveIntervals();
+            return PerformLinearScan();
+        }
+
+        /// <summary>
+        /// Этап 1: Построение интервалов времени жизни с учетом control flow.
+        /// </summary>
+        private unsafe void BuildLiveIntervals()
+        {
+            int instructionIndex = 0;
+            var blockOrder = new List<LLVMBasicBlockRef>();
+
+            for (uint i = 0; i < LLVM.CountParams(_function); i++)
+            {
+                var param = LLVM.GetParam(_function, i);
+                _intervals[param] = new LiveInterval(param, 0);
+            }
+
+            for (LLVMBasicBlockRef bb = LLVM.GetFirstBasicBlock(_function); bb.Handle != IntPtr.Zero; bb = LLVM.GetNextBasicBlock(bb))
+            {
+                blockOrder.Add(bb);
+                for (LLVMValueRef instr = LLVM.GetFirstInstruction(bb); instr.Handle != IntPtr.Zero; instr = LLVM.GetNextInstruction(instr))
+                {
+                    _instrIndices[instr] = instructionIndex;
+
+                    if (instr.TypeOf.Kind != LLVMTypeKind.LLVMVoidTypeKind)
+                    {
+                        _intervals[instr] = new LiveInterval(instr, instructionIndex);
+                        
+                        // **Микро-улучшение #1 (реализация): Заполняем карту PHI-определений.**
+                        if (LLVM.GetInstructionOpcode(instr) == LLVMOpcode.LLVMPHI)
+                        {
+                            if (!_phiDefs.ContainsKey(bb)) _phiDefs[bb] = new List<LLVMValueRef>();
+                            _phiDefs[bb].Add(instr);
+                        }
+                    }
+
+                    for (int i = 0; i < LLVM.GetNumOperands(instr); i++)
+                    {
+                        LLVMValueRef operand = LLVM.GetOperand(instr, (uint)i);
+                        if (operand.IsABasicBlock == null && _intervals.TryGetValue(operand, out var interval))
+                        {
+                            interval.End = Math.Max(interval.End, instructionIndex);
+                        }
+                    }
+                    instructionIndex++;
+                }
+            }
+            
+            var liveIn = new Dictionary<LLVMBasicBlockRef, HashSet<LLVMValueRef>>();
+            bool changed = true;
+            
+            // **Финальное улучшение: Защита от бесконечного цикла (fixed-point safety)**
+            int iterations = 0;
+            while(changed && iterations++ < 100)
+            {
+                changed = false;
+                foreach(var bb in blockOrder.AsEnumerable().Reverse())
+                {
+                    var liveOut = new HashSet<LLVMValueRef>();
+                    LLVMValueRef terminator = LLVM.GetLastInstruction(bb);
+                    if (terminator.Handle == IntPtr.Zero) continue;
+
+                    for (int i = 0; i < LLVM.GetNumSuccessors(terminator); i++)
+                    {
+                        var successor = LLVM.GetSuccessor(terminator, (uint)i);
+                        if (liveIn.TryGetValue(successor, out var succLiveIn))
+                        {
+                            liveOut.UnionWith(succLiveIn);
+                        }
+                    }
+
+                    var currentLiveIn = new HashSet<LLVMValueRef>(liveOut);
+                    for(LLVMValueRef instr = LLVM.GetLastInstruction(bb); instr.Handle != IntPtr.Zero; instr = LLVM.GetPreviousInstruction(instr))
+                    {
+                        if (instr.TypeOf.Kind != LLVMTypeKind.LLVMVoidTypeKind) currentLiveIn.Remove(instr);
+                        for(int i=0; i < LLVM.GetNumOperands(instr); ++i)
+                        {
+                            LLVMValueRef op = LLVM.GetOperand(instr, (uint)i);
+                            if (op.IsABasicBlock == null && _intervals.ContainsKey(op)) currentLiveIn.Add(op);
+                        }
+                    }
+                    
+                    if(!liveIn.TryGetValue(bb, out var oldLiveIn) || !oldLiveIn.SetEquals(currentLiveIn))
+                    {
+                        liveIn[bb] = currentLiveIn;
+                        changed = true;
+                    }
+
+                    // **Микро-улучшение #2: Безопасная обработка пустых блоков**
+                    LLVMValueRef lastInstr = LLVM.GetLastInstruction(bb);
+                    int blockEndIndex = lastInstr.Handle != IntPtr.Zero && _instrIndices.TryGetValue(lastInstr, out var idx) ? idx : (bb != blockOrder.First() ? _instrIndices[LLVM.GetFirstInstruction(bb)] -1 : 0);
+                    
+                    foreach(var liveValue in liveOut)
+                    {
+                        if(_intervals.TryGetValue(liveValue, out var interval))
+                        {
+                            interval.End = Math.Max(interval.End, blockEndIndex);
+                            
+                            // **Микро-улучшение #3: Продление жизни для `volatile` в обратном проходе**
+                            if (IsVolatileInstruction(interval.Value))
+                            {
+                                interval.End = Math.Max(interval.End, blockEndIndex + 5);
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if (iterations >= 100)
+            {
+                _logger.WriteLine($"[Allocator] WARN: Liveness analysis converged slowly ({iterations} iterations).");
+            }
+        }
+        
+        private unsafe AllocationResult PerformLinearScan()
+        {
+            var result = new AllocationResult();
+            var sortedIntervals = _intervals.Values.OrderBy(i => i.Start).ToList();
+            var active = new List<LiveInterval>(); // FIXED: Use List instead of SortedList to avoid duplicate key issues
+            // CORRECTED: LinearScan should NOT use temporary registers R16-R23, start from R24
+            // ИСПРАВЛЕНО: LinearScan не должен использовать временные регистры, начинаем после них
+            var effectiveLinearScanStart = TEMP_REGS_END + 1; // R32
+            int poolSize = (LINEARSCAN_REGS_END - effectiveLinearScanStart + 1) / 2;
+            _free32BitRegisters = new Stack<byte>(Enumerable.Range(effectiveLinearScanStart, poolSize).Select(i => (byte)i).Reverse());
+            _free64BitRegisters = new Stack<byte>(Enumerable.Range(effectiveLinearScanStart + poolSize, poolSize).Select(i => (byte)i).Reverse());
+            
+            int currentSpillOffset = 0;
+
+            foreach (var current in sortedIntervals)
+            {
+                for (int i = active.Count - 1; i >= 0; i--)
+                {
+                    if (active[i].End + 1 < current.Start)
+                    {
+                        var ended = active[i];
+                        if (!ended.IsSpilled)
+                        {
+                            if (Is64Bit(ended.Value)) _free64BitRegisters.Push(ended.AssignedRegister);
+                            else _free32BitRegisters.Push(ended.AssignedRegister);
+                        }
+                        active.RemoveAt(i);
+                    }
+                }
+                
+                result.PeakLiveRegisters = Math.Max(result.PeakLiveRegisters, active.Count + 1);
+
+                bool is64bit = Is64Bit(current.Value);
+                var pool = is64bit ? _free64BitRegisters : _free32BitRegisters;
+
+                if (pool.Count == 0)
+                {
+                     // Spill logic remains the same for simplicity, but could be improved
+                     // to prefer spilling from the same-type pool.
+                    var spillVictim = active.OrderByDescending(i => i.End).First();
+                    if (spillVictim.End > current.End)
+                    {
+                        current.AssignedRegister = spillVictim.AssignedRegister;
+                        active.Remove(spillVictim);
+                        
+                        uint size = (uint)LLVM.StoreSizeOfType(_targetData, spillVictim.Value.TypeOf);
+                        int alignment = GetAlignment(spillVictim.Value.TypeOf);
+                        currentSpillOffset = (currentSpillOffset + alignment - 1) & ~(alignment - 1);
+                        
+                        spillVictim.IsSpilled = true;
+                        spillVictim.SpillSlotOffset = currentSpillOffset;
+                        currentSpillOffset += (int)size;
+                        
+                        active.Add(current);
+                    }
+                    else
+                    {
+                        uint size = (uint)LLVM.StoreSizeOfType(_targetData, current.Value.TypeOf);
+                        int alignment = GetAlignment(current.Value.TypeOf);
+                        currentSpillOffset = (currentSpillOffset + alignment - 1) & ~(alignment - 1);
+                        
+                        current.IsSpilled = true;
+                        current.SpillSlotOffset = currentSpillOffset;
+                        currentSpillOffset += (int)size;
+                    }
+                }
+                else
+                {
+                    current.AssignedRegister = pool.Pop();
+                    active.Add(current);
+                }
+            }
+
+            result.TotalSpillSlotSize = currentSpillOffset;
+            byte maxReg = 0;
+            foreach (var interval in _intervals.Values)
+            {
+                if (interval.IsSpilled)
+                {
+                    uint size = (uint)LLVM.StoreSizeOfType(_targetData, interval.Value.TypeOf);
+                    result.Locations[interval.Value] = new SpillSlotLocation(interval.SpillSlotOffset, size);
+                }
+                else
+                {
+                    result.Locations[interval.Value] = new RegisterLocation(interval.AssignedRegister);
+                    maxReg = Math.Max(maxReg, interval.AssignedRegister);
+                }
+            }
+            result.MaxRegisterIndex = maxReg;
+            return result;
+        }
+
+        private unsafe bool IsVolatileInstruction(LLVMValueRef instr)
+        {
+            var opcode = LLVM.GetInstructionOpcode(instr);
+            if (opcode != LLVMOpcode.LLVMLoad && opcode != LLVMOpcode.LLVMStore) return false;
+            
+            try
+            {
+                return LLVM.GetVolatile(instr) != 0;
+            }
+            catch
+            {
+                return true; 
+            }
+        }
+
+        private int GetAlignment(LLVMTypeRef type)
+        {
+            switch (type.Kind)
+            {
+                case LLVMTypeKind.LLVMIntegerTypeKind:
+                    return (int)((type.IntWidth + 7) / 8);
+                case LLVMTypeKind.LLVMPointerTypeKind: return 4;
+                case LLVMTypeKind.LLVMFloatTypeKind: return 4;
+                case LLVMTypeKind.LLVMDoubleTypeKind: return 8;
+                case LLVMTypeKind.LLVMVectorTypeKind: return 16;
+                default: return 4;
+            }
+                }
+                private bool Is64Bit(LLVMValueRef value)
+                {
+                    var type = value.TypeOf;
+                    if (type.Kind == LLVMTypeKind.LLVMIntegerTypeKind)
+                    {
+                        return type.IntWidth == 64;
+                    }
+                    return type.Kind == LLVMTypeKind.LLVMDoubleTypeKind;
+                }
+            }
+        }

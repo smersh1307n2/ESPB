@@ -1,0 +1,248 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Text;
+
+namespace ESPB_Runtime
+{
+    /// <summary>
+    /// Улучшенная версия Program.cs с поддержкой детального анализа параметров
+    /// </summary>
+    class ProgramImproved
+    {
+        static void Main(string[] args)
+        {
+            _logger.WriteLine("=== ESPB TRANSLATOR WITH IMPROVED PARAMETER ANALYSIS ===");
+            _logger.WriteLine("Version: 2.0 with IN/OUT/INOUT detection and immeta section generation");
+            _logger.WriteLine();
+
+            bool hexOutput = false;
+            bool testMode = false;
+            bool verboseAnalysis = false;
+            List<string> fileArgs = new List<string>();
+            List<string> testFunctions = new List<string>();
+            
+            // Расширенная обработка аргументов командной строки
+            for (int i = 0; i < args.Length; i++)
+            {
+                string arg = args[i];
+                if (arg.StartsWith("-"))
+                {
+                    switch (arg.ToLower())
+                    {
+                        case "-h":
+                        case "--hex":
+                            hexOutput = true;
+                            _logger.WriteLine("Option: Hex output enabled");
+                            break;
+                            
+                        case "-t":
+                        case "--test":
+                            testMode = true;
+                            _logger.WriteLine("Option: Test mode enabled");
+                            break;
+                            
+                        case "-v":
+                        case "--verbose":
+                            verboseAnalysis = true;
+                            _logger.WriteLine("Option: Verbose analysis enabled");
+                            break;
+                            
+                        case "-f":
+                        case "--function":
+                            if (i + 1 < args.Length)
+                            {
+                                testFunctions.Add(args[++i]);
+                                _logger.WriteLine($"Option: Will test function '{testFunctions.Last()}'");
+                            }
+                            break;
+                            
+                        case "--help":
+                            PrintUsage();
+                            return;
+                            
+                        default:
+                            _logger.WriteLine($"Warning: Unknown option '{arg}'");
+                            break;
+                    }
+                }
+                else
+                {
+                    fileArgs.Add(arg);
+                }
+            }
+            
+            // Проверка аргументов
+            if (testMode && testFunctions.Count > 0)
+            {
+                if (fileArgs.Count < 1)
+                {
+                    Console.Error.WriteLine("Error: Test mode requires input .bc file");
+                    PrintUsage();
+                    return;
+                }
+                
+                // Режим тестирования конкретных функций
+                RunFunctionAnalysisTest(fileArgs[0], testFunctions.ToArray());
+                return;
+            }
+            
+            if (fileArgs.Count < 2)
+            {
+                Console.Error.WriteLine("Error: Not enough arguments");
+                PrintUsage();
+                return;
+            }
+            
+            string inputFile = fileArgs[0];
+            string outputFile = fileArgs[1];
+            
+            // Проверка существования входного файла
+            if (!File.Exists(inputFile))
+            {
+                Console.Error.WriteLine($"Error: Input file '{inputFile}' not found");
+                return;
+            }
+            
+            _logger.WriteLine($"Input file: {inputFile}");
+            _logger.WriteLine($"Output file: {outputFile}");
+            _logger.WriteLine();
+
+            // Создаем экземпляр транслятора
+            var translator = new LLVMTranslator();
+            
+            bool success;
+            
+            if (verboseAnalysis)
+            {
+                _logger.WriteLine("Using improved analysis with detailed logging...");
+                success = translator.TranslateFileWithImprovedAnalysis(inputFile, outputFile);
+            }
+            else
+            {
+                _logger.WriteLine("Using standard translation...");
+                success = translator.TranslateFile(inputFile, outputFile);
+            }
+
+            if (success)
+            {
+                _logger.WriteLine();
+                _logger.WriteLine("=== TRANSLATION SUCCESSFUL ===");
+                _logger.WriteLine($"ESPB file created: {outputFile}");
+                
+                // Выводим информацию о файле
+                var fileInfo = new FileInfo(outputFile);
+                _logger.WriteLine($"File size: {fileInfo.Length:N0} bytes");
+                
+                // Если указана опция -h, выводим шестнадцатеричный дамп
+                if (hexOutput)
+                {
+                    PrintHexDump(outputFile);
+                }
+                
+                _logger.WriteLine();
+                _logger.WriteLine("Translation completed successfully!");
+            }
+            else
+            {
+                Console.Error.WriteLine();
+                Console.Error.WriteLine("=== TRANSLATION FAILED ===");
+                Console.Error.WriteLine("Check the error messages above for details.");
+                Environment.Exit(1);
+            }
+        }
+        
+        /// <summary>
+        /// Запускает тест анализа конкретных функций
+        /// </summary>
+        static void RunFunctionAnalysisTest(string bcFile, string[] functionNames)
+        {
+            _logger.WriteLine();
+            _logger.WriteLine("=== FUNCTION ANALYSIS TEST MODE ===");
+            _logger.WriteLine($"Analyzing {functionNames.Length} function(s) in '{bcFile}'");
+            _logger.WriteLine();
+            
+            var translator = new LLVMTranslator();
+            translator.TestSpecificFunctionAnalysis(bcFile, functionNames);
+            
+            _logger.WriteLine();
+            _logger.WriteLine("=== FUNCTION ANALYSIS TEST COMPLETE ===");
+        }
+        
+        /// <summary>
+        /// Выводит справку по использованию
+        /// </summary>
+        static void PrintUsage()
+        {
+            _logger.WriteLine("USAGE:");
+            _logger.WriteLine("  LLVM_ESPB [OPTIONS] <input.bc> <output.espb>");
+            _logger.WriteLine("  LLVM_ESPB [OPTIONS] -t -f <function> <input.bc>");
+            _logger.WriteLine();
+            _logger.WriteLine("OPTIONS:");
+            _logger.WriteLine("  -h, --hex              Output hex dump of generated ESPB file");
+            _logger.WriteLine("  -v, --verbose          Enable verbose analysis with detailed logging");
+            _logger.WriteLine("  -t, --test             Enable test mode for specific function analysis");
+            _logger.WriteLine("  -f, --function <name>  Specify function to analyze in test mode (can be repeated)");
+            _logger.WriteLine("  --help                 Show this help message");
+            _logger.WriteLine();
+            _logger.WriteLine("EXAMPLES:");
+            _logger.WriteLine("  LLVM_ESPB input.bc output.espb");
+            _logger.WriteLine("  LLVM_ESPB -h -v input.bc output.espb");
+            _logger.WriteLine("  LLVM_ESPB -t -f vTaskDelay -f printf input.bc");
+            _logger.WriteLine();
+            _logger.WriteLine("FEATURES:");
+            _logger.WriteLine("  - Automatic IN/OUT/INOUT parameter direction detection");
+            _logger.WriteLine("  - LLVM attribute analysis (readonly, writeonly, byval, sret)");
+            _logger.WriteLine("  - Heuristic analysis based on function and parameter names");
+            _logger.WriteLine("  - Buffer size detection (constant or from other parameters)");
+            _logger.WriteLine("  - immeta section generation for FFI marshalling metadata");
+            _logger.WriteLine("  - Detailed logging of analysis decisions");
+        }
+        
+        /// <summary>
+        /// Выводит содержимое файла в шестнадцатеричном формате
+        /// </summary>
+        static void PrintHexDump(string filePath)
+        {
+            try
+            {
+                byte[] fileBytes = File.ReadAllBytes(filePath);
+                _logger.WriteLine();
+                _logger.WriteLine("=== HEX DUMP OF GENERATED ESPB FILE ===");
+                _logger.WriteLine($"File: {filePath}");
+                _logger.WriteLine($"Size: {fileBytes.Length} bytes");
+                _logger.WriteLine();
+                
+                const int bytesPerLine = 16;
+                for (int i = 0; i < fileBytes.Length; i += bytesPerLine)
+                {
+                    // Адрес
+                    Console.Write($"{i:X8}: ");
+                    
+                    // Шестнадцатеричные значения
+                    string hexLine = "";
+                    string asciiLine = "";
+                    
+                    for (int j = 0; j < bytesPerLine && (i + j) < fileBytes.Length; j++)
+                    {
+                        byte b = fileBytes[i + j];
+                        hexLine += $"{b:X2} ";
+                        asciiLine += (b >= 32 && b <= 126) ? (char)b : '.';
+                    }
+                    
+                    // Выравнивание для ASCII части
+                    Console.Write($"{hexLine,-48} |{asciiLine}|");
+                    _logger.WriteLine();
+                }
+                
+                _logger.WriteLine();
+                _logger.WriteLine("=== END HEX DUMP ===");
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine($"Error generating hex dump: {ex.Message}");
+            }
+        }
+    }
+}

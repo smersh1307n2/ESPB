@@ -1,0 +1,109 @@
+LLVM_ESPB (ESPB LLVM Translator)
+==============================
+
+Назначение
+---------
+Утилита `LLVM_ESPB.dll` переводит LLVM bitcode (`.bc`) в бинарный модуль ESPB (`.espb`).
+
+Запуск
+-----
+Запуск через dotnet:
+
+  dotnet llvm_espb/bin/Debug/net9.0/LLVM_ESPB.dll [OPTIONS] <input.bc> <output.espb>
+
+Основные опции
+-------------
+-h
+  Включает hex-дамп сгенерированного ESPB файла (и также включает improved-analysis).
+
+-v, --improved
+  Включает улучшенный анализ параметров (improved parameter analysis).
+
+--no-compaction
+  Отключает компактацию регистров (Register compaction).
+
+--no-peephole
+  Отключает peephole-оптимизации байткода (в основном удаление/упрощение MOV).
+
+--no-llvm-opt
+  Отключает LLVM IR оптимизации (pipeline: mem2reg/instcombine/sroa/...).
+
+--no-call-result-opt
+  Отключает оптимизации результата вызова (forwarding/pre-copy через ABI return register R0).
+  Полезно для бисекции проблем, когда результат меняется из-за оптимизаций.
+
+--no-alloca-opt
+  Отключает оптимизацию ALLOCA-OPT (продвижение скалярных alloca в виртуальные регистры).
+  При включённой оптимизации (по умолчанию) транслятор кэширует значения локальных переменных
+  в регистрах вместо генерации реальных LOAD/STORE. Это ускоряет выполнение, но может
+  вызвать проблемы если адрес переменной "утекает" (сохраняется в указатель или передаётся
+  в функцию). Транслятор автоматически детектирует такие случаи (address-taken) и исключает
+  соответствующие alloca из оптимизации, но при подозрении на ошибку оптимизацию можно
+  отключить полностью этим флагом.
+
+--patch-regs
+  Включает экспериментальный patching регистров.
+
+-hi <file>
+  Путь к hints-файлу (ручное управление FFI/metadata).
+
+Fast-таблицы (индексные импорты)
+-------------------------------
+Эти параметры позволяют транслятору кодировать импорты функций не по имени, а по индексу.
+Транслятор читает `.sym` файлы (в формате ESPB_SYM/ESPB_SYM_OPT) и строит map:
+  имя_функции -> symbol_index
+
+--custom-fast <path/to/custom_fast.sym>
+  Подключает fast-таблицу custom (приоритет №1). Если импортируемая функция найдена в этом файле,
+  транслятор выставит флаги INDEXED|FAST_CUSTOM и запишет symbol_index.
+
+--idf-fast <path/to/idf_fast.sym>
+  Подключает fast-таблицу idf (приоритет №2). Если функция не найдена в custom_fast, но найдена здесь,
+  транслятор выставит флаги INDEXED|FAST_IDF и запишет symbol_index.
+
+Если функция не найдена ни в custom_fast, ни в idf_fast (или эти файлы не переданы),
+импорт будет записан как обычный (named) — по имени.
+
+Примеры
+-------
+1) Обычный запуск (без fast-таблиц):
+
+  dotnet llvm_espb/bin/Debug/net9.0/LLVM_ESPB.dll -v llvm_espb/linked_module.bc main/test.espb
+
+2) Запуск с fast-таблицами (custom_fast + idf_fast):
+
+  dotnet llvm_espb/bin/Debug/net9.0/LLVM_ESPB.dll -v \
+    --custom-fast main/symbols/custom_fast.sym \
+    --idf-fast components/espb/symbols/idf_fast.sym \
+    llvm_espb/linked_module.bc main/test.espb
+
+3) Запуск с hints-файлом:
+
+  dotnet llvm_espb/bin/Debug/net9.0/LLVM_ESPB.dll -v -hi llvm_espb/linked_module.hints \
+    llvm_espb/linked_module.bc main/test.espb
+
+4) Бисекция/отладка: отключение оптимизаций результата вызова (call-result opt):
+
+  dotnet llvm_espb/bin/Debug/net9.0/LLVM_ESPB.dll -h --no-call-result-opt --patch-regs \
+    --custom-fast main/symbols/custom_fast.sym \
+    --idf-fast components/espb/symbols/idf_fast.sym \
+    llvm_espb/linked_module.bc main/test.espb
+
+5) Отключение ALLOCA-OPT (для отладки проблем с указателями на локальные переменные):
+
+  dotnet llvm_espb/bin/Debug/net9.0/LLVM_ESPB.dll -h --no-alloca-opt --patch-regs \
+    --custom-fast main/symbols/custom_fast.sym \
+    --idf-fast components/espb/symbols/idf_fast.sym \
+    llvm_espb/linked_module.bc main/test.espb
+
+Примечания
+----------
+- Формат `.sym` поддерживает строки:
+    ESPB_SYM("name", expr)
+    ESPB_SYM_OPT(CONFIG_FLAG, "name", expr)
+  Транслятор извлекает только имя ("name") и порядок строк (индекс). Выражение `expr` не анализируется.
+
+- Приоритет выбора таблицы:
+    1) custom_fast
+    2) idf_fast
+    3) named (по имени)

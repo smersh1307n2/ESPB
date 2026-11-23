@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+  </PropertyGroup>
+
+  <!-- Для Release сборки: отключаем trimming -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <PublishTrimmed>false</PublishTrimmed>
+    <TrimMode>NoTrim</TrimMode>
+  </PropertyGroup>
+
+  <!-- Разрешаем доступ к internal типам из веб-проекта -->
+  <ItemGroup>
+    <InternalsVisibleTo Include="ESPB_WEB_APP" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="ClangSharp.Interop" Version="20.1.2.1" />
+    <PackageReference Include="libLLVM" Version="20.1.2" />
+    <PackageReference Include="libLLVM.runtime.win-x64" Version="20.1.2" />
+    <PackageReference Include="LLVMSharp" Version="20.1.2" />
+  </ItemGroup>
+
+</Project>
