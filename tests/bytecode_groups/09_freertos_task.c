@@ -23,7 +23,7 @@ JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
     /* Follow ESP32_PRJ_TO_LLVM/main/all_tests.c:test_second():
        create with an output TaskHandle_t, then delete using that handle. */
     TaskHandle_t counter_task_handle = NULL;
-    BaseType_t created = xTaskCreate(&counter_task, "counter_task", 4048,
+    BaseType_t created = xTaskCreate(&counter_task, "counter_task", 16384,
                                      (void *)0xAABBCCDDu, 5,
                                      &counter_task_handle);
 
