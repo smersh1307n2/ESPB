@@ -638,8 +638,10 @@ class WorkflowContractTests(unittest.TestCase):
         self.assertIn("required_passes=2", workflow)
         self.assertIn('if [ "$group_passes" -lt "$required_passes" ]; then', workflow)
         self.assertIn('case "$group" in', workflow)
-        self.assertIn("benchmark_modules=$((expected_modules - 4))", workflow)
-        self.assertIn("expected_bench_jit=$((jit_modules - 2))", workflow)
+        self.assertIn('jit_ready_count="$(grep -c', workflow)
+        self.assertIn('interp_ready_count="$(grep -c', workflow)
+        self.assertIn('if [ "$jit_ready_count" -ne "$jit_modules" ]', workflow)
+        self.assertIn('if [ "$interp_ready_count" -ne "$interpreter_modules" ]', workflow)
         self.assertIn('if [ "$memory_count" -ne "$expected_modules" ]', workflow)
         self.assertIn('git config --global --add safe.directory "$GITHUB_WORKSPACE"', workflow)
 
