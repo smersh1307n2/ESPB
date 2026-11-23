@@ -1,2 +1,4 @@
 # One group stem per line. Only these groups consume paired translator calls.
-09_freertos_task
+04_control_flow
+05_select_convert
+10_freertos_timer
