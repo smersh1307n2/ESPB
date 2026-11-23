@@ -1769,6 +1769,7 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                      uint8_t rs_alloc_size_reg = READ_U8();
                      uint8_t align = READ_U8();
 
+                     ESP_LOGD(TAG, "ALLOCA context: func=%u max_reg=%u vregs=%u pc_offset=%ld rd=R%u size=R%u", (unsigned)local_func_idx, (unsigned)max_reg_used, (unsigned)num_virtual_regs, (long)(pc - instructions_ptr), (unsigned)rd_alloc, (unsigned)rs_alloc_size_reg);
                      DEBUG_CHECK_REG(rs_alloc_size_reg, max_reg_used, "HEAP_ALLOC");
                      if (0) {
                          ESP_LOGE(TAG, "ALLOCA - Size register R%u out of bounds", rs_alloc_size_reg);
