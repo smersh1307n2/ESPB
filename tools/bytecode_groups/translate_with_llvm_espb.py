@@ -194,11 +194,19 @@ def main() -> int:
     manifest = build_seed_manifest(args.output_dir)
     (args.output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
-    audit = audit_directory(args.output_dir, expected_groups=len(selected))
+    interp_src = ROOT / "components" / "espb" / "src" / "espb_interpreter_runtime_oc.c"
+    audit = audit_directory(
+        args.output_dir,
+        interpreter_source=interp_src if interp_src.is_file() else None,
+        expected_groups=len(selected),
+    )
     if args.audit_json:
         args.audit_json.parent.mkdir(parents=True, exist_ok=True)
         args.audit_json.write_text(json.dumps(audit, indent=2) + "\n", encoding="utf-8")
-    print(f"OPCODE_AUDIT_PASSED modules={audit['module_count']} total_instr={audit['total_instructions']}", flush=True)
+    print(
+        f"OPCODE_AUDIT_PASSED groups={audit['group_count']} total_instr={audit['primary_instruction_count']}",
+        flush=True,
+    )
 
     if args.update_qemu_seed:
         args.update_qemu_seed.mkdir(parents=True, exist_ok=True)
