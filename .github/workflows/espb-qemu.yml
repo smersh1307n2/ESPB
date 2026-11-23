@@ -177,7 +177,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: espb-llvm-translated-paired
-          path: .work
+          path: .work/paired
           run-id: ${{ steps.paired_run.outputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
@@ -214,7 +214,7 @@ jobs:
           import json
           from pathlib import Path
 
-          manifest_path = Path("modules/qemu_seed/manifest.json")
+          manifest_path = Path(".work/paired/manifest.json")
           manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
           if manifest.get("schema") != "espb-qemu-paired-tests/v1":
               raise SystemExit("Unsupported qemu_seed manifest schema")
@@ -261,7 +261,7 @@ jobs:
                   if item.get(filename_key) != filename:
                       raise SystemExit(f"Unexpected {mode} filename for {name}")
                   (expected_jit if mode == "jit" else expected_interpreter).add(filename)
-                  for root in (seed, paired):
+                  for root in (paired,):
                       path = root / filename
                       if not path.is_file() or path.stat().st_size == 0:
                           raise SystemExit(f"Missing/empty {mode} module: {path}")
@@ -276,7 +276,7 @@ jobs:
                   f"Artifact pair set mismatch: jit={sorted(actual_jit)} "
                   f"interpreter={sorted(actual_interpreter)}"
               )
-          print("PAIRED_CORPUS_VERIFIED groups=10 manifest=modules/qemu_seed/manifest.json")
+          print("PAIRED_CORPUS_VERIFIED groups=10 manifest=.work/paired/manifest.json")
           PY
             count=0
             mkdir -p "$RUNNER_TEMP/espb_opcode_pairs"
