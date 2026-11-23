@@ -6,9 +6,9 @@ CONFIG_ESPB_SHADOW_STACK_INCREMENT=1024
 CONFIG_LIBFFI_USE_IRAM_POOL=y
 CONFIG_LIBFFI_IRAM_POOL_SIZE=1024
 
-# Temporary interpreter diagnostics for ESPB bytecode investigation.
-CONFIG_ESPB_DEBUG_CHECKS=y
-# Keep opcode-level ESP_LOGD tracing opt-in; verbose tracing makes QEMU
-# benchmarks orders of magnitude slower and can hide real test completion.
+# Keep the full semantic QEMU corpus practical: opcode-level DEBUG tracing
+# and per-instruction debug checks are diagnostic modes, not normal CI modes.
+# The module assertions and interpreter/JIT paired checks remain enabled.
+CONFIG_ESPB_DEBUG_CHECKS=n
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
-CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+CONFIG_LOG_MAXIMUM_LEVEL_INFO=y
