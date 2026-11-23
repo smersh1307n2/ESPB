@@ -1,4 +1,5 @@
 name: Build paired ESPB opcode-group modules
+# [translate-opcode-corpus] Repair selection/host-contract tests and refresh only stale selected pairs.
 # [translate-opcode-corpus] Retry selected 09_freertos_task after fixing expected_count host-test contract.
 # Rebuild the second-stage diagnostics for signed shifts and helper-call preservation.
 # Incremental retry after artifact-path normalization; unchanged pairs stay quota-free.
