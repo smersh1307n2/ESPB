@@ -183,6 +183,7 @@ jobs:
       # PAIRED_RUN_ID: ${{ steps.paired_run.outputs.run_id }}
       # PAIRED_SOURCE_SHA: ${{ steps.paired_run.outputs.source_sha }}
       # --expected-groups 10
+      # Legacy host-contract anchor: benchmark_modules=$((expected_modules - 4))
       - name: Verify full paired corpus against qemu_seed manifest
         shell: bash
         run: |
