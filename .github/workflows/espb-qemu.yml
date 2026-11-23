@@ -18,6 +18,7 @@ on:
       - '.github/workflows/espb-qemu.yml'
       - 'tools/qemu/**'
       - 'projects/ESP32_PRJ_TO_LLVM'
+      - 'projects/llvm_espb/**'
   workflow_dispatch:
     inputs:
       paired_run_id:
