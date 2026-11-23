@@ -154,7 +154,7 @@ jobs:
                   continue
               matching = [
                   item for item in artifacts
-                  if item.get("name") == "espb-opcode-groups-paired"
+                  if item.get("name") in ("espb-opcode-groups-paired", "espb-llvm-translated-paired")
                   and not item.get("expired", False)
               ]
               if matching:
