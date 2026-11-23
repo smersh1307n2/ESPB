@@ -1072,7 +1072,7 @@ private unsafe void AddExtendedPreferences()
                         continue;
 
                     uint argCount = LLVM.GetNumArgOperands(instr);
-                    uint limit = Math.Min(argCount, 8);
+                    uint limit = Math.Min(argCount, 16u);
                     for (uint i = 0; i < limit; i++)
                     {
                         // Correct: fetch call argument i (not generic operand)
@@ -1166,9 +1166,9 @@ private unsafe void AddExtendedPreferences()
                         {
                             if (!LivesAcrossCall(prevMaterial))
                             {
-                                // Find if current call uses previous call result as arg i<8.
+                                // Find if current call uses previous call result as arg i<16.
                                 uint argCount = LLVM.GetNumArgOperands(instr);
-                                uint limit = Math.Min(argCount, 8u);
+                                uint limit = Math.Min(argCount, 16u);
                                 for (uint i = 0; i < limit; i++)
                                 {
                                     LLVMValueRef arg = LLVM.GetArgOperand(instr, i);

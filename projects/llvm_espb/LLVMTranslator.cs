@@ -1349,38 +1349,47 @@ private int AddDataSegment(byte[] data, int alignment)
             switch (opcode)
             {
                 case LLVMOpcode.LLVMTrunc:
-                    // Усечение типа (обычно целочисленное)
-                    if (srcEspbType == ValueType.I64 && destEspbType == ValueType.I32)
+                    if ((srcEspbType == ValueType.I64 || srcEspbType == ValueType.U64) &&
+                        (destEspbType == ValueType.I32 || destEspbType == ValueType.U32))
                     {
                         EmitOpcode(output, 0x90, "TRUNC.I64.I32");
                         AddReg(output, destReg);
                         AddReg(output, srcReg);
                     }
-                    else if (srcEspbType == ValueType.I64 && destEspbType == ValueType.I16)
+                    else if ((srcEspbType == ValueType.I64 || srcEspbType == ValueType.U64) &&
+                             (destEspbType == ValueType.I16 || destEspbType == ValueType.U16))
                     {
-                        EmitOpcode(output, 0x91, "TRUNC.I64.I16");
+                        // Note: opcode 0x91 is not implemented in ESPB runtime/JIT; lower I64->I16 via 0x90 + 0x93
+                        EmitOpcode(output, 0x90, "TRUNC.I64.I32");
                         AddReg(output, destReg);
                         AddReg(output, srcReg);
+                        EmitOpcode(output, 0x93, "TRUNC.I32.I16");
+                        AddReg(output, destReg);
+                        AddReg(output, destReg);
                     }
-                    else if (srcEspbType == ValueType.I64 && destEspbType == ValueType.I8)
+                    else if ((srcEspbType == ValueType.I64 || srcEspbType == ValueType.U64) &&
+                             (destEspbType == ValueType.I8 || destEspbType == ValueType.U8))
                     {
                         EmitOpcode(output, 0x92, "TRUNC.I64.I8");
                         AddReg(output, destReg);
                         AddReg(output, srcReg);
                     }
-                    else if (srcEspbType == ValueType.I32 && destEspbType == ValueType.I16)
+                    else if ((srcEspbType == ValueType.I32 || srcEspbType == ValueType.U32) &&
+                             (destEspbType == ValueType.I16 || destEspbType == ValueType.U16))
                     {
                         EmitOpcode(output, 0x93, "TRUNC.I32.I16");
                         AddReg(output, destReg);
                         AddReg(output, srcReg);
                     }
-                    else if (srcEspbType == ValueType.I32 && destEspbType == ValueType.I8)
+                    else if ((srcEspbType == ValueType.I32 || srcEspbType == ValueType.U32) &&
+                             (destEspbType == ValueType.I8 || destEspbType == ValueType.U8))
                     {
                         EmitOpcode(output, 0x94, "TRUNC.I32.I8");
                         AddReg(output, destReg);
                         AddReg(output, srcReg);
                     }
-                    else if (srcEspbType == ValueType.I16 && destEspbType == ValueType.I8)
+                    else if ((srcEspbType == ValueType.I16 || srcEspbType == ValueType.U16) &&
+                             (destEspbType == ValueType.I8 || destEspbType == ValueType.U8))
                     {
                         EmitOpcode(output, 0x95, "TRUNC.I16.I8");
                         AddReg(output, destReg);
@@ -1388,12 +1397,9 @@ private int AddDataSegment(byte[] data, int alignment)
                     }
                     else if (destEspbType == ValueType.BOOL)
                     {
-                        // Truncation to bool (i1) - normalize: any non-zero value becomes 1
-                        // Generate: CMP.NE.I32 destReg, srcReg, 0
-                        // This sets destReg to 1 if srcReg != 0, else 0
                         _logger.WriteLine($"    [TRUNC TO BOOL] Normalizing {srcEspbType} to BOOL");
                         byte zeroReg = GenerateIntConstant(output, 0);
-                        EmitOpcode(output, 0xC1, "CMP.NE.I32"); // CMP.NE.I32 Rd, R1, R2 -> Rd = (R1 != R2)
+                        EmitOpcode(output, 0xC1, "CMP.NE.I32");
                         AddReg(output, destReg);
                         AddReg(output, srcReg);
                         AddReg(output, zeroReg);
@@ -1406,114 +1412,151 @@ private int AddDataSegment(byte[] data, int alignment)
                         AddReg(output, srcReg);
                     }
                     break;
-                    
+
                 case LLVMOpcode.LLVMZExt:
-                    // Расширение с заполнением нулями (беззнаковое расширение)
-                    if ((srcEspbType == ValueType.I8 || srcEspbType == ValueType.U8) && (destEspbType == ValueType.U16 || destEspbType == ValueType.I16))
-                     {
-                         EmitOpcode(output, 0x96, "ZEXT.I8.I16");
-                         AddReg(output, destReg);
-                         AddReg(output, srcReg);
-                     }
-                    else if ((srcEspbType == ValueType.I8 || srcEspbType == ValueType.U8) && (destEspbType == ValueType.U32 || destEspbType == ValueType.I32))
-                     {
-                         EmitOpcode(output, 0x97, "ZEXT.I8.I32");
-                         AddReg(output, destReg);
-                         AddReg(output, srcReg);
-                     }
-                    else if ((srcEspbType == ValueType.I8 || srcEspbType == ValueType.U8) && (destEspbType == ValueType.U64 || destEspbType == ValueType.I64))
-                     {
-                         EmitOpcode(output, 0x98, "ZEXT.I8.I64");
-                         AddReg(output, destReg);
-                         AddReg(output, srcReg);
-                     }
-                    else if ((srcEspbType == ValueType.I16 || srcEspbType == ValueType.U16) && (destEspbType == ValueType.U32 || destEspbType == ValueType.I32))
-                     {
-                         EmitOpcode(output, 0x99, "ZEXT.I16.I32");
-                         AddReg(output, destReg);
-                         AddReg(output, srcReg);
-                     }
-                    else if ((srcEspbType == ValueType.I16 || srcEspbType == ValueType.U16) && destEspbType == ValueType.U64)
-                     {
-                         EmitOpcode(output, 0x9A, "ZEXT.I16.I64");
-                         AddReg(output, destReg);
-                         AddReg(output, srcReg);
-                     }
-                    else if ((srcEspbType == ValueType.I32 || srcEspbType == ValueType.U32) && (destEspbType == ValueType.U64 || destEspbType == ValueType.I64))
+                    if ((srcEspbType == ValueType.I8 || srcEspbType == ValueType.U8) &&
+                        (destEspbType == ValueType.U16 || destEspbType == ValueType.I16))
+                    {
+                        EmitOpcode(output, 0x96, "ZEXT.I8.I16");
+                        AddReg(output, destReg);
+                        AddReg(output, srcReg);
+                    }
+                    else if ((srcEspbType == ValueType.I8 || srcEspbType == ValueType.U8) &&
+                             (destEspbType == ValueType.U32 || destEspbType == ValueType.I32))
+                    {
+                        EmitOpcode(output, 0x97, "ZEXT.I8.I32");
+                        AddReg(output, destReg);
+                        AddReg(output, srcReg);
+                    }
+                    else if ((srcEspbType == ValueType.I8 || srcEspbType == ValueType.U8) &&
+                             (destEspbType == ValueType.U64 || destEspbType == ValueType.I64))
+                    {
+                        EmitOpcode(output, 0x98, "ZEXT.I8.I64");
+                        AddReg(output, destReg);
+                        AddReg(output, srcReg);
+                    }
+                    else if ((srcEspbType == ValueType.I16 || srcEspbType == ValueType.U16) &&
+                             (destEspbType == ValueType.U32 || destEspbType == ValueType.I32))
+                    {
+                        EmitOpcode(output, 0x99, "ZEXT.I16.I32");
+                        AddReg(output, destReg);
+                        AddReg(output, srcReg);
+                    }
+                    else if ((srcEspbType == ValueType.I16 || srcEspbType == ValueType.U16) &&
+                             (destEspbType == ValueType.U64 || destEspbType == ValueType.I64))
+                    {
+                        // Note: opcode 0x9A is not implemented in ESPB runtime/JIT; lower I16->I64 via ZEXT.I16.I32 + ZEXT.I32.I64
+                        EmitOpcode(output, 0x99, "ZEXT.I16.I32");
+                        AddReg(output, destReg);
+                        AddReg(output, srcReg);
+                        EmitOpcode(output, 0x9B, "ZEXT.I32.I64");
+                        AddReg(output, destReg);
+                        AddReg(output, destReg);
+                    }
+                    else if ((srcEspbType == ValueType.I32 || srcEspbType == ValueType.U32) &&
+                             (destEspbType == ValueType.U64 || destEspbType == ValueType.I64))
                     {
                         EmitOpcode(output, 0x9B, "ZEXT.I32.I64");
                         AddReg(output, destReg);
                         AddReg(output, srcReg);
                     }
-                    else if (srcEspbType == ValueType.BOOL && (destEspbType == ValueType.U8 || destEspbType == ValueType.U16 ||
-                                                           destEspbType == ValueType.U32 || destEspbType == ValueType.U64))
-                     {
-                         // Расширение bool до целого (это по сути тоже zext)
-                         switch (destEspbType)
-                         {
-                             case ValueType.U8:
-                                 EmitOpcode(output, 0x96, "ZEXT.I8.I16"); // ZEXT используем как аналог
-                                 break;
-                             case ValueType.U16:
-                                 EmitOpcode(output, 0x96, "ZEXT.I8.I16");
-                                 break;
-                             case ValueType.U32:
-                                 EmitOpcode(output, 0x97, "ZEXT.I8.I32");
-                                 break;
-                             case ValueType.U64:
-                                 EmitOpcode(output, 0x98, "ZEXT.I8.I64");
-                                 break;
-                         }
-                         AddReg(output, destReg);
-                         AddReg(output, srcReg);
-                     }
-                      else
-                     {
-                         _logger.WriteLine($"Warning: Unsupported zero extension from {srcEspbType} to {destEspbType}. Using MOV as fallback.");
-                         EmitOpcode(output, GetMoveOpcode(destEspbType), "MOV_FALLBACK");
-                         AddReg(output, destReg);
-                         AddReg(output, srcReg);
-                     }
-                      break;
-                    
+                    else if (srcEspbType == ValueType.BOOL &&
+                             (destEspbType == ValueType.U8 || destEspbType == ValueType.I8 ||
+                              destEspbType == ValueType.U16 || destEspbType == ValueType.I16 ||
+                              destEspbType == ValueType.U32 || destEspbType == ValueType.I32 ||
+                              destEspbType == ValueType.U64 || destEspbType == ValueType.I64))
+                    {
+                        switch (destEspbType)
+                        {
+                            case ValueType.U8:
+                            case ValueType.I8:
+                            case ValueType.U16:
+                            case ValueType.I16:
+                                EmitOpcode(output, 0x96, "ZEXT.I8.I16");
+                                break;
+                            case ValueType.U32:
+                            case ValueType.I32:
+                                EmitOpcode(output, 0x97, "ZEXT.I8.I32");
+                                break;
+                            case ValueType.U64:
+                            case ValueType.I64:
+                                EmitOpcode(output, 0x98, "ZEXT.I8.I64");
+                                break;
+                        }
+                        AddReg(output, destReg);
+                        AddReg(output, srcReg);
+                    }
+                    else
+                    {
+                        _logger.WriteLine($"Warning: Unsupported zero extension from {srcEspbType} to {destEspbType}. Using MOV as fallback.");
+                        EmitOpcode(output, GetMoveOpcode(destEspbType), "MOV_FALLBACK");
+                        AddReg(output, destReg);
+                        AddReg(output, srcReg);
+                    }
+                    break;
+
                 case LLVMOpcode.LLVMSExt:
-                    // Расширение с сохранением знака (знаковое расширение)
-                    if ((srcEspbType == ValueType.I8 || srcEspbType == ValueType.U8) &&
-                        (destEspbType == ValueType.I16 || destEspbType == ValueType.U16))
-                     {
-                         EmitOpcode(output, 0x9C, "SEXT.I8.I16");
-                         AddReg(output, destReg);
-                         AddReg(output, srcReg);
-                     }
+                    if (srcEspbType == ValueType.BOOL &&
+                        (destEspbType == ValueType.I8 || destEspbType == ValueType.U8 ||
+                         destEspbType == ValueType.I16 || destEspbType == ValueType.U16 ||
+                         destEspbType == ValueType.I32 || destEspbType == ValueType.U32 ||
+                         destEspbType == ValueType.I64 || destEspbType == ValueType.U64))
+                    {
+                        byte zeroReg = GenerateIntConstant(output, 0);
+                        byte oneReg = GenerateIntConstant(output, 1);
+                        byte bitReg = registerManager.AllocateTemporaryRegister();
+                        EmitOpcode(output, 0x26, "AND.I32");
+                        AddReg(output, bitReg);
+                        AddReg(output, srcReg);
+                        AddReg(output, oneReg);
+                        EmitOpcode(output, 0x21, "SUB.I32");
+                        AddReg(output, destReg);
+                        AddReg(output, zeroReg);
+                        AddReg(output, bitReg);
+                        if (destEspbType == ValueType.I64 || destEspbType == ValueType.U64)
+                        {
+                            EmitOpcode(output, 0xA1, "SEXT.I32.I64");
+                            AddReg(output, destReg);
+                            AddReg(output, destReg);
+                        }
+                    }
                     else if ((srcEspbType == ValueType.I8 || srcEspbType == ValueType.U8) &&
-                              (destEspbType == ValueType.I32 || destEspbType == ValueType.U32))
-                     {
-                         EmitOpcode(output, 0x9D, "SEXT.I8.I32");
-                         AddReg(output, destReg);
-                         AddReg(output, srcReg);
-                     }
+                             (destEspbType == ValueType.I16 || destEspbType == ValueType.U16))
+                    {
+                        EmitOpcode(output, 0x9C, "SEXT.I8.I16");
+                        AddReg(output, destReg);
+                        AddReg(output, srcReg);
+                    }
                     else if ((srcEspbType == ValueType.I8 || srcEspbType == ValueType.U8) &&
-                              (destEspbType == ValueType.I64 || destEspbType == ValueType.U64))
-                     {
-                         EmitOpcode(output, 0x9E, "SEXT.I8.I64");
-                         AddReg(output, destReg);
-                         AddReg(output, srcReg);
-                     }
+                             (destEspbType == ValueType.I32 || destEspbType == ValueType.U32))
+                    {
+                        EmitOpcode(output, 0x9D, "SEXT.I8.I32");
+                        AddReg(output, destReg);
+                        AddReg(output, srcReg);
+                    }
+                    else if ((srcEspbType == ValueType.I8 || srcEspbType == ValueType.U8) &&
+                             (destEspbType == ValueType.I64 || destEspbType == ValueType.U64))
+                    {
+                        EmitOpcode(output, 0x9E, "SEXT.I8.I64");
+                        AddReg(output, destReg);
+                        AddReg(output, srcReg);
+                    }
                     else if ((srcEspbType == ValueType.I16 || srcEspbType == ValueType.U16) &&
-                              (destEspbType == ValueType.I32 || destEspbType == ValueType.U32))
-                     {
-                         EmitOpcode(output, 0x9F, "SEXT.I16.I32");
-                         AddReg(output, destReg);
-                         AddReg(output, srcReg);
-                     }
+                             (destEspbType == ValueType.I32 || destEspbType == ValueType.U32))
+                    {
+                        EmitOpcode(output, 0x9F, "SEXT.I16.I32");
+                        AddReg(output, destReg);
+                        AddReg(output, srcReg);
+                    }
                     else if ((srcEspbType == ValueType.I16 || srcEspbType == ValueType.U16) &&
-                              (destEspbType == ValueType.I64 || destEspbType == ValueType.U64))
-                     {
-                         EmitOpcode(output, 0xA0, "SEXT.I16.I64");
-                         AddReg(output, destReg);
-                         AddReg(output, srcReg);
-                     }
-                    else if ((srcEspbType == ValueType.I32 || srcEspbType == ValueType.U32) && (destEspbType == ValueType.U64 || destEspbType == ValueType.I64))
+                             (destEspbType == ValueType.I64 || destEspbType == ValueType.U64))
+                    {
+                        EmitOpcode(output, 0xA0, "SEXT.I16.I64");
+                        AddReg(output, destReg);
+                        AddReg(output, srcReg);
+                    }
+                    else if ((srcEspbType == ValueType.I32 || srcEspbType == ValueType.U32) &&
+                             (destEspbType == ValueType.U64 || destEspbType == ValueType.I64))
                     {
                         EmitOpcode(output, 0xA1, "SEXT.I32.I64");
                         AddReg(output, destReg);

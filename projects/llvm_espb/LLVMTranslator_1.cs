@@ -2134,6 +2134,40 @@ namespace ESPB_Runtime
                         _logger.WriteLine($"    [BRANCH-FIX] BR_IF at new={newInstrStart}: NOT FOUND in reverseMap!");
                     }
                 }
+                // BR_TABLE: opcode(1) + reg(1) + numTargets(2) + targets(2*numTargets) + default(2)
+                // All offsets are relative to instruction END.
+                else if (op == 0x04)
+                {
+                    int newInstrStart = pc;
+                    if (reverseMap.TryGetValue(newInstrStart, out int oldInstrStart))
+                    {
+                        int newInstrEnd = newInstrStart + size;
+                        int oldInstrEnd = oldInstrStart + size;
+                        int totalSlots = (size - 4) / 2;
+                        for (int slot = 0; slot < totalSlots; slot++)
+                        {
+                            int slotPos = pc + 4 + (slot * 2);
+                            short oldOffset = (short)(code[slotPos] | (code[slotPos + 1] << 8));
+                            int oldTarget = oldInstrEnd + oldOffset;
+                            if (offsetMap.TryGetValue(oldTarget, out int newTarget))
+                            {
+                                short newOffset = (short)(newTarget - newInstrEnd);
+                                byte[] newOffsetBytes = BitConverter.GetBytes(newOffset);
+                                code[slotPos] = newOffsetBytes[0];
+                                code[slotPos + 1] = newOffsetBytes[1];
+                                _logger.WriteLine($"    [BRANCH-FIX] BR_TABLE slot={slot} at new={newInstrStart} old={oldInstrStart}: oldTarget={oldTarget} -> newTarget={newTarget} newOffset={newOffset}");
+                            }
+                            else
+                            {
+                                _logger.WriteLine($"    [BRANCH-FIX] BR_TABLE slot={slot} at new={newInstrStart} old={oldInstrStart}: oldTarget={oldTarget} NOT FOUND in offsetMap!");
+                            }
+                        }
+                    }
+                    else
+                    {
+                        _logger.WriteLine($"    [BRANCH-FIX] BR_TABLE at new={newInstrStart}: NOT FOUND in reverseMap!");
+                    }
+                }
                 
                 pc += size;
             }
@@ -4353,105 +4387,85 @@ namespace ESPB_Runtime
         {
             byte maxReg = 0;
             int pc = 0;
+            void CheckReg(int idx)
+            {
+                byte r = bytecode[idx];
+                if (r > maxReg) maxReg = r;
+            }
             while (pc < bytecode.Count)
             {
-                byte op = bytecode[pc++];
-                // MOV: Rd, Rs
-                if (op == 0x12)
-                {
-                    if (pc + 1 >= bytecode.Count) break;
-                    byte rd = bytecode[pc++];
-                    byte rs = bytecode[pc++];
-                    if (rd > maxReg) maxReg = rd;
-                    if (rs > maxReg) maxReg = rs;
-                    continue;
-                }
+                if (!TryGetInstructionSize(bytecode, pc, out int size))
+                    break;
+                byte op = bytecode[pc];
 
-                // LDC.*: Rd + immediate payload
-                if (op == 0x18 || op == 0x1A || op == 0x1C) // 4-byte imm
+                if (op == 0x03 || op == 0x04 || op == 0x08 || op == 0x0C || op == 0x0D ||
+                    (op >= 0x18 && op <= 0x1F) || op == 0x8F)
                 {
-                    if (pc >= bytecode.Count) break;
-                    byte rd = bytecode[pc++];
-                    if (rd > maxReg) maxReg = rd;
-                    pc += 4;
-                    continue;
+                    if (pc + 1 < bytecode.Count) CheckReg(pc + 1);
                 }
-                if (op == 0x19 || op == 0x1B) // 8-byte imm
+                else if (op == 0x0B || (op >= 0x10 && op <= 0x17) ||
+                         op == 0x2E || op == 0x2F || op == 0x3E || op == 0x3F ||
+                         op == 0x66 || op == 0x67 || op == 0x6E || op == 0x6F ||
+                         (op >= 0x70 && op <= 0x7B) || (op >= 0x80 && op <= 0x8E) ||
+                         (op >= 0x90 && op <= 0xBD) ||
+                         op == 0xDE || op == 0xDF || op == 0xEC || op == 0xED)
                 {
-                    if (pc >= bytecode.Count) break;
-                    byte rd = bytecode[pc++];
-                    if (rd > maxReg) maxReg = rd;
-                    pc += 8;
-                    continue;
-                }
-                if (op == 0x1D) // Rd + idx16
-                {
-                    if (pc >= bytecode.Count) break;
-                    byte rd = bytecode[pc++];
-                    if (rd > maxReg) maxReg = rd;
-                    pc += 2;
-                    continue;
-                }
-
-                // ALU ops Rd,Rs1,Rs2 (broad ranges)
-                if ((op >= 0x20 && op <= 0x2D) || (op >= 0x30 && op <= 0x3D) || (op >= 0x40 && op <= 0x4D) || (op >= 0x50 && op <= 0x5D))
-                {
-                    if (pc + 2 >= bytecode.Count) break;
-                    byte rd = bytecode[pc++];
-                    byte rs1 = bytecode[pc++];
-                    byte rs2 = bytecode[pc++];
-                    if (rd > maxReg) maxReg = rd;
-                    if (rs1 > maxReg) maxReg = rs1;
-                    if (rs2 > maxReg) maxReg = rs2;
-                    continue;
-                }
-
-                // Unary Rd,Rs
-                if (op == 0x2E || op == 0x3E || op == 0x3F || op == 0x4E || op == 0x4F || op == 0x5E || op == 0x5F)
-                {
-                    if (pc + 1 >= bytecode.Count) break;
-                    byte rd = bytecode[pc++];
-                    byte rs = bytecode[pc++];
-                    if (rd > maxReg) maxReg = rd;
-                    if (rs > maxReg) maxReg = rs;
-                    continue;
-                }
-
-                // LOAD/STORE family: r0,r1,off32
-                if (op >= 0x80 && op <= 0x87)
-                {
-                    if (pc + 1 >= bytecode.Count) break;
-                    byte r0 = bytecode[pc++];
-                    byte r1 = bytecode[pc++];
-                    if (r0 > maxReg) maxReg = r0;
-                    if (r1 > maxReg) maxReg = r1;
-                    pc += 4;
-                    continue;
-                }
-
-                // Control flow/calls
-                if (op == 0x02) { pc += 2; continue; }
-                if (op == 0x03) {
-                    if (pc >= bytecode.Count) break;
-                    byte rc = bytecode[pc++];
-                    if (rc > maxReg) maxReg = rc;
-                    pc += 2;
-                    continue;
-                }
-                if (op == 0x09) {
-                    pc += 2;
-                    if (pc < bytecode.Count && bytecode[pc] == 0xAA) {
-                        pc++;
-                        if (pc >= bytecode.Count) break;
-                        int na = bytecode[pc++];
-                        pc += na;
+                    if (pc + 2 < bytecode.Count)
+                    {
+                        CheckReg(pc + 1);
+                        CheckReg(pc + 2);
                     }
-                    continue;
                 }
-                if (op == 0x0A) { pc += 2; continue; }
+                else if (op >= 0x40 && op <= 0x5F)
+                {
+                    // I32/I64 with imm8: [op][Rd][R1][imm8]
+                    if (pc + 2 < bytecode.Count)
+                    {
+                        CheckReg(pc + 1);
+                        CheckReg(pc + 2);
+                    }
+                }
+                else if ((op >= 0x20 && op <= 0x2D) || (op >= 0x30 && op <= 0x3D) ||
+                         (op >= 0x60 && op <= 0x65) || (op >= 0x68 && op <= 0x6D) ||
+                         (op >= 0xC0 && op <= 0xD3) || (op >= 0xD7 && op <= 0xDC) ||
+                         (op >= 0xE0 && op <= 0xEB) || (op >= 0xF0 && op <= 0xF5))
+                {
+                    if (pc + 3 < bytecode.Count)
+                    {
+                        CheckReg(pc + 1);
+                        CheckReg(pc + 2);
+                        CheckReg(pc + 3);
+                    }
+                }
+                else if (op == 0xBE || op == 0xBF || (op >= 0xD4 && op <= 0xD6) || op == 0xDD || op == 0xF6)
+                {
+                    if (pc + 4 < bytecode.Count)
+                    {
+                        CheckReg(pc + 1);
+                        CheckReg(pc + 2);
+                        CheckReg(pc + 3);
+                        CheckReg(pc + 4);
+                    }
+                }
+                else if (op == 0xFC && pc + 1 < bytecode.Count)
+                {
+                    byte op2 = bytecode[pc + 1];
+                    if (op2 == 0x00 && pc + 8 < bytecode.Count)
+                    {
+                        CheckReg(pc + 6); CheckReg(pc + 7); CheckReg(pc + 8);
+                    }
+                    else if ((op2 == 0x02 || op2 == 0x03) && pc + (op2 == 0x02 ? 4 : 3) < bytecode.Count)
+                    {
+                        CheckReg(pc + 2); CheckReg(pc + 3);
+                        if (op2 == 0x02) CheckReg(pc + 4);
+                    }
+                    else if ((op2 == 0x04 || op2 == 0x05) && pc + 2 < bytecode.Count)
+                    {
+                        CheckReg(pc + 2);
+                    }
+                }
 
-                // Unknown opcode: stop scan (conservative)
-                break;
+                pc += size;
             }
             return maxReg;
         }
@@ -4659,58 +4673,99 @@ namespace ESPB_Runtime
                 }
             }
 
-            // ��������� PHI-������� ��� ���� ���������� �����
-            foreach (var block in jumpTable.Distinct())
+            // Collect per-edge PHI moves for each distinct switch target AFTER BR_TABLE.
+            // Emitting them inline before BR_TABLE clobbers live registers and the index.
+            var distinctTargets = new HashSet<LLVMBasicBlockRef>(jumpTable) { defaultBlock };
+            var edgeMoves = new Dictionary<LLVMBasicBlockRef, List<byte>>();
+            foreach (var target in distinctTargets)
             {
-                AddPhiFixupsForSuccessor(currentBlock, block, output);
+                var moves = new List<byte>();
+                AddPhiFixupsForSuccessor(currentBlock, target, moves);
+                edgeMoves[target] = moves;
             }
-            AddPhiFixupsForSuccessor(currentBlock, defaultBlock, output);
 
-            // ���������� BR_TABLE ����������: 0x04 Ridx(u8) num_targets(u16) [target_offsets(i16)...] default_offset(i16)
+            // Emit BR_TABLE: 0x04 Ridx(u8) num_targets(u16) [target_offsets(i16)...] default_offset(i16)
             int brTableStartPos = output.Count;
             EmitOpcode(output, 0x04, "BR_TABLE");
-            output.Add(indexReg); // ������� � ��������
-            
-            // ���������� ����� � ������� (u16)
+            output.Add(indexReg);
+
             ushort numTargets = (ushort)range;
             output.Add((byte)(numTargets & 0xFF));
             output.Add((byte)((numTargets >> 8) & 0xFF));
-            
+
             _logger.WriteLine($"[SWITCH BR_TABLE] Generated BR_TABLE with {numTargets} targets");
 
-            // Placeholders ��� �������� �������
-            var tablePlaceholderPositions = new List<int>();
+            var tablePlaceholderPositions = new List<int>((int)range);
             for (int i = 0; i < range; i++)
             {
                 tablePlaceholderPositions.Add(output.Count);
-                output.AddRange(new byte[] { 0x00, 0x00 }); // i16 placeholder
+                output.AddRange(new byte[] { 0x00, 0x00 });
             }
-            
-            // Placeholder ��� default ��������
-            int defaultPlaceholderPos = output.Count;
-            output.AddRange(new byte[] { 0x00, 0x00 }); // i16 placeholder
 
-            // ����� ���������� - ���� ��� ���������� ��������
+            int defaultPlaceholderPos = output.Count;
+            output.AddRange(new byte[] { 0x00, 0x00 });
+
             int instructionEnd = output.Count;
 
-            // ������� fixup'� ��� ���� �������� � �������
+            // Emit trampolines after BR_TABLE only for targets that have incoming PHI moves
+            var trampolineStarts = new Dictionary<LLVMBasicBlockRef, int>();
+            foreach (var target in distinctTargets)
+            {
+                var moves = edgeMoves[target];
+                if (moves.Count == 0)
+                    continue;
+
+                trampolineStarts[target] = output.Count;
+                output.AddRange(moves);
+                int brPos = output.Count;
+                EmitOpcode(output, 0x02, "BR");
+                int brPlaceholder = output.Count;
+                output.AddRange(new byte[] { 0x00, 0x00 });
+                branchFixups.Add(new BranchFixup
+                {
+                    InstructionPosition = brPos,
+                    PlaceholderPosition = brPlaceholder,
+                    TargetBlock = target
+                });
+            }
+
             for (int i = 0; i < range; i++)
+            {
+                var target = jumpTable[i];
+                if (trampolineStarts.TryGetValue(target, out int trampStart))
+                {
+                    short relOffset = (short)(trampStart - instructionEnd);
+                    byte[] offsetBytes = BitConverter.GetBytes(relOffset);
+                    output[tablePlaceholderPositions[i]] = offsetBytes[0];
+                    output[tablePlaceholderPositions[i] + 1] = offsetBytes[1];
+                }
+                else
+                {
+                    branchFixups.Add(new BranchFixup
+                    {
+                        InstructionPosition = instructionEnd,
+                        PlaceholderPosition = tablePlaceholderPositions[i],
+                        TargetBlock = target
+                    });
+                }
+            }
+
+            if (trampolineStarts.TryGetValue(defaultBlock, out int defTrampStart))
+            {
+                short relOffset = (short)(defTrampStart - instructionEnd);
+                byte[] offsetBytes = BitConverter.GetBytes(relOffset);
+                output[defaultPlaceholderPos] = offsetBytes[0];
+                output[defaultPlaceholderPos + 1] = offsetBytes[1];
+            }
+            else
             {
                 branchFixups.Add(new BranchFixup
                 {
                     InstructionPosition = instructionEnd,
-                    PlaceholderPosition = tablePlaceholderPositions[i],
-                    TargetBlock = jumpTable[i]
+                    PlaceholderPosition = defaultPlaceholderPos,
+                    TargetBlock = defaultBlock
                 });
             }
-            
-            // Fixup ��� default ��������
-            branchFixups.Add(new BranchFixup
-            {
-                InstructionPosition = instructionEnd,
-                PlaceholderPosition = defaultPlaceholderPos,
-                TargetBlock = defaultBlock
-            });
 
             _logger.WriteLine($"[SWITCH BR_TABLE] Universal BR_TABLE implementation completed - range {range}, fixups from instruction end");
         }

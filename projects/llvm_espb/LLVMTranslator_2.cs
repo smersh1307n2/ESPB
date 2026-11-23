@@ -2001,7 +2001,7 @@ namespace ESPB_Runtime
             // Pre-copy previous call result (still in R0) into ABI argument register before we start
             // evaluating other arguments that might overwrite R0.
             // This turns double-hop MOV patterns (R0->tmp->Ri) into a single MOV (R0->Ri).
-            bool[] argAlreadyInPlace = new bool[8];
+            bool[] argAlreadyInPlace = new bool[16];
             TryPrecopyPreviousCallResultArg(instr, numOperands, output, argAlreadyInPlace);
 
             for (uint i = 0; i < numOperands; i++)
@@ -2010,7 +2010,7 @@ namespace ESPB_Runtime
                 LLVMValueRef arg = instr.GetOperand(i);
 
                 // If we pre-copied a forwarded call result into its ABI register, treat it as already in place.
-                if (i < 8 && argAlreadyInPlace[i])
+                if (i < 16 && argAlreadyInPlace[i])
                 {
                     var t = MapLlvmTypeToEspb(arg.TypeOf);
                     bool isByvalForward = (calledFunc.Handle != IntPtr.Zero) && IsByvalArgument(calledFunc, i);
@@ -2019,8 +2019,8 @@ namespace ESPB_Runtime
                     continue;
                 }
 
-                // Preferred destination for ABI argument registers (R0..R7)
-                byte? preferredArgDest = (i < 8) ? (byte)i : (byte?)null;
+                // Preferred destination for ABI argument registers (R0..R15)
+                byte? preferredArgDest = (i < 16) ? (byte)i : (byte?)null;
                 string argName = arg.ToString();
                 _logger.WriteLine($"    Arg {i}: Kind={arg.Kind}, Type=[{arg.TypeOf.Kind}], Name={argName}");
                 
@@ -2156,9 +2156,9 @@ namespace ESPB_Runtime
             var moves = new List<MoveOperation>();
             for (int i = 0; i < numOperands; i++)
             {
-                if (i >= 8)
+                if (i >= 16)
                 {
-                    _logger.WriteLine($"    Arg Setup {i}: Argument > 7 not handled.");
+                    _logger.WriteLine($"    Arg Setup {i}: Argument > 15 not handled.");
                     continue;
                 }
                 var (sourceReg, espbType, _) = sourceArguments[i];
@@ -2937,9 +2937,9 @@ namespace ESPB_Runtime
 
 
 
-            // If current call uses prev result as arg i<8, pre-copy from R0 to Ri.
+            // If current call uses prev result as arg i<16, pre-copy from R0 to Ri.
 
-            uint limit = Math.Min(numOperands, 8u);
+            uint limit = Math.Min(numOperands, 16u);
 
             for (uint i = 0; i < limit; i++)
 

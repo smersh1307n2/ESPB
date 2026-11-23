@@ -144,6 +144,7 @@ namespace ESPB_Runtime
                     if (!File.Exists(customFastSymPath))
                     {
                         logger.WriteLine($"ERROR: custom_fast sym file not found: {customFastSymPath}");
+                        Environment.ExitCode = 1;
                         return;
                     }
                     translator.CustomFastMap = FastSymbols.ParseSymFile(customFastSymPath);
@@ -157,6 +158,7 @@ namespace ESPB_Runtime
                     if (!File.Exists(idfFastSymPath))
                     {
                         logger.WriteLine($"ERROR: idf_fast sym file not found: {idfFastSymPath}");
+                        Environment.ExitCode = 1;
                         return;
                     }
                     translator.IdfFastMap = FastSymbols.ParseSymFile(idfFastSymPath);
@@ -174,6 +176,7 @@ namespace ESPB_Runtime
             catch (Exception ex)
             {
                 logger.WriteLine($"Failed to parse fast symbols: {ex.Message}");
+                Environment.ExitCode = 1;
                 return;
             }
             
@@ -203,6 +206,7 @@ namespace ESPB_Runtime
             else
             {
                 logger.WriteLine("Translation failed.");
+                Environment.ExitCode = 1;
             }
         }
         

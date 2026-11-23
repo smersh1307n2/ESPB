@@ -1,0 +1,104 @@
+name: Translate opcode groups with LLVM_ESPB
+
+on:
+  push:
+    branches:
+      - ESPB_WORK
+    paths:
+      - "projects/llvm_espb/**"
+      - "tests/bytecode_groups/*.c"
+      - "tools/bytecode_groups/**"
+      - ".github/workflows/translate_llvm_espb.yml"
+  workflow_dispatch:
+    inputs:
+      groups:
+        description: "Optional group stems to translate (space/comma separated); blank translates all"
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: espb-llvm-espb-translate
+  cancel-in-progress: true
+
+jobs:
+  translate:
+    runs-on: ubuntu-22.04
+    container:
+      image: espressif/idf:v5.4.1
+    steps:
+      - name: Checkout ESPB_WORK
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Install .NET 9 SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libicu-dev zlib1g
+          rm -rf /var/lib/apt/lists/*
+          curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh
+          bash /tmp/dotnet-install.sh --channel 9.0 --install-dir /opt/dotnet
+          echo "/opt/dotnet" >> "$GITHUB_PATH"
+          echo "DOTNET_ROOT=/opt/dotnet" >> "$GITHUB_ENV"
+          /opt/dotnet/dotnet --info
+
+      - name: Build projects/llvm_espb (Release)
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet build projects/llvm_espb/LLVM_ESPB.csproj -c Release
+
+      - name: Install ESP Clang
+        shell: bash
+        run: |
+          set -euo pipefail
+          python "$IDF_PATH/tools/idf_tools.py" install esp-clang
+          CLANG="$(find -L /opt/esp/tools/esp-clang -type f -path "*/bin/clang" -perm -111 -print -quit)"
+          test -n "$CLANG"
+          echo "$(dirname "$CLANG")" >> "$GITHUB_PATH"
+          echo "ESPB_CLANG=$CLANG" >> "$GITHUB_ENV"
+
+      - name: Build LLVM bitcode modules
+        shell: bash
+        env:
+          MANUAL_GROUPS: ${{ inputs.groups }}
+        run: |
+          set -euo pipefail
+          . "$IDF_PATH/export.sh"
+          if [[ -n "$MANUAL_GROUPS" ]]; then
+            read -r -a selected <<< "${MANUAL_GROUPS//,/ }"
+            python tools/bytecode_groups/build.py \
+              --output-dir "$GITHUB_WORKSPACE/.work/bytecode_groups" \
+              --groups "${selected[@]}"
+          else
+            python tools/bytecode_groups/build.py \
+              --output-dir "$GITHUB_WORKSPACE/.work/bytecode_groups"
+          fi
+
+      - name: Translate bitcode modules to paired ESPB via LLVM_ESPB
+        shell: bash
+        run: |
+          set -euo pipefail
+          python tools/bytecode_groups/translate_with_llvm_espb.py \
+            --bitcode-dir "$GITHUB_WORKSPACE/.work/bytecode_groups" \
+            --output-dir "$GITHUB_WORKSPACE/.work/paired" \
+            --translator-dll "$GITHUB_WORKSPACE/projects/llvm_espb/bin/Release/net9.0/LLVM_ESPB.dll" \
+            --audit-json "$GITHUB_WORKSPACE/.work/paired/opcode_audit.json"
+
+      - name: Upload translated ESPB modules
+        uses: actions/upload-artifact@v4
+        with:
+          name: espb-llvm-translated-paired
+          path: |
+            .work/paired/*.espb
+            .work/paired/manifest.json
+            .work/paired/opcode_audit.json
+          if-no-files-found: error

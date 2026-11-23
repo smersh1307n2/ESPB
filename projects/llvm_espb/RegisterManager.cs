@@ -201,35 +201,36 @@ namespace ESPB_Runtime
             // In --patch-regs mode, allocate temps starting after the compacted registers
             if (AllowTempRegCompaction && _allocationResult != null)
             {
-                // ВАЖНО: tempStart должен быть ФИКСИРОВАННЫМ для всей функции.
-                // Нельзя вычислять его от MaxRegisterIndex на каждом вызове, потому что MaxRegisterIndex
-                // сам увеличивается из-за temp-регистров => tempStart "уползает" вверх (max_reg_used=122/146...).
+                // Fix the temporary pool base once per function right after allocated registers.
                 if (_tempStartAfterCompaction == null)
                 {
-                    _tempStartAfterCompaction = (byte)(_allocationResult.MaxRegisterIndex + 1);
-
-                    // Включаем ВЕСЬ temp-пул (8 регистров) в диапазон виртуальных регистров.
-                    // Это гарантирует, что locals[]/v_regs[] всегда достаточно большой.
-                    byte poolEnd = (byte)(_tempStartAfterCompaction.Value + 7);
-                    if (poolEnd > _allocationResult.MaxRegisterIndex)
+                    int candidateStart = _allocationResult.MaxRegisterIndex + 1;
+                    if (candidateStart > 254)
                     {
-                        _allocationResult.MaxRegisterIndex = poolEnd;
+                        throw new InvalidOperationException("No room left for temporary registers (max virtual register index 254 exceeded).");
                     }
-
-                    // Инициализируем указатель выдачи temp-регистров
-                    if (_nextTempReg < _tempStartAfterCompaction.Value)
-                    {
-                        _nextTempReg = _tempStartAfterCompaction.Value;
-                    }
+                    _tempStartAfterCompaction = (byte)candidateStart;
+                    _nextTempReg = _tempStartAfterCompaction.Value;
                 }
 
                 byte tempStart = _tempStartAfterCompaction.Value;
-                byte reg = _nextTempReg++;
-
-                // Cycle within fixed pool [tempStart .. tempStart+7]
-                if (_nextTempReg > tempStart + 7)
+                byte poolEnd = (byte)Math.Min(254, tempStart + 7);
+                if (_nextTempReg < tempStart || _nextTempReg > poolEnd)
                 {
                     _nextTempReg = tempStart;
+                }
+
+                byte reg = _nextTempReg++;
+
+                // Cycle within fixed pool [tempStart .. poolEnd]
+                if (_nextTempReg > poolEnd)
+                {
+                    _nextTempReg = tempStart;
+                }
+
+                if (reg > _allocationResult.MaxRegisterIndex)
+                {
+                    _allocationResult.MaxRegisterIndex = reg;
                 }
 
                 return reg;
@@ -241,6 +242,10 @@ namespace ESPB_Runtime
                 if (_nextTempReg > TEMP_REGS_END)
                 {
                     _nextTempReg = TEMP_REGS_START; // Cycle back to the start of the temp pool
+                }
+                if (_allocationResult != null && reg > _allocationResult.MaxRegisterIndex)
+                {
+                    _allocationResult.MaxRegisterIndex = reg;
                 }
                 return reg;
             }
@@ -342,18 +347,30 @@ namespace ESPB_Runtime
         /// </summary>
         private unsafe (AllocationResult, Dictionary<byte, byte>) CompactAllocationResult(AllocationResult result, LLVMValueRef function)
         {
-            static unsafe bool FunctionHasCalls(LLVMValueRef func)
+            static unsafe int GetCallAbiReserve(LLVMValueRef func)
             {
+                bool hasCalls = false;
+                uint maxArgs = 0;
                 for (LLVMBasicBlockRef bb = LLVM.GetFirstBasicBlock(func); bb.Handle != IntPtr.Zero; bb = LLVM.GetNextBasicBlock(bb))
                 {
                     for (LLVMValueRef instr = LLVM.GetFirstInstruction(bb); instr.Handle != IntPtr.Zero; instr = LLVM.GetNextInstruction(instr))
                     {
                         LLVMOpcode op = LLVM.GetInstructionOpcode(instr);
                         if (op == LLVMOpcode.LLVMCall || op == LLVMOpcode.LLVMInvoke || op == LLVMOpcode.LLVMCallBr)
-                            return true;
+                        {
+                            LLVMValueRef cv = LLVM.GetCalledValue(instr);
+                            string name = cv.Name ?? "";
+                            if (name.StartsWith("llvm.dbg.") || name.StartsWith("llvm.lifetime."))
+                                continue;
+                            hasCalls = true;
+                            uint argCount = LLVM.GetNumArgOperands(instr);
+                            if (argCount > maxArgs)
+                                maxArgs = argCount;
+                        }
                     }
                 }
-                return false;
+                if (!hasCalls) return 0;
+                return (int)Math.Max(8u, Math.Min(16u, maxArgs));
             }
 
             // Получаем параметры функции
@@ -363,6 +380,9 @@ namespace ESPB_Runtime
             {
                 functionParams.Add(LLVM.GetParam(function, i));
             }
+
+            int callAbiReserve = GetCallAbiReserve(function);
+            bool hasCalls = callAbiReserve > 0;
 
             // 1) Собираем все используемые номера регистров
             HashSet<byte> usedRegs = new HashSet<byte>();
@@ -376,18 +396,19 @@ namespace ESPB_Runtime
             
             if (usedRegs.Count == 0)
             {
-                result.MaxRegisterIndex = 0;
+                result.MaxRegisterIndex = callAbiReserve > 0 ? (byte)(callAbiReserve - 1) : (byte)0;
                 return (result, new Dictionary<byte, byte>());
             }
 
             // 2) Строим плотный маппинг: старый регистр → новый регистр
-            // По умолчанию резервируем R0-R7 для ABI вызовов и R16-R23 для временных регистров.
+            // По умолчанию резервируем R0-R7 (или R0-R(N-1) при >8 аргументах) для ABI вызовов.
             // НО для leaf-функций (без CALL) можно использовать R0-R7 как обычные регистры — это убирает PARAM-SHUFFLE.
-            bool hasCalls = FunctionHasCalls(function);
             Dictionary<byte, byte> remap = new Dictionary<byte, byte>();
-            byte nextReg = hasCalls ? (byte)8 : (byte)0; // leaf => start from R0, otherwise keep ABI regs free
+            byte nextReg = (byte)callAbiReserve; // leaf => start from R0, otherwise keep ABI regs free
             if (!hasCalls)
                 _logger.WriteLine($"    [COMPACTION] Leaf function '{function.Name}': allowing R0-R7 for allocation/compaction");
+            else if (callAbiReserve > 8)
+                _logger.WriteLine($"    [COMPACTION] Function '{function.Name}': reserving R0-R{callAbiReserve - 1} for wide call ABI");
             
             // Сначала назначаем параметры функции в порядке их следования (начиная с R8)
             for (int i = 0; i < functionParams.Count; i++)
@@ -430,7 +451,7 @@ namespace ESPB_Runtime
             compacted.PeakLiveRegisters = result.PeakLiveRegisters;
             compacted.TotalSpillSlotSize = result.TotalSpillSlotSize;
 
-            byte maxRegUsed = 0;
+            byte maxRegUsed = callAbiReserve > 0 ? (byte)(callAbiReserve - 1) : (byte)0;
             foreach (var kvp in result.Locations)
             {
                 if (kvp.Value is RegisterLocation regLoc && remap.TryGetValue(regLoc.Register, out var newReg))

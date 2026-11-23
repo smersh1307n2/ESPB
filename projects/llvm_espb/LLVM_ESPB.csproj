@@ -24,6 +24,7 @@
     <PackageReference Include="ClangSharp.Interop" Version="20.1.2.1" />
     <PackageReference Include="libLLVM" Version="20.1.2" />
     <PackageReference Include="libLLVM.runtime.win-x64" Version="20.1.2" />
+    <PackageReference Include="libLLVM.runtime.linux-x64" Version="20.1.2" />
     <PackageReference Include="LLVMSharp" Version="20.1.2" />
   </ItemGroup>
 
