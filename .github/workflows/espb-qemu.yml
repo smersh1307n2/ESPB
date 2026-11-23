@@ -99,7 +99,7 @@ jobs:
 
           candidates = [
               run for run in candidates
-              if run.get("path") == ".github/workflows/build_opcode_groups_espb.yml"
+              if run.get("path") in {".github/workflows/build_opcode_groups_espb.yml", ".github/workflows/translate_llvm_espb.yml"}
               and run.get("head_branch") == "ESPB_WORK"
               and run.get("status") == "completed"
               and run.get("conclusion") == "success"
