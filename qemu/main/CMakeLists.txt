@@ -78,8 +78,26 @@ file(APPEND "${ESPB_MODULE_SOURCE}"
     "const EspbEmbeddedModule espb_embedded_modules[] = {\n${ESPB_MODULE_ENTRIES}};\n"
     "const size_t espb_embedded_module_count = sizeof(espb_embedded_modules) / sizeof(espb_embedded_modules[0]);\n")
 
+set(ESPB_NATIVE_SOURCE_TESTS
+    "${ESPB_REPO_ROOT}/tests/bytecode_groups/04_control_flow.c"
+    "${ESPB_REPO_ROOT}/tests/bytecode_groups/05_select_convert.c"
+    "${ESPB_REPO_ROOT}/tests/bytecode_groups/10_freertos_timer.c"
+)
+set_source_files_properties(
+    "${ESPB_REPO_ROOT}/tests/bytecode_groups/04_control_flow.c"
+    PROPERTIES COMPILE_DEFINITIONS "app_main=espb_native_source_control_flow"
+)
+set_source_files_properties(
+    "${ESPB_REPO_ROOT}/tests/bytecode_groups/05_select_convert.c"
+    PROPERTIES COMPILE_DEFINITIONS "app_main=espb_native_source_select_convert"
+)
+set_source_files_properties(
+    "${ESPB_REPO_ROOT}/tests/bytecode_groups/10_freertos_timer.c"
+    PROPERTIES COMPILE_DEFINITIONS "app_main=espb_native_source_freertos_timer"
+)
+
 idf_component_register(
-    SRCS "main.cpp" "${ESPB_MODULE_SOURCE}"
+    SRCS "main.cpp" "${ESPB_MODULE_SOURCE}" ${ESPB_NATIVE_SOURCE_TESTS}
     INCLUDE_DIRS "." "${CMAKE_CURRENT_BINARY_DIR}" "${ESPB_REPO_ROOT}/main"
     REQUIRES espb esp_timer esp_hw_support esp_system freertos
     EMBED_FILES ${ESPB_EMBED_FILES}
