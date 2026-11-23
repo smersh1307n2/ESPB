@@ -159,7 +159,18 @@ static int32_t qemu_native_atomic_i32_probe(void)
 
 extern "C" void app_main(void)
 {
-    // All test modules are linked into this one firmware image by CMake.\n    // Iterate the embedded module table; never rebuild/reboot per test.\n    // Keep CI's semantic run bounded; the workflow validates the full pair set.\n    printf("--- ESPB dual-mode QEMU tests ---\n");
+extern "C" void espb_native_source_control_flow(int32_t, const char *, void *);
+extern "C" void espb_native_source_select_convert(int32_t, const char *, void *);
+extern "C" void espb_native_source_freertos_timer(int32_t, const char *, void *);
+
+
+    // All test modules are linked into this one firmware image by CMake.\n    // Iterate the embedded module table; never rebuild/reboot per test.\n    // Keep CI's semantic run bounded; the workflow validates the full pair set.\n    printf("--- ESPB native source C tests ---\\n");
+    espb_native_source_control_flow(1112, "native-source", NULL);
+    espb_native_source_select_convert(1112, "native-source", NULL);
+    espb_native_source_freertos_timer(1112, "native-source", NULL);
+    printf("[ESPB_NATIVE_SOURCE] completed groups=3\\n");
+
+    printf("--- ESPB dual-mode QEMU tests ---\n");
     espb_register_custom_index_symbol_table(qemu_fast_symbols);
     espb_register_symbol_table(0, qemu_named_symbols);
 
