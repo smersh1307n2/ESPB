@@ -99,7 +99,7 @@ jobs:
 
           candidates = [
               run for run in candidates
-              if run.get("path") in {".github/workflows/build_opcode_groups_espb.yml", ".github/workflows/translate_llvm_espb.yml"}
+              if run.get("path") == ".github/workflows/translate_llvm_espb.yml"
               and run.get("head_branch") == "ESPB_WORK"
               and run.get("status") == "completed"
               and run.get("conclusion") == "success"
@@ -154,7 +154,7 @@ jobs:
                   continue
               matching = [
                   item for item in artifacts
-                  if item.get("name") in ("espb-opcode-groups-paired", "espb-llvm-translated-paired")
+                  if item.get("name") == "espb-llvm-translated-paired"
                   and not item.get("expired", False)
               ]
               if matching:
@@ -176,7 +176,7 @@ jobs:
         if: steps.paired_run.outputs.use_seed != 'true' && steps.paired_run.outputs.run_id != ''
         uses: actions/download-artifact@v4
         with:
-          name: espb-opcode-groups-paired
+          name: espb-llvm-translated-paired
           path: .work
           run-id: ${{ steps.paired_run.outputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
