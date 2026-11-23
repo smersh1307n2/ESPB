@@ -297,3 +297,5 @@ jobs:
 # [translate-opcode-corpus] Run after fixing selected-pair host assertion.
 
 # Selected FreeRTOS task pair translation retry.
+
+# [translate-opcode-corpus] Refresh only the three failing QEMU groups from the current verified bitcode.
