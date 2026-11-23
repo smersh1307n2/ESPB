@@ -1516,6 +1516,7 @@ op_unhandled:
                     instructions_end_ptr = callee_body->code + callee_body->code_size;
                     locals = callee_locals;
                     num_virtual_regs = callee_body->header.num_virtual_regs;
+                    max_reg_used = callee_body->header.max_reg_used;
                     
                     DISPATCH();
                 }
@@ -1650,6 +1651,7 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
         instructions_end_ptr = callee_body->code + callee_body->code_size;
         locals = callee_locals;
         num_virtual_regs = callee_body->header.num_virtual_regs;
+                    max_reg_used = callee_body->header.max_reg_used;
         
         DISPATCH();
 
@@ -2024,6 +2026,7 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                     instructions_end_ptr = callee_body->code + callee_body->code_size;
                     locals = callee_locals;
                     num_virtual_regs = callee_body->header.num_virtual_regs;
+                    max_reg_used = callee_body->header.max_reg_used;
                     
                     DISPATCH();
                 }
@@ -3114,6 +3117,7 @@ op_0x3E: { // NOT.I64 (unary)
                     local_func_idx = restored_caller_idx;
                     const EspbFunctionBody* caller_body = &module->function_bodies[local_func_idx];
                     num_virtual_regs = caller_body->header.num_virtual_regs;
+                    max_reg_used = caller_body->header.max_reg_used;
                     
                     exec_ctx->fp = restored_fp;
                     exec_ctx->sp = exec_ctx->fp + (num_virtual_regs * sizeof(Value)); // Reset SP to the top of the restored caller's frame
