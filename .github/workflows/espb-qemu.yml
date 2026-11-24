@@ -523,3 +523,5 @@ jobs:
             qemu/build/ESPB_QEMU.elf
           if-no-files-found: ignore
           retention-days: 14
+
+# Trigger a fresh dual-target ESP-IDF/QEMU validation after paired module publication.
