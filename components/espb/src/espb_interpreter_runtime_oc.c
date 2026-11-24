@@ -803,7 +803,10 @@ ExecutionContext* init_execution_context(void) {
         free(ctx);
         return NULL;
     }
-    memset(ctx->call_stack, 0, CALL_STACK_SIZE * sizeof(RuntimeFrame));
+    // Frames are initialized when pushed (including alloca_count and
+    // has_custom_aligned). The alloca_ptrs tail is read only up to alloca_count,
+    // so clearing the full 64-frame array here is unnecessary.
+
 
     ctx->shadow_stack_buffer = (uint8_t*)malloc(INITIAL_SHADOW_STACK_CAPACITY);
     if (!ctx->shadow_stack_buffer) {
