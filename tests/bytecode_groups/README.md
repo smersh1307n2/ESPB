@@ -35,3 +35,6 @@ Every function defined in every source file is marked JIT_HOT (including helpers
 - Do not modify ESP-IDF configuration, clock, compiler/linker settings, or code/data placement for these tests.
 
 The first pass is a broad coverage baseline. A follow-up opcode audit must map every opcode in the runtime specification to at least one group and identify opcodes that cannot be emitted naturally by the current translator.
+
+
+The paired `11_fibonacci` group is the Fibonacci coverage for the QEMU dual-mode suite: it runs once with HOT/JIT and once with HOT cleared in the interpreter variant. The legacy JIT-only Fibonacci in `main/test.espb` is not a substitute for this paired group.
