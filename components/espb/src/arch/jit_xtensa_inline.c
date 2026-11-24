@@ -3301,28 +3301,11 @@ EspbResult espb_jit_compile_function_xtensa_inline(
     };
     uint32_t vcache_clock = 0, vcache_hits = 0, vcache_spills = 0, vcache_coalesced_writes = 0;
 
-    // Branch-free function-local I32 cache. Keep the conservative raw-byte
-    // scan until a complete instruction-boundary decoder is available: enabling
-    // caching in a prefix is unsafe when a later branch can target that prefix.
-    // False positives only disable the optimization; they do not affect results.
-    bool vcache_function_safe = true;
-    size_t vcache_scan_blocked_at = code_size;
-    uint8_t vcache_scan_blocked_byte = 0;
-    for (const uint8_t *scan = code; scan < code + code_size; ++scan) {
-        if (*scan == 0x02 || *scan == 0x03 || *scan == 0x04) {
-            vcache_function_safe = false;
-            vcache_scan_blocked_at = (size_t)(scan - code);
-            vcache_scan_blocked_byte = *scan;
-            break;
-        }
-    }
-
-    // Report the first conservative blocker after its state has been initialized.
-    if (!vcache_function_safe) {
-        ESP_LOGI(TAG, "[vcache-scan] disabled_at=%u byte=0x%02X code_bytes=%u",
-                 (unsigned)vcache_scan_blocked_at, (unsigned)vcache_scan_blocked_byte,
-                 (unsigned)code_size);
-    }
+    // Cache is scoped to straight-line bytecode regions. Every control-flow
+    // opcode and every non-cacheable operation flushes the cache before its
+    // native address is recorded/emitted, so each branch target observes
+    // coherent v_regs. This allows caching inside loops without requiring
+    // the entire function to be branch-free.
 #define XTENSA_VCACHE_FIND(v, result) do { \
         (result) = -1; \
         for (int _i = 0; _i < 4; ++_i) { \
@@ -3382,7 +3365,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
         // Flush before recording native-address mapping: every branch target enters
         // with coherent v_regs. Helper/division opcodes never see a dirty cache.
-        const bool vcacheable = vcache_function_safe &&
+        const bool vcacheable =
             ((op >= 0x20 && op <= 0x22) || (op >= 0x28 && op <= 0x2D));
         const bool vcache_next = vcacheable && ((size_t)(end - pc) >= 4) &&
             (((pc[3] >= 0x20 && pc[3] <= 0x22) || (pc[3] >= 0x28 && pc[3] <= 0x2D)));
