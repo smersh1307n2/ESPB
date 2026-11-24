@@ -3079,9 +3079,11 @@ static bool xtensa_vcache_scan_branch_free(const uint8_t *code, size_t code_size
                                            size_t *blocked_at, uint8_t *blocked_opcode)
 {
     size_t pc = 0;
+    size_t op_offset = 0;
+    uint8_t op = 0;
     while (pc < code_size) {
-        const size_t op_offset = pc;
-        const uint8_t op = code[pc++];
+        op_offset = pc;
+        op = code[pc++];
         if (op == 0x02 || op == 0x03 || op == 0x04) {
             if (blocked_at) *blocked_at = op_offset;
             if (blocked_opcode) *blocked_opcode = op;
