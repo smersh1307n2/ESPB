@@ -23,7 +23,16 @@
 #include <stdlib.h> // для malloc, free, calloc
 #include "safe_memory.h"
 #include <string.h> // для memcpy, strdup
-#include <stdio.h>  // для printf (отладка)
+#include <stdio.h>
+
+#ifndef ESPB_PARSER_DEBUG
+#define ESPB_PARSER_DEBUG 0
+#endif
+#if ESPB_PARSER_DEBUG
+#define PARSER_DEBUG(...) fprintf(__VA_ARGS__)
+#else
+#define PARSER_DEBUG(...) ((void)0)
+#endif  // для printf (отладка)
 #include <inttypes.h> // для PRIx32 и т.д. (может понадобиться для отладки)
 
 // Если используются логи ESP, раскомментируйте и убедитесь, что TAG определен
@@ -165,7 +174,7 @@ EspbResult espb_parse_header_and_sections(EspbModule *module, const uint8_t *buf
         return ESPB_ERR_INVALID_HEADER; // Или другой подходящий код ошибки
     }
 
-    fprintf(stderr, "DEBUG: Starting to parse header and sections. Buffer size: %zu bytes\n", buffer_size);
+    PARSER_DEBUG(stderr, "DEBUG: Starting to parse header and sections. Buffer size: %zu bytes\n", buffer_size);
 
     module->buffer = buffer;
     module->buffer_size = buffer_size;
@@ -1482,7 +1491,7 @@ EspbResult espb_parse_relocations_section(EspbModule *module) {
 
     uint8_t current_target_section_id; // ID секции, к которой относятся все релокации в этом блоке
     if (!read_u8(&ptr, end_ptr, &current_target_section_id)) {
-        fprintf(stderr, "RELOC_PARSER_DEBUG: Failed to read overall target_section_id. Available: %td\n", (ptrdiff_t)(end_ptr - ptr));
+        PARSER_DEBUG(stderr, "RELOC_PARSER_DEBUG: Failed to read overall target_section_id. Available: %td\n", (ptrdiff_t)(end_ptr - ptr));
         return ESPB_ERR_INVALID_RELOCATION_SECTION;
     }
 
