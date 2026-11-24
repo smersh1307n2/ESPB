@@ -38,7 +38,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: espb-work-qemu-dual-mode
+  group: espb-work-qemu-dual-mode-recovered
   # Keep the latest test queued instead of cancelling a QEMU run mid-flight.
   cancel-in-progress: false
 
