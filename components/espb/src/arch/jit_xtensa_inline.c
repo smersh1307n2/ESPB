@@ -3079,10 +3079,13 @@ static bool xtensa_vcache_scan_blocks(const uint8_t *code, size_t code_size,
                                        uint8_t *block_map, size_t *blocked_at,
                                        uint8_t *blocked_opcode)
 {
-    size_t pc = 0;
+    size_t pc = 0, fail_offset = 0;
+    uint8_t fail_opcode = 0;
     while (pc < code_size) {
         const size_t source = pc;
         const uint8_t op = code[pc++];
+        fail_offset = source;
+        fail_opcode = op;
         block_map[source] |= 0x80u; /* instruction boundary */
         if (op == 0x02 || op == 0x03) {
             const size_t need = op == 0x02 ? 2u : 3u;
@@ -3161,8 +3164,8 @@ static bool xtensa_vcache_scan_blocks(const uint8_t *code, size_t code_size,
     return true;
 
 undecodable:
-    if (blocked_at) *blocked_at = source;
-    if (blocked_opcode) *blocked_opcode = op;
+    if (blocked_at) *blocked_at = fail_offset;
+    if (blocked_opcode) *blocked_opcode = fail_opcode;
     return false;
 }
 
