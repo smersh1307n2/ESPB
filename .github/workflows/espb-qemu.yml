@@ -353,10 +353,11 @@ jobs:
           # The timeout sends SIGINT; QEMU prints "terminating on signal 2" and
           # aborts with 134 after the firmware has already completed. Accept only
           # that specific shutdown sequence, never an arbitrary QEMU abort.
-          if [ "$qemu_status" -eq 134 ] &&
+          if { [ "$qemu_status" -eq 134 ] || [ "$qemu_status" -eq 1 ]; } &&
              grep -Fq -- "--- ESPB dual-mode QEMU tests finished ---" qemu.log &&
              grep -Fq -- "Returned from app_main()" qemu.log &&
-             grep -Fq -- "terminating on signal 2" qemu.log; then
+             grep -Fq -- "terminating on signal 2" qemu.log &&
+             grep -Fq -- "Aborted!" qemu.log; then
             echo "QEMU shutdown after successful app_main completion (timeout SIGINT)"
             qemu_status=0
           fi
