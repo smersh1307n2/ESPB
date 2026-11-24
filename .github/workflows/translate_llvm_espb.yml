@@ -18,7 +18,7 @@ on:
         default: ""
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: espb-llvm-espb-translate
@@ -102,5 +102,37 @@ jobs:
             .work/paired/manifest.json
             .work/paired/opcode_audit.json
           if-no-files-found: error
+
+      - name: Replace checked-in ESPB module pairs
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f modules/qemu_seed/*.jit.espb modules/qemu_seed/*.interpreter.espb
+          rm -f main/*.jit.espb main/*.interpreter.espb
+          cp .work/paired/*.espb modules/qemu_seed/
+          cp .work/paired/*.espb main/
+          cp .work/paired/manifest.json modules/qemu_seed/manifest.json
+          cp .work/paired/opcode_audit.json modules/qemu_seed/opcode_audit.json
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          cmake = Path("main/CMakeLists.txt")
+          text = cmake.read_text(encoding="utf-8")
+          modules = sorted(path.name for path in Path("main").glob("*.espb") if path.name.endswith((".jit.espb", ".interpreter.espb")))
+          if len(modules) != 22:
+              raise SystemExit(f"Expected 22 paired ESPB files in main/, got {len(modules)}")
+          block = "set(ESPB_MODULE_FILES\\n" + "".join(f'    "{name}"\\n' for name in modules) + ")"
+          updated, count = re.subn(r"set\\(ESPB_MODULE_FILES\\n.*?\\n\\)", block, text, count=1, flags=re.S)
+          if count != 1:
+              raise SystemExit("Could not update ESPB_MODULE_FILES in main/CMakeLists.txt")
+          cmake.write_text(updated, encoding="utf-8")
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add modules/qemu_seed/*.jit.espb modules/qemu_seed/*.interpreter.espb modules/qemu_seed/manifest.json modules/qemu_seed/opcode_audit.json main/*.jit.espb main/*.interpreter.espb main/CMakeLists.txt
+          if ! git diff --cached --quiet; then
+            git commit -m "Refresh paired ESPB modules from LLVM_ESPB"
+            git push origin HEAD:ESPB_WORK
+          fi
 
 # Re-run LLVM_ESPB translation against the current ESPB_WORK sources.
