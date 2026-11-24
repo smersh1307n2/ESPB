@@ -306,8 +306,8 @@ jobs:
             # but run the exact historical main/test.espb bytecode on the JIT
             # side. This isolates runtime/JIT changes from translator changes
             # for the Fibonacci benchmark.
-            git fetch --no-tags origin main
-            git show origin/main:main/test.espb > "$RUNNER_TEMP/espb_opcode_pairs/11_fibonacci.jit.espb"
+            git -c safe.directory="$GITHUB_WORKSPACE" fetch --no-tags origin main
+            git -c safe.directory="$GITHUB_WORKSPACE" show origin/main:main/test.espb > "$RUNNER_TEMP/espb_opcode_pairs/11_fibonacci.jit.espb"
             test -s "$RUNNER_TEMP/espb_opcode_pairs/11_fibonacci.jit.espb"
             cp "$RUNNER_TEMP/espb_opcode_pairs/11_fibonacci.jit.espb" modules/opcode_groups/11_fibonacci.espb
             echo "ESPB_FIBONACCI_JIT_SOURCE=main/test.espb"
