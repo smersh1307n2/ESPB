@@ -1,107 +1,117 @@
 {
   "schema": "espb-qemu-paired-tests/v1",
   "branch": "ESPB_WORK",
-  "group_count": 10,
+  "group_count": 11,
   "groups": [
     {
       "name": "01_integer32",
       "qemu_group": "integer32",
       "jit": "01_integer32.jit.espb",
-      "jit_git_blob_sha": "d9d261f0281a0d9e0a90309aef39f5e842fe7663",
-      "jit_size_bytes": 2342,
+      "jit_git_blob_sha": "7624ba358f2e502d922495608684262f5d50000d",
+      "jit_size_bytes": 2690,
       "interpreter": "01_integer32.interpreter.espb",
-      "interpreter_git_blob_sha": "e87261a17dd32a799cc952ad8fe27e7efe22f752",
-      "interpreter_size_bytes": 2342
+      "interpreter_git_blob_sha": "0fc11ba0974eb85605fd31ac434f7e64fa8e2fa7",
+      "interpreter_size_bytes": 2690
     },
     {
       "name": "02_integer64",
       "qemu_group": "integer64",
       "jit": "02_integer64.jit.espb",
-      "jit_git_blob_sha": "05d1aa15817173d3a3ac67efd28955e3d0259472",
-      "jit_size_bytes": 2070,
+      "jit_git_blob_sha": "3bbd957c3bac3bd88d1ed4841ba487d1bb1cd8c3",
+      "jit_size_bytes": 2052,
       "interpreter": "02_integer64.interpreter.espb",
-      "interpreter_git_blob_sha": "1d5ce68a8f253c401c7750406305bd5bb21fc2ac",
-      "interpreter_size_bytes": 2070
+      "interpreter_git_blob_sha": "e9d07bd43479727e4aba7e4c6a9e60502d7f7f95",
+      "interpreter_size_bytes": 2052
     },
     {
       "name": "03_float",
       "qemu_group": "float",
       "jit": "03_float.jit.espb",
-      "jit_git_blob_sha": "0ea1a9ab83c57552cfa642fbc8bbe52167995f04",
-      "jit_size_bytes": 2515,
+      "jit_git_blob_sha": "494e69b944d4dae9e4dd9a5dbe0f0cb3fe25b09d",
+      "jit_size_bytes": 2920,
       "interpreter": "03_float.interpreter.espb",
-      "interpreter_git_blob_sha": "7b94ad95d80064dc167f2cfda549d71bec69fd4c",
-      "interpreter_size_bytes": 2515
+      "interpreter_git_blob_sha": "a8811c3b3dedaa6c728adddef6640802f17ba76d",
+      "interpreter_size_bytes": 2920
     },
     {
       "name": "04_control_flow",
       "qemu_group": "control_flow",
       "jit": "04_control_flow.jit.espb",
-      "jit_git_blob_sha": "2a42da8378788e25cc4ac348f2f4501eb4868476",
-      "jit_size_bytes": 1093,
+      "jit_git_blob_sha": "8219e18261bafe161aba223b5644120487e0c771",
+      "jit_size_bytes": 1159,
       "interpreter": "04_control_flow.interpreter.espb",
-      "interpreter_git_blob_sha": "2b6fe401bf717fbce72666fbdac5be30ab074dfb",
-      "interpreter_size_bytes": 1093
+      "interpreter_git_blob_sha": "aaa59f800313c4da84e194f69f9d2778e47f4718",
+      "interpreter_size_bytes": 1159
     },
     {
       "name": "05_select_convert",
       "qemu_group": "select_convert",
       "jit": "05_select_convert.jit.espb",
-      "jit_git_blob_sha": "7f6d2dfc87dd1ddaf73d8270f12cd32ef9e7b10d",
-      "jit_size_bytes": 2196,
+      "jit_git_blob_sha": "4e786d904e32e80a831f8c15f3bfc1aa924fe5ed",
+      "jit_size_bytes": 2145,
       "interpreter": "05_select_convert.interpreter.espb",
-      "interpreter_git_blob_sha": "d75d0c9a106e6d9de9946795b6fe44b243b01897",
-      "interpreter_size_bytes": 2196
+      "interpreter_git_blob_sha": "cde8aaeaf726382416a1b52300d9a9eb43034843",
+      "interpreter_size_bytes": 2145
     },
     {
       "name": "06_memory",
       "qemu_group": "memory",
       "jit": "06_memory.jit.espb",
-      "jit_git_blob_sha": "78110587beb97c8c815ab0566edd25ad89b6fdad",
+      "jit_git_blob_sha": "032418836aa746b2b5f37b66607b4343018da38b",
       "jit_size_bytes": 2203,
       "interpreter": "06_memory.interpreter.espb",
-      "interpreter_git_blob_sha": "33620e21f204386f565ca202be37064a0f4fcc15",
+      "interpreter_git_blob_sha": "2e07e8e8081335eb82d06c0a65f7c585e3c246dd",
       "interpreter_size_bytes": 2203
     },
     {
       "name": "07_calls_callbacks",
       "qemu_group": "calls_callbacks",
       "jit": "07_calls_callbacks.jit.espb",
-      "jit_git_blob_sha": "889e2f7e9d786b6c5e4343451cfdf548ea472828",
+      "jit_git_blob_sha": "1c56b0164de195759688a217ec0e2a98b0a51b8b",
       "jit_size_bytes": 2142,
       "interpreter": "07_calls_callbacks.interpreter.espb",
-      "interpreter_git_blob_sha": "ae87623092cf4da9ff507a0401628b20510b4eda",
+      "interpreter_git_blob_sha": "7b94364bdbbfc4329246a31e2e08605bc15e2b0d",
       "interpreter_size_bytes": 2142
     },
     {
       "name": "08_atomics",
       "qemu_group": "atomics",
       "jit": "08_atomics.jit.espb",
-      "jit_git_blob_sha": "0cd164ca437d0da020e2054e2c03041b64eab22c",
-      "jit_size_bytes": 1916,
+      "jit_git_blob_sha": "6d824b4e0685981b20dd807667883064f62d7b80",
+      "jit_size_bytes": 1922,
       "interpreter": "08_atomics.interpreter.espb",
-      "interpreter_git_blob_sha": "20fa3a70aa8a613d5db0d6acabd09d5af4b4fe11",
-      "interpreter_size_bytes": 1916
+      "interpreter_git_blob_sha": "cb86491c21e3637de03a33c1a7912beaf7845872",
+      "interpreter_size_bytes": 1922
     },
     {
       "name": "09_freertos_task",
       "qemu_group": "freertos_task",
       "jit": "09_freertos_task.jit.espb",
-      "jit_git_blob_sha": "70d285e0a39dae567161a0d4a111cd504a730fc5",
+      "jit_git_blob_sha": "0107a36639a4f10e86b703b914e86fdcaa4299c1",
       "jit_size_bytes": 976,
       "interpreter": "09_freertos_task.interpreter.espb",
-      "interpreter_git_blob_sha": "75612b88c02835f5aec715224085b39568644c92",
+      "interpreter_git_blob_sha": "6875d6216ac025ce6bc0c244b24956ed46e2ae8e",
       "interpreter_size_bytes": 976
     },
     {
       "name": "10_freertos_timer",
       "qemu_group": "freertos_timer",
       "jit": "10_freertos_timer.jit.espb",
-      "jit_git_blob_sha": "990b7c7d0b221178a1d60076aff6823ade9368d3",
+      "jit_git_blob_sha": "a32d99b8533e0f3fea84eacd43e85a9c9db3a942",
       "jit_size_bytes": 1039,
       "interpreter": "10_freertos_timer.interpreter.espb",
-      "interpreter_git_blob_sha": "3ab4d3de07c2e63a175822c3cff1691f57d71a11",
+      "interpreter_git_blob_sha": "93cae1e057cc133f177fa89567880c0a963d5c65",
       "interpreter_size_bytes": 1039
+    },
+    {
+      "name": "11_fibonacci",
+      "qemu_group": "fibonacci",
+      "jit": "11_fibonacci.jit.espb",
+      "jit_git_blob_sha": "318b09bf9969752dfebd6e574e7203a680538a3c",
+      "jit_size_bytes": 779,
+      "interpreter": "11_fibonacci.interpreter.espb",
+      "interpreter_git_blob_sha": "0e309815377b5059d8973c750407bfc93a7e7f7a",
+      "interpreter_size_bytes": 779
     }
   ]
 }

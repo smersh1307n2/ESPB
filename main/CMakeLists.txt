@@ -19,6 +19,8 @@ set(ESPB_MODULE_FILES
     "09_freertos_task.jit.espb"
     "10_freertos_timer.interpreter.espb"
     "10_freertos_timer.jit.espb"
+    "11_fibonacci.interpreter.espb"
+    "11_fibonacci.jit.espb"
 )
 
 idf_component_register(
