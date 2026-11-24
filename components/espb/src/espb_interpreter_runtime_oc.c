@@ -1117,9 +1117,15 @@ EspbResult espb_call_function(EspbInstance *instance, ExecutionContext *exec_ctx
             }
         }
 
-        if ((size_t)num_params_to_copy < num_virtual_regs) {
+        // Only registers addressable by this function's bytecode need zeroing.
+        // max_reg_used is validated/produced with the function body; registers
+        // above it are never read by the interpreter and clearing them is wasted
+        // work on every call (notably in recursive functions).
+        const size_t registers_to_initialize =
+            MIN((size_t)num_virtual_regs, (size_t)max_reg_used + 1u);
+        if ((size_t)num_params_to_copy < registers_to_initialize) {
             memset(locals + num_params_to_copy, 0,
-                   (size_t)(num_virtual_regs - num_params_to_copy) * sizeof(Value));
+                   (registers_to_initialize - (size_t)num_params_to_copy) * sizeof(Value));
         }
         // Callback contexts are indexed by virtual register; no separate array is allocated here.
         
