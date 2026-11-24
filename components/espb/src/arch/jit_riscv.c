@@ -2229,14 +2229,16 @@ static void jit_context_init(JitContext* ctx, uint8_t* buffer, size_t capacity) 
 }
 
 static void jit_context_add_label(JitContext* ctx, size_t bytecode_offset) {
-    // Проверяем, есть ли уже метка для этого offset
-    for (size_t i = 0; i < ctx->num_labels; i++) {
-        if (ctx->labels[i].bytecode_offset == bytecode_offset) {
-            ctx->labels[i].native_offset = ctx->offset;
+    // Bytecode is emitted in increasing offset order. Duplicate labels, if any,
+    // can only be the most recently added label.
+    if (ctx->num_labels != 0) {
+        JitLabel* last = &ctx->labels[ctx->num_labels - 1];
+        if (last->bytecode_offset == bytecode_offset) {
+            last->native_offset = ctx->offset;
             return;
         }
     }
-    
+
     // Добавляем новую метку
     if (ctx->num_labels >= ctx->labels_capacity) {
         size_t new_capacity = ctx->labels_capacity == 0 ? 16 : ctx->labels_capacity * 2;
@@ -2252,10 +2254,21 @@ static void jit_context_add_label(JitContext* ctx, size_t bytecode_offset) {
 }
 
 static size_t jit_context_find_label(JitContext* ctx, size_t bytecode_offset) {
-    for (size_t i = 0; i < ctx->num_labels; i++) {
-        if (ctx->labels[i].bytecode_offset == bytecode_offset) {
-            return ctx->labels[i].native_offset;
+    // Labels are kept sorted by bytecode offset as the emitter walks forward.
+    size_t lo = 0;
+    size_t hi = ctx->num_labels;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        size_t offset = ctx->labels[mid].bytecode_offset;
+        if (offset < bytecode_offset) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
         }
+    }
+    if (lo < ctx->num_labels &&
+        ctx->labels[lo].bytecode_offset == bytecode_offset) {
+        return ctx->labels[lo].native_offset;
     }
     return SIZE_MAX; // Не найдено
 }
