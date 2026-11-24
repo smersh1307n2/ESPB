@@ -211,7 +211,7 @@ EspbResult espb_parse_header_and_sections(EspbModule *module, const uint8_t *buf
     module->header.features = features;
     module->header.num_sections = num_sections;
 
-    fprintf(stderr, "DEBUG: Read header - Magic: 0x%08lX, Version: 0x%08lX, NumSections: %u\n", 
+    PARSER_DEBUG(stderr, "DEBUG: Read header - Magic: 0x%08lX, Version: 0x%08lX, NumSections: %u\n", 
             (unsigned long)magic, (unsigned long)version, num_sections);
 
     if (module->header.magic != ESPB_MAGIC_NUMBER) {
@@ -237,14 +237,14 @@ EspbResult espb_parse_header_and_sections(EspbModule *module, const uint8_t *buf
     }
 
     // Определяем текущую позицию после заголовка
-    fprintf(stderr, "DEBUG: Current position after header: %td bytes\n", (ptrdiff_t)(ptr - buffer));
+    PARSER_DEBUG(stderr, "DEBUG: Current position after header: %td bytes\n", (ptrdiff_t)(ptr - buffer));
 
     // 3. Проверка размера буфера для таблицы секций
     // Каждая запись заголовка секции занимает 12 байт: ID(1) + резервный байт(1) + резерв(2) + смещение(4) + размер(4)
     size_t section_entry_size_in_file = 12;
     size_t section_table_size = (size_t)module->header.num_sections * section_entry_size_in_file;
 
-    fprintf(stderr, "DEBUG: Section table starts at offset %td and contains %u entries of %zu bytes each (total %zu bytes)\n", 
+    PARSER_DEBUG(stderr, "DEBUG: Section table starts at offset %td and contains %u entries of %zu bytes each (total %zu bytes)\n", 
             (ptrdiff_t)(ptr - buffer), module->header.num_sections, section_entry_size_in_file, section_table_size);
 
     if (ptr + section_table_size > end_ptr) {
@@ -279,15 +279,15 @@ EspbResult espb_parse_header_and_sections(EspbModule *module, const uint8_t *buf
         uint32_t sec_size;
         
         // Печатаем информацию о чтении для отладки
-        fprintf(stderr, "DEBUG: Section %u (ID=%u): About to read offset and size. Current buffer offset: %td\n",
+        PARSER_DEBUG(stderr, "DEBUG: Section %u (ID=%u): About to read offset and size. Current buffer offset: %td\n",
                 (unsigned int)i, (unsigned int)sec_id, (ptrdiff_t)(ptr - buffer));
         
         // Добавим отладочный вывод сырых байт ПЕРЕД чтением sec_offset
         if (ptr + 8 <= end_ptr) { // Убедимся, что есть хотя бы 8 байт для offset + size
-             fprintf(stderr, "DEBUG: Section %u (ID=%u): Raw bytes for offset (4): %02x %02x %02x %02x\n",
+             PARSER_DEBUG(stderr, "DEBUG: Section %u (ID=%u): Raw bytes for offset (4): %02x %02x %02x %02x\n",
                      (unsigned int)i, (unsigned int)sec_id, ptr[0], ptr[1], ptr[2], ptr[3]);
         } else {
-            fprintf(stderr, "DEBUG: Section %u (ID=%u): Not enough bytes for offset.\n", (unsigned int)i, (unsigned int)sec_id);
+            PARSER_DEBUG(stderr, "DEBUG: Section %u (ID=%u): Not enough bytes for offset.\n", (unsigned int)i, (unsigned int)sec_id);
         }
 
         if (!read_u32(&ptr, end_ptr, &sec_offset)) {
@@ -299,10 +299,10 @@ EspbResult espb_parse_header_and_sections(EspbModule *module, const uint8_t *buf
 
         // Добавим отладочный вывод сырых байт ПЕРЕД чтением sec_size
         if (ptr + 4 <= end_ptr) { // Убедимся, что есть хотя бы 4 байта для size
-             fprintf(stderr, "DEBUG: Section %u (ID=%u): Raw bytes for size (4) at buffer offset %td: %02x %02x %02x %02x\n",
+             PARSER_DEBUG(stderr, "DEBUG: Section %u (ID=%u): Raw bytes for size (4) at buffer offset %td: %02x %02x %02x %02x\n",
                      (unsigned int)i, (unsigned int)sec_id, (ptrdiff_t)(ptr-buffer), ptr[0], ptr[1], ptr[2], ptr[3]);
         } else {
-            fprintf(stderr, "DEBUG: Section %u (ID=%u): Not enough bytes for size.\n", (unsigned int)i, (unsigned int)sec_id);
+            PARSER_DEBUG(stderr, "DEBUG: Section %u (ID=%u): Not enough bytes for size.\n", (unsigned int)i, (unsigned int)sec_id);
         }
         
         if (!read_u32(&ptr, end_ptr, &sec_size)) {
@@ -334,7 +334,7 @@ EspbResult espb_parse_header_and_sections(EspbModule *module, const uint8_t *buf
             module->section_table[i].section_size = new_size;
         }
         
-        fprintf(stderr, "DEBUG: Section %u: ID=%u, Reserved=(0x%02X, 0x%04X), Offset=0x%X (%u), Size=0x%X (%u)\n", 
+        PARSER_DEBUG(stderr, "DEBUG: Section %u: ID=%u, Reserved=(0x%02X, 0x%04X), Offset=0x%X (%u), Size=0x%X (%u)\n", 
                 (unsigned int)i, (unsigned int)sec_id, 
                 (unsigned int)reserve_byte, (unsigned int)reserve_ushort,
                 (unsigned int)sec_offset, (unsigned int)sec_offset, 
@@ -358,7 +358,7 @@ EspbResult espb_parse_header_and_sections(EspbModule *module, const uint8_t *buf
         }
     }
     
-    fprintf(stderr, "DEBUG: Successfully read all %u section entries. Current position: %td bytes\n", 
+    PARSER_DEBUG(stderr, "DEBUG: Successfully read all %u section entries. Current position: %td bytes\n", 
             module->header.num_sections, (ptrdiff_t)(ptr - buffer));
     
     // Посчитаем, сколько секций имеют ненулевой размер (валидные)
@@ -368,7 +368,7 @@ EspbResult espb_parse_header_and_sections(EspbModule *module, const uint8_t *buf
             valid_sections++;
         }
     }
-    fprintf(stderr, "DEBUG: Total valid sections: %u out of %u\n", 
+    PARSER_DEBUG(stderr, "DEBUG: Total valid sections: %u out of %u\n", 
             (unsigned int)valid_sections, (unsigned int)module->header.num_sections);
     
     return ESPB_OK;
@@ -719,7 +719,7 @@ EspbResult espb_parse_code_section(EspbModule *module) {
             goto error_cleanup_code;
         }
         
-        fprintf(stderr, "DEBUG: Func[%" PRIu32 "]: flags=0x%02X, max_reg=%u, frame_size=%u, num_vregs=%u, code_size=%" PRIu32 " [VALIDATED]\n",
+        PARSER_DEBUG(stderr, "DEBUG: Func[%" PRIu32 "]: flags=0x%02X, max_reg=%u, frame_size=%u, num_vregs=%u, code_size=%" PRIu32 " [VALIDATED]\n",
                 i, body->header.flags, body->header.max_reg_used, body->header.frame_size, 
                 body->header.num_virtual_regs, body->code_size);
     }
@@ -1496,11 +1496,11 @@ EspbResult espb_parse_relocations_section(EspbModule *module) {
     }
 
     if (!read_u32(&ptr, end_ptr, &module->num_relocations)) {
-        fprintf(stderr, "RELOC_PARSER_DEBUG: Failed to read module->num_relocations. Available: %td\n", (ptrdiff_t)(end_ptr - ptr));
+        PARSER_DEBUG(stderr, "RELOC_PARSER_DEBUG: Failed to read module->num_relocations. Available: %td\n", (ptrdiff_t)(end_ptr - ptr));
         return ESPB_ERR_INVALID_RELOCATION_SECTION;
     }
  
-    fprintf(stderr, "RELOC_PARSER_DEBUG: Overall TargetSectionID: %u, NumRelocations: %" PRIu32 ", SectionSize: %" PRIu32 "\n", 
+    PARSER_DEBUG(stderr, "RELOC_PARSER_DEBUG: Overall TargetSectionID: %u, NumRelocations: %" PRIu32 ", SectionSize: %" PRIu32 "\n", 
             current_target_section_id, module->num_relocations, section_size);
 
     if (module->num_relocations == 0) {
@@ -1532,21 +1532,21 @@ EspbResult espb_parse_relocations_section(EspbModule *module) {
 
         reloc->target_section_id = current_target_section_id; // Используем ID, прочитанный для всей секции
 
-        fprintf(stderr, "RELOC_PARSER_DEBUG: Reloc #%" PRIu32 ", Reading type. Available: %td\n", i, (ptrdiff_t)(end_ptr - ptr));
+        PARSER_DEBUG(stderr, "RELOC_PARSER_DEBUG: Reloc #%" PRIu32 ", Reading type. Available: %td\n", i, (ptrdiff_t)(end_ptr - ptr));
         if (!read_u8(&ptr, end_ptr, &type_val) ||
-            (fprintf(stderr, "RELOC_PARSER_DEBUG: Reloc #%" PRIu32 ", Reading offset. Available: %td\n", i, (ptrdiff_t)(end_ptr - ptr)), 
+            (PARSER_DEBUG(stderr, "RELOC_PARSER_DEBUG: Reloc #%" PRIu32 ", Reading offset. Available: %td\n", i, (ptrdiff_t)(end_ptr - ptr)), 
              !read_u32(&ptr, end_ptr, &reloc->offset)) ||
-            (fprintf(stderr, "RELOC_PARSER_DEBUG: Reloc #%" PRIu32 ", Reading symbol_index. Available: %td\n", i, (ptrdiff_t)(end_ptr - ptr)),
+            (PARSER_DEBUG(stderr, "RELOC_PARSER_DEBUG: Reloc #%" PRIu32 ", Reading symbol_index. Available: %td\n", i, (ptrdiff_t)(end_ptr - ptr)),
              !read_u32(&ptr, end_ptr, &reloc->symbol_index))) {
-            fprintf(stderr, "RELOC_PARSER_DEBUG: Failed to read relocation entry base (type, offset, or symbol_index) for reloc %" PRIu32 "\n", i);
+            PARSER_DEBUG(stderr, "RELOC_PARSER_DEBUG: Failed to read relocation entry base (type, offset, or symbol_index) for reloc %" PRIu32 "\n", i);
             goto error_cleanup_relocs;
         }
         reloc->type = (EspbRelocType)type_val;
         
-        fprintf(stderr, "RELOC_PARSER_DEBUG: Reloc #%" PRIu32 ", Type: %u, Offset: %" PRIu32 ", SymbolIndex: %" PRIu32 ". Reading addend. Available: %td\n", 
+        PARSER_DEBUG(stderr, "RELOC_PARSER_DEBUG: Reloc #%" PRIu32 ", Type: %u, Offset: %" PRIu32 ", SymbolIndex: %" PRIu32 ". Reading addend. Available: %td\n", 
                 i, reloc->type, reloc->offset, reloc->symbol_index, (ptrdiff_t)(end_ptr - ptr));
         if (!read_i32(&ptr, end_ptr, &reloc->addend)) {
-            fprintf(stderr, "RELOC_PARSER_DEBUG: Failed to read addend for reloc %" PRIu32 ". Available: %td\n", i, (ptrdiff_t)(end_ptr - ptr));
+            PARSER_DEBUG(stderr, "RELOC_PARSER_DEBUG: Failed to read addend for reloc %" PRIu32 ". Available: %td\n", i, (ptrdiff_t)(end_ptr - ptr));
             goto error_cleanup_relocs;
         }
         reloc->has_addend = true; 
@@ -2022,7 +2022,7 @@ EspbResult espb_parse_func_ptr_map_section(EspbModule *module) {
     }
     
     uint32_t num_entries = module->num_func_ptr_map_entries;
-    fprintf(stderr, "DEBUG: Found Function Pointer Map section with %u entries.\n", num_entries);
+    PARSER_DEBUG(stderr, "DEBUG: Found Function Pointer Map section with %u entries.\n", num_entries);
 
     if (num_entries == 0) {
         module->func_ptr_map = NULL;
@@ -2058,7 +2058,7 @@ EspbResult espb_parse_func_ptr_map_section(EspbModule *module) {
     // Сортируем массив для бинарного поиска в рантайме
     if (num_entries > 0) {
         qsort(module->func_ptr_map, num_entries, sizeof(EspbFuncPtrMapEntry), compare_func_ptr_map_entries);
-        fprintf(stderr, "DEBUG: Function Pointer Map sorted by data_offset.\n");
+        PARSER_DEBUG(stderr, "DEBUG: Function Pointer Map sorted by data_offset.\n");
     }
 
     // Build O(1) lookup table: function_index -> data_offset
@@ -2081,7 +2081,7 @@ EspbResult espb_parse_func_ptr_map_section(EspbModule *module) {
     }
 
     for(uint32_t i=0; i < num_entries; ++i) {
-        fprintf(stderr, "DEBUG: Map Entry %u: offset=0x%x -> func_idx=%u\n", i, module->func_ptr_map[i].data_offset, module->func_ptr_map[i].function_index);
+        PARSER_DEBUG(stderr, "DEBUG: Map Entry %u: offset=0x%x -> func_idx=%u\n", i, module->func_ptr_map[i].data_offset, module->func_ptr_map[i].function_index);
     }
 
     if (ptr != end_ptr) {
