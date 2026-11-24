@@ -621,25 +621,48 @@ EspbResult espb_free_callback_closure(void *closure_ptr) {
     return ESPB_OK;
 }
 
-/* Release all closures associated with a module instance. Native sources that
- * can invoke these closures must be stopped/deleted before module unload. */
+/* Release only closures owned by this module instance.
+ * Detach the complete matching set while holding the registry lock, then
+ * release libffi allocations outside the lock. This makes cleanup atomic with
+ * respect to registry traversal and prevents another module's closures from
+ * being affected. Native callback sources must be stopped before unload. */
 void espb_free_callback_closures_for_instance(EspbInstance *instance) {
-    if (!instance || !g_callback_system.initialized) return;
-    for (;;) {
-        void *exec_ptr = NULL;
-        if (xSemaphoreTake(g_callback_system.mutex, portMAX_DELAY) != pdTRUE) return;
-        for (EspbCallbackClosure *it = g_callback_system.active_closures; it; it = it->next) {
-            if (it->instance == instance) {
-                exec_ptr = it->executable_code;
-                break;
-            }
+    if (!instance || !g_callback_system.initialized ||
+        !g_callback_system.mutex) {
+        return;
+    }
+
+    EspbCallbackClosure *owned = NULL;
+    if (xSemaphoreTake(g_callback_system.mutex, portMAX_DELAY) != pdTRUE) {
+        ESP_LOGE(TAG, "Could not lock callback registry for instance cleanup %p",
+                 instance);
+        return;
+    }
+
+    EspbCallbackClosure **link = &g_callback_system.active_closures;
+    while (*link) {
+        EspbCallbackClosure *current = *link;
+        if (current->instance == instance) {
+            *link = current->next;
+            current->next = owned;
+            owned = current;
+        } else {
+            link = &current->next;
         }
-        xSemaphoreGive(g_callback_system.mutex);
-        if (!exec_ptr) break;
-        if (espb_free_callback_closure(exec_ptr) != ESPB_OK) {
-            ESP_LOGE(TAG, "Failed to release closure %p for instance %p", exec_ptr, instance);
-            break;
+    }
+    xSemaphoreGive(g_callback_system.mutex);
+
+    /* Every detached node is now exclusively owned by this cleanup call. */
+    while (owned) {
+        EspbCallbackClosure *next = owned->next;
+        if (owned->closure_ptr) {
+            ffi_closure_free(owned->closure_ptr);
+            owned->closure_ptr = NULL;
         }
+        free(owned->callback_info);
+        owned->callback_info = NULL;
+        free(owned);
+        owned = next;
     }
 }
 
