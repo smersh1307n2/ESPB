@@ -1,0 +1,61 @@
+name: ESPB root ESP-IDF build
+
+on:
+  push:
+    branches:
+      - ESPB_WORK
+    paths:
+      - 'CMakeLists.txt'
+      - 'sdkconfig*'
+      - 'main/**'
+      - 'components/**'
+      - 'managed_components/**'
+      - 'dependencies.lock'
+      - '.github/workflows/espb-root-idf-build.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: espb-root-idf-build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Root ESP-IDF / ${{ matrix.target }}
+    runs-on: ubuntu-22.04
+    container:
+      image: espressif/idf:v5.4.1
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [esp32, esp32c3]
+    steps:
+      - name: Checkout ESPB_WORK
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Configure and build root ESP-IDF project
+        shell: bash
+        run: |
+          set -o pipefail
+          . "$IDF_PATH/export.sh"
+          idf.py set-target "${{ matrix.target }}" 2>&1 | tee root-build.log
+          idf.py build 2>&1 | tee -a root-build.log
+
+      - name: Upload root build log and firmware
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: espb-root-idf-${{ matrix.target }}-${{ github.run_id }}
+          path: |
+            root-build.log
+            build/*.elf
+            build/*.bin
+            build/*.map
+          if-no-files-found: ignore
+          retention-days: 14
