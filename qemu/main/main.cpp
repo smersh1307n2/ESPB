@@ -231,16 +231,6 @@ extern "C" void app_main(void)
         load_us = esp_timer_get_time() - load_start_us;
         const uint32_t heap_after_load = esp_get_free_heap_size();
 
-        const int64_t first_call_start_us = esp_timer_get_time();
-        result = espb_call_function_sync(handle, "app_main", args, 3, NULL);
-        if (result != ESPB_OK) {
-            printf("[ESPB_TEST] warmup_failed=%s error=%d\n", module.name, (int)result);
-            espb_unload_module(handle);
-            return;
-        }
-
-        first_call_us = esp_timer_get_time() - first_call_start_us;
-
         if (jit_mode) {
             const int64_t jit_compile_start_us = esp_timer_get_time();
             result = espb_jit_precompile_hot_functions(handle->instance, NULL);
@@ -251,6 +241,15 @@ extern "C" void app_main(void)
             }
             jit_compile_us = esp_timer_get_time() - jit_compile_start_us;
         }
+
+        const int64_t first_call_start_us = esp_timer_get_time();
+        result = espb_call_function_sync(handle, "app_main", args, 3, NULL);
+        if (result != ESPB_OK) {
+            printf("[ESPB_TEST] warmup_failed=%s error=%d\n", module.name, (int)result);
+            espb_unload_module(handle);
+            return;
+        }
+        first_call_us = esp_timer_get_time() - first_call_start_us;
 
         uint32_t hot_count = 0;
         uint32_t compiled_hot_count = 0;
