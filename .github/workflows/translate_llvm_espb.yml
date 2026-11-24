@@ -141,8 +141,8 @@ jobs:
           modules = sorted(path.name for path in Path("main").glob("*.espb") if path.name.endswith((".jit.espb", ".interpreter.espb")))
           if len(modules) != 22:
               raise SystemExit(f"Expected 22 paired ESPB files in main/, got {len(modules)}")
-          block = "set(ESPB_MODULE_FILES\\n" + "\\n".join('    "' + name + '"' for name in modules) + "\\n)"
-          updated, count = re.subn(r"set\\(ESPB_MODULE_FILES\\n.*?\\n\\)", block, text, count=1, flags=re.S)
+          block = "set(ESPB_MODULE_FILES\n" + "\n".join('    "' + name + '"' for name in modules) + "\n)"
+          updated, count = re.subn(r"set\(ESPB_MODULE_FILES\n.*?\n\)", block, text, count=1, flags=re.S)
           if count != 1:
               raise SystemExit("Could not update ESPB_MODULE_FILES in main/CMakeLists.txt")
           cmake.write_text(updated, encoding="utf-8")
