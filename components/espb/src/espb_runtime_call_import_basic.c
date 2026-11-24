@@ -56,9 +56,6 @@ EspbResult espb_runtime_call_import_basic(EspbInstance *instance,
     ffi_type *ffi_arg_types[ESPB_CALL_IMPORT_MAX_ARGS];
     void *ffi_arg_values[ESPB_CALL_IMPORT_MAX_ARGS];
 
-    int64_t temp_i64[ESPB_CALL_IMPORT_MAX_ARGS];
-    uint64_t temp_u64[ESPB_CALL_IMPORT_MAX_ARGS];
-
     for (uint32_t i = 0; i < num_args; i++) {
         EspbValueType t;
         if (has_variadic_info) {
@@ -80,12 +77,10 @@ EspbResult espb_runtime_call_import_basic(EspbInstance *instance,
                 ffi_arg_values[i] = &V_I32(regs[i]);
                 break;
             case ESPB_TYPE_I64:
-                temp_i64[i] = V_I64(regs[i]);
-                ffi_arg_values[i] = &temp_i64[i];
+                ffi_arg_values[i] = &V_I64(regs[i]);
                 break;
             case ESPB_TYPE_U64:
-                temp_u64[i] = (uint64_t)V_I64(regs[i]);
-                ffi_arg_values[i] = &temp_u64[i];
+                ffi_arg_values[i] = &V_U64(regs[i]);
                 break;
             case ESPB_TYPE_F32:
                 ffi_arg_values[i] = &V_F32(regs[i]);
