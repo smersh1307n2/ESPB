@@ -301,6 +301,16 @@ jobs:
               count=$((count + 1))
             done
             test "$count" -eq 11
+
+            # Keep the interpreter side from the paired LLVM_ESPB corpus,
+            # but run the exact historical main/test.espb bytecode on the JIT
+            # side. This isolates runtime/JIT changes from translator changes
+            # for the Fibonacci benchmark.
+            git fetch --no-tags origin main
+            git show origin/main:main/test.espb > "$RUNNER_TEMP/espb_opcode_pairs/11_fibonacci.jit.espb"
+            test -s "$RUNNER_TEMP/espb_opcode_pairs/11_fibonacci.jit.espb"
+            cp "$RUNNER_TEMP/espb_opcode_pairs/11_fibonacci.jit.espb" modules/opcode_groups/11_fibonacci.espb
+            echo "ESPB_FIBONACCI_JIT_SOURCE=main/test.espb"
             echo "ESPB_OPCODE_GROUPS_SOURCE_RUN=${{ steps.paired_run.outputs.run_id }}"
             echo "ESPB_OPCODE_GROUPS_STAGED=$count"
           fi
