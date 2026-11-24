@@ -68,6 +68,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REQUESTED_RUN_ID: ${{ inputs.paired_run_id }}
+          TRIGGERING_TRANSLATION_RUN_ID: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.id || '' }}
           EXPECTED_SOURCE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
         run: |
           python - <<'PY'
@@ -79,6 +80,7 @@ jobs:
           repository = os.environ["GITHUB_REPOSITORY"]
           token = os.environ["GITHUB_TOKEN"]
           requested = os.environ.get("REQUESTED_RUN_ID", "").strip()
+          triggering_run = os.environ.get("TRIGGERING_TRANSLATION_RUN_ID", "").strip()
           api = f"https://api.github.com/repos/{repository}"
 
           def get_json(url):
@@ -97,7 +99,11 @@ jobs:
               print(f"::error::{message}")
               raise SystemExit(1)
 
-          if requested:
+          if triggering_run:
+              if requested and requested != triggering_run:
+                  reject("Manual paired_run_id cannot override the triggering translation run.")
+              candidates = [get_json(f"{api}/actions/runs/{triggering_run}")]
+          elif requested:
               if not requested.isdigit():
                   reject("paired_run_id must be a numeric GitHub Actions run ID.")
               candidates = [get_json(f"{api}/actions/runs/{requested}")]
@@ -118,9 +124,16 @@ jobs:
           candidates.sort(key=lambda run: run.get("created_at", ""), reverse=True)
 
           expected_source_sha = os.environ["EXPECTED_SOURCE_SHA"]
+          if triggering_run and not candidates:
+              reject(f"Triggered translation run {triggering_run} was not successful.")
           compatible_candidates = []
           for run in candidates:
               source_sha = run.get("head_sha")
+              if triggering_run:
+                  if source_sha != expected_source_sha:
+                      reject("Triggered translation run source SHA does not match QEMU checkout.")
+                  compatible_candidates.append(run)
+                  continue
               if not source_sha:
                   continue
               try:
@@ -175,6 +188,8 @@ jobs:
                       output.write("use_seed=false\n")
                   break
           else:
+              if triggering_run:
+                  reject(f"Triggered translation run {triggering_run} has no usable paired corpus artifact.")
               print("::warning::No compatible paired corpus found; falling back to modules/qemu_seed")
               with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
                   output.write("run_id=\n")
