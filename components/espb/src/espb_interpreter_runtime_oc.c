@@ -1032,8 +1032,10 @@ EspbResult espb_call_function(EspbInstance *instance, ExecutionContext *exec_ctx
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
             ESP_LOGD(TAG, "Initial call, pushing base frame for local_func_idx %u", (unsigned)entry_local_idx);
 #endif
-            if (push_call_frame(exec_ctx, -1, 0, entry_local_idx, NULL, 0) != ESPB_OK) {
-                return ESPB_ERR_STACK_OVERFLOW;
+            const EspbResult frame_result =
+                push_call_frame(exec_ctx, -1, 0, entry_local_idx, NULL, 0);
+            if (frame_result != ESPB_OK) {
+                return frame_result;
             }
         }
         // ОПТИМИЗАЦИЯ: Импорты уже разрешены в espb_instantiate() -> resolve_imports()
@@ -1495,8 +1497,11 @@ op_unhandled:
 
                     // 3. Сохраняем контекст вызывающей стороны
                     int return_pc = (int)(pc - instructions_ptr);
-                    if (push_call_frame(exec_ctx, return_pc, exec_ctx->fp, local_func_idx, saved_frame_location, num_virtual_regs) != ESPB_OK) {
-                        return ESPB_ERR_STACK_OVERFLOW; // Не должно произойти, так как стек вызовов не растет
+                    const EspbResult frame_result = push_call_frame(
+                        exec_ctx, return_pc, exec_ctx->fp, local_func_idx,
+                        saved_frame_location, num_virtual_regs);
+                    if (frame_result != ESPB_OK) {
+                        return frame_result;
                     }
 
                     // Ограничиваем число аргументов размером обоих кадров.
