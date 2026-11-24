@@ -375,6 +375,7 @@ EspbResult espb_create_callback_closure(
     if (!instance || !out_closure_ptr) {
         return ESPB_ERR_INVALID_OPERAND;
     }
+    *out_closure_ptr = NULL;
 
     const EspbModule *module = instance->module;
     if (import_idx >= module->num_imports) {
@@ -520,6 +521,10 @@ EspbResult espb_create_callback_closure(
             ESP_LOGE(TAG, "FATAL: ffi_closure_alloc returned non-executable memory (%p)!", closure->executable_code);
         }
         
+        if (closure->closure_ptr) {
+            ffi_closure_free(closure->closure_ptr);
+            closure->closure_ptr = NULL;
+        }
         free(callback_info);
         free(closure);
         return ESPB_ERR_MEMORY_ALLOC;
@@ -546,12 +551,18 @@ EspbResult espb_create_callback_closure(
         return ESPB_ERR_RUNTIME_ERROR;
     }
 
-    // Добавляем замыкание в список активных (потокобезопасно)
-    if (xSemaphoreTake(g_callback_system.mutex, portMAX_DELAY) == pdTRUE) {
-        closure->next = g_callback_system.active_closures;
-        g_callback_system.active_closures = closure;
-        xSemaphoreGive(g_callback_system.mutex);
+    // Publish only after the closure is fully prepared. If the registry lock
+    // cannot be acquired, unwind every allocation instead of returning an
+    // executable closure that the module-scoped cleanup cannot find.
+    if (xSemaphoreTake(g_callback_system.mutex, portMAX_DELAY) != pdTRUE) {
+        ffi_closure_free(closure->closure_ptr);
+        free(callback_info);
+        free(closure);
+        return ESPB_ERR_INVALID_STATE;
     }
+    closure->next = g_callback_system.active_closures;
+    g_callback_system.active_closures = closure;
+    xSemaphoreGive(g_callback_system.mutex);
 
     *out_closure_ptr = closure->executable_code;
     
