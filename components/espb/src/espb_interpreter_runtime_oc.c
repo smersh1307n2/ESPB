@@ -1529,9 +1529,12 @@ op_unhandled:
                     if (copied_args > 0) {
                         memcpy(callee_locals, locals, (size_t)copied_args * sizeof(Value));
                     }
-                    if (copied_args < callee_body->header.num_virtual_regs) {
+                    const size_t callee_regs_to_init =
+                        MIN((size_t)callee_body->header.num_virtual_regs,
+                            (size_t)callee_body->header.max_reg_used + 1u);
+                    if ((size_t)copied_args < callee_regs_to_init) {
                         memset(callee_locals + copied_args, 0,
-                               (size_t)(callee_body->header.num_virtual_regs - copied_args) * sizeof(Value));
+                               (callee_regs_to_init - (size_t)copied_args) * sizeof(Value));
                     }
                     
                     // 7. Обновляем контекст интерпретатора для вызываемой функции
@@ -1662,9 +1665,12 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                 callee_locals[i] = (Value){0};
             }
         }
-        if (copied_args < callee_body->header.num_virtual_regs) {
+        const size_t callee_regs_to_init =
+            MIN((size_t)callee_body->header.num_virtual_regs,
+                (size_t)callee_body->header.max_reg_used + 1u);
+        if ((size_t)copied_args < callee_regs_to_init) {
             memset(callee_locals + copied_args, 0,
-                   (size_t)(callee_body->header.num_virtual_regs - copied_args) * sizeof(Value));
+                   (callee_regs_to_init - (size_t)copied_args) * sizeof(Value));
         }
         
         local_func_idx = callee_local_func_idx;
@@ -2036,9 +2042,12 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                     if (copied_args > 0) {
                         memcpy(callee_locals, locals, (size_t)copied_args * sizeof(Value));
                     }
-                    if (copied_args < callee_body->header.num_virtual_regs) {
+                    const size_t callee_regs_to_init =
+                        MIN((size_t)callee_body->header.num_virtual_regs,
+                            (size_t)callee_body->header.max_reg_used + 1u);
+                    if ((size_t)copied_args < callee_regs_to_init) {
                         memset(callee_locals + copied_args, 0,
-                               (size_t)(callee_body->header.num_virtual_regs - copied_args) * sizeof(Value));
+                               (callee_regs_to_init - (size_t)copied_args) * sizeof(Value));
                     }
 
                     local_func_idx = local_func_idx_to_call;
