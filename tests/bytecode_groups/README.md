@@ -20,13 +20,14 @@ Every function defined in every source file is marked JIT_HOT (including helpers
 | 08 atomics | I32 atomic RMW/CMPXCHG/load/store under a group-only RV32 A target; I64 remains a helper-lowering control |
 | 09 freertos_task | task creation, argument passing, task callback and completion |
 | 10 freertos_timer | timer creation/start/expiry callback/stop/delete and timer ID |
+| 11 fibonacci | Existing iterative Fibonacci(85) algorithm and exact 64-bit expected result; checked in both JIT and interpreter modes |
 
 ## Rules
 
 - Keep each group self-contained and deliberately small; split it if its generated native code approaches the measured JIT RAM budget.
 - Every test has a deterministic success condition. RTOS groups are integration tests and should be run separately from tight execution microbenchmarks. Invoke each group execution function only three times per test pass; do not add long repetition loops.
 - Do not add long delays, unbounded loops, verbose per-operation printing, or arbitrary-address calls to the regular suite.
-- The build/translation workflow must generate paired interpreter and HOT/JIT modules from the same source bitcode. The checked-in ESPB corpus is not regenerated as part of ordinary runtime tests.
+- The build/translation workflow must generate paired interpreter and HOT/JIT modules from the same source bitcode. Fibonacci uses the existing iterative algorithm from `ESP32_PRJ_TO_LLVM/main_2/fibonacci.c`; the ESP-IDF timing wrappers are excluded from the standalone QEMU module, while the input N and expected value are unchanged. The checked-in ESPB corpus is not regenerated as part of ordinary runtime tests.
 - Coverage is measured across four distinct stages: C source, optimized LLVM IR/bitcode, translated ESPB opcode stream and dynamic execution. An operation written in C may be folded, reassociated, lowered to another form or removed before translation; the ESPB translator also performs its own optimization passes. A group is complete only when the intended opcode is present in the translated stream and its path actually executes in both modes.
 - Do not assume noinline preserves individual operations or volatile forces a particular arithmetic opcode. Use runtime-dependent inputs and observable results, then inspect the LLVM IR and emitted ESPB before classifying a gap.
 - The bitcode builder changes `-march` only for `08_atomics.c` to `rv32imac_zicsr_zifencei`, solely to make 32-bit atomic builtins lower to LLVM atomic operations. Other groups retain the standard ESP-IDF target flags; this is a test-only per-source override, not a global ESP-IDF or firmware setting.
