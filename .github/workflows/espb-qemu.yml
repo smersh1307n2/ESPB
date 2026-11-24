@@ -19,6 +19,13 @@ on:
       - 'tools/qemu/**'
       - 'projects/ESP32_PRJ_TO_LLVM'
       - 'projects/llvm_espb/**'
+  workflow_run:
+    workflows:
+      - Translate opcode groups with LLVM_ESPB
+    types:
+      - completed
+    branches:
+      - ESPB_WORK
   workflow_dispatch:
     inputs:
       paired_run_id:
@@ -36,6 +43,7 @@ concurrency:
 
 jobs:
   qemu:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     name: QEMU / ${{ matrix.target }}
     runs-on: ubuntu-22.04
     container:
@@ -48,7 +56,7 @@ jobs:
       - name: Checkout ESPB_WORK
         uses: actions/checkout@v4
         with:
-          ref: ESPB_WORK
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || 'ESPB_WORK' }}
           submodules: recursive
           fetch-depth: 0
 
@@ -58,7 +66,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REQUESTED_RUN_ID: ${{ inputs.paired_run_id }}
-          EXPECTED_SOURCE_SHA: ${{ github.sha }}
+          EXPECTED_SOURCE_SHA: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
         run: |
           python - <<'PY'
           import json
@@ -204,7 +212,7 @@ jobs:
               cp "$jit_module" "modules/opcode_groups/$stem.espb"
               count=$((count + 1))
             done
-            test "$count" -eq 10
+            test "$count" -eq 11
             echo "ESPB_OPCODE_GROUPS_SOURCE_RUN=seed"
             echo "ESPB_OPCODE_GROUPS_STAGED=$count"
           else
@@ -232,12 +240,13 @@ jobs:
               "08_atomics": "atomics",
               "09_freertos_task": "freertos_task",
               "10_freertos_timer": "freertos_timer",
+              "11_fibonacci": "fibonacci",
           }
           groups = manifest.get("groups")
-          if not isinstance(groups, list) or manifest.get("group_count") != 10 or len(groups) != 10:
-              raise SystemExit("Manifest must contain exactly 10 paired test groups")
+          if not isinstance(groups, list) or manifest.get("group_count") != 11 or len(groups) != 11:
+              raise SystemExit("Manifest must contain exactly 11 paired test groups")
           names = [item.get("name") for item in groups if isinstance(item, dict)]
-          if len(names) != 10 or len(set(names)) != 10 or set(names) != set(expected_groups):
+          if len(names) != 11 or len(set(names)) != 11 or set(names) != set(expected_groups):
               raise SystemExit(f"Manifest group set mismatch: {names}")
           paired = Path(".work/paired")
           seed = Path("modules/qemu_seed")
@@ -276,7 +285,7 @@ jobs:
                   f"Artifact pair set mismatch: jit={sorted(actual_jit)} "
                   f"interpreter={sorted(actual_interpreter)}"
               )
-          print("PAIRED_CORPUS_VERIFIED groups=10 manifest=.work/paired/manifest.json")
+          print("PAIRED_CORPUS_VERIFIED groups=11 manifest=.work/paired/manifest.json")
           PY
             count=0
             mkdir -p "$RUNNER_TEMP/espb_opcode_pairs"
