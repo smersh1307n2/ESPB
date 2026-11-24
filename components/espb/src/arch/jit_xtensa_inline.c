@@ -3075,34 +3075,57 @@ static const uint8_t s_xtensa_opcode_operand_bytes[256] = {
     0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x04, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
 };
 
-static bool xtensa_vcache_scan_branch_free(const uint8_t *code, size_t code_size,
-                                           size_t *blocked_at, uint8_t *blocked_opcode)
+static bool xtensa_vcache_scan_blocks(const uint8_t *code, size_t code_size,
+                                       uint8_t *block_map, size_t *blocked_at,
+                                       uint8_t *blocked_opcode)
 {
     size_t pc = 0;
-    size_t op_offset = 0;
-    uint8_t op = 0;
     while (pc < code_size) {
-        op_offset = pc;
-        op = code[pc++];
-        if (op == 0x02 || op == 0x03 || op == 0x04) {
-            if (blocked_at) *blocked_at = op_offset;
-            if (blocked_opcode) *blocked_opcode = op;
-            return false;
+        const size_t source = pc;
+        const uint8_t op = code[pc++];
+        block_map[source] |= 0x80u; /* instruction boundary */
+        if (op == 0x02 || op == 0x03) {
+            const size_t need = op == 0x02 ? 2u : 3u;
+            if (need > code_size - pc) goto undecodable;
+            if (op == 0x03) ++pc; /* condition vreg */
+            int16_t rel;
+            memcpy(&rel, code + pc, sizeof(rel));
+            pc += sizeof(rel);
+            const int32_t target = (int32_t)source + (int32_t)rel;
+            if (target < 0 || target > (int32_t)code_size) goto undecodable;
+            block_map[(size_t)target] |= 0x01u;
+            continue;
         }
-
+        if (op == 0x04) { /* BR_TABLE: index, count, targets[], default */
+            if (code_size - pc < 3u) goto undecodable;
+            ++pc; /* index vreg */
+            uint16_t count;
+            memcpy(&count, code + pc, sizeof(count));
+            pc += sizeof(count);
+            const size_t target_count = (size_t)count + 1u;
+            if (target_count > (code_size - pc) / 2u) goto undecodable;
+            for (size_t i = 0; i < target_count; ++i) {
+                int16_t rel;
+                memcpy(&rel, code + pc, sizeof(rel));
+                pc += sizeof(rel);
+                const int32_t target = (int32_t)source + (int32_t)rel;
+                if (target < 0 || target > (int32_t)code_size) goto undecodable;
+                block_map[(size_t)target] |= 0x01u;
+            }
+            continue;
+        }
         if (op == 0x09) { /* CALL_IMPORT with optional typed variadic tail */
-            if (pc + 2 > code_size) goto undecodable;
+            if (code_size - pc < 2u) goto undecodable;
             pc += 2;
             if (pc < code_size && code[pc] == 0xAA) {
-                if (pc + 2 > code_size) goto undecodable;
+                if (code_size - pc < 2u) goto undecodable;
                 const size_t tail_size = 2u + code[pc + 1];
                 if (tail_size > code_size - pc) goto undecodable;
                 pc += tail_size;
             }
             continue;
         }
-
-        if (op == 0xFC) { /* Extended opcode */
+        if (op == 0xFC) {
             if (pc >= code_size) goto undecodable;
             const uint8_t subop = code[pc++];
             size_t operand_bytes;
@@ -3123,15 +3146,22 @@ static bool xtensa_vcache_scan_branch_free(const uint8_t *code, size_t code_size
             pc += operand_bytes;
             continue;
         }
-
         const uint8_t operand_bytes = s_xtensa_opcode_operand_bytes[op];
         if (operand_bytes == 0xFF || operand_bytes > code_size - pc) goto undecodable;
         pc += operand_bytes;
     }
+    block_map[code_size] |= 0x80u;
+    for (size_t i = 0; i <= code_size; ++i) {
+        if ((block_map[i] & 0x01u) && !(block_map[i] & 0x80u)) {
+            if (blocked_at) *blocked_at = i;
+            if (blocked_opcode) *blocked_opcode = code[i < code_size ? i : 0];
+            return false; /* a branch target must be an instruction boundary */
+        }
+    }
     return true;
 
 undecodable:
-    if (blocked_at) *blocked_at = op_offset;
+    if (blocked_at) *blocked_at = source;
     if (blocked_opcode) *blocked_opcode = op;
     return false;
 }
@@ -3351,6 +3381,9 @@ EspbResult espb_jit_compile_function_xtensa_inline(
         return ESPB_ERR_OUT_OF_MEMORY;
     }
     for (size_t i = 0; i <= code_size; i++) bc_to_native[i] = XTENSA_BC_UNSET;
+    uint8_t* vcache_block_map = (uint8_t*)heap_caps_malloc(code_size + 1u, MALLOC_CAP_8BIT);
+    if (!vcache_block_map) { heap_caps_free(bc_to_native); heap_caps_free(buffer); return ESPB_ERR_OUT_OF_MEMORY; }
+    memset(vcache_block_map, 0, code_size + 1u);
     ctx.bc_to_native = bc_to_native;  // Set bc_to_native pointer in context after allocation
 
     typedef struct {
@@ -3361,6 +3394,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
     XtensaBranchFixup* fixups = (XtensaBranchFixup*)heap_caps_malloc((code_size + 1) * sizeof(XtensaBranchFixup), MALLOC_CAP_8BIT);
     uint32_t fixup_count = 0;
     if (!fixups) {
+        heap_caps_free(vcache_block_map);
         heap_caps_free(bc_to_native);
         heap_caps_free(buffer);
         return ESPB_ERR_OUT_OF_MEMORY;
@@ -3385,14 +3419,12 @@ EspbResult espb_jit_compile_function_xtensa_inline(
     };
     uint32_t vcache_clock = 0, vcache_hits = 0, vcache_spills = 0, vcache_coalesced_writes = 0;
 
-    // Branch-free function-local I32 cache. Keep the conservative raw-byte
-    // scan until a complete instruction-boundary decoder is available: enabling
-    // caching in a prefix is unsafe when a later branch can target that prefix.
-    // False positives only disable the optimization; they do not affect results.
+    // Build basic-block entry map. The cache is flushed before every branch;
+    // block entries are independently marked so no branch can enter a live cache run.
     size_t vcache_scan_blocked_at = code_size;
     uint8_t vcache_scan_blocked_byte = 0;
-    const bool vcache_function_safe = xtensa_vcache_scan_branch_free(
-        code, code_size, &vcache_scan_blocked_at, &vcache_scan_blocked_byte);
+    const bool vcache_function_safe = xtensa_vcache_scan_blocks(
+        code, code_size, vcache_block_map, &vcache_scan_blocked_at, &vcache_scan_blocked_byte);
 
     // Report the first conservative blocker after its state has been initialized.
     if (!vcache_function_safe) {
@@ -3459,7 +3491,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
         // Flush before recording native-address mapping: every branch target enters
         // with coherent v_regs. Helper/division opcodes never see a dirty cache.
-        const bool vcacheable = vcache_function_safe &&
+        const bool vcacheable = vcache_function_safe && !(vcache_block_map[last_off] & 0x01u) &&
             ((op >= 0x20 && op <= 0x22) || (op >= 0x28 && op <= 0x2E) || (op >= 0x40 && op <= 0x41));
         // NOT.I32 has two operands; the other cached ALU ops have three.
         // Locate the following opcode at the correct instruction boundary.
@@ -3468,7 +3500,8 @@ EspbResult espb_jit_compile_function_xtensa_inline(
             ((size_t)(end - pc) >= vcache_operand_bytes + 1u) &&
             (((pc[vcache_operand_bytes] >= 0x20 && pc[vcache_operand_bytes] <= 0x22) ||
               (pc[vcache_operand_bytes] >= 0x28 && pc[vcache_operand_bytes] <= 0x2E) ||
-              (pc[vcache_operand_bytes] >= 0x40 && pc[vcache_operand_bytes] <= 0x41)));
+              (pc[vcache_operand_bytes] >= 0x40 && pc[vcache_operand_bytes] <= 0x41)) &&
+            !(vcache_block_map[last_off + 1u + vcache_operand_bytes] & 0x01u);
         if (!vcacheable) XTENSA_VCACHE_FLUSH();
         const uint32_t op_loads_before = ctx.emitted_loads;
         const uint32_t op_stores_before = ctx.emitted_stores;
@@ -8346,6 +8379,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
     if (ctx.error) {
         ESP_LOGE(TAG, "Inline JIT failed at bytecode offset %u (opcode 0x%02X)", (unsigned)last_off, (unsigned)last_op);
         heap_caps_free(fixups);
+        heap_caps_free(vcache_block_map);
         heap_caps_free(bc_to_native);
         espb_exec_free(buffer);
         return ESPB_ERR_INVALID_STATE;
@@ -8379,6 +8413,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
     }
 
     heap_caps_free(fixups);
+    heap_caps_free(vcache_block_map);
     heap_caps_free(bc_to_native);
 
     ESP_LOGI(TAG, "[jit-codegen] func=%u code_bytes=%u l32i=%u s32i=%u vcache_hits=%u vcache_spills=%u vcache_coalesced=%u",
