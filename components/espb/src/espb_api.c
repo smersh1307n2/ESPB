@@ -23,6 +23,7 @@
 #include "espb_jit_dispatcher.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdint.h>
 
 // Внешние обертки для iram_pool
 extern void iram_pool_init_wrapper(void);
@@ -32,6 +33,7 @@ extern void iram_pool_debug_wrapper(void);
 struct espb_module_handle_t {
     EspbInstance *instance;
     EspbModule *module;
+    uint32_t num_func_imports;
 };
 
 
@@ -62,6 +64,12 @@ EspbResult espb_load_module(const uint8_t *espb_data, size_t espb_size, espb_han
 
     handle->module = module;
     handle->instance = instance;
+    handle->num_func_imports = 0;
+    for (uint32_t i = 0; i < module->num_imports; ++i) {
+        if (module->imports[i].kind == ESPB_IMPORT_KIND_FUNC) {
+            ++handle->num_func_imports;
+        }
+    }
     *out_handle = handle;
 
     printf("--- ESPB Module Loaded ---\n");
@@ -82,7 +90,6 @@ void espb_unload_module(espb_handle_t handle) {
 }
 
 
-__attribute__((noinline, optimize("O0")))
 EspbResult espb_call_function_sync(espb_handle_t handle, const char* function_name, const Value *args, uint32_t num_args, Value *results) {
     if (!handle) return ESPB_ERR_INVALID_STATE;
 
@@ -92,11 +99,7 @@ EspbResult espb_call_function_sync(espb_handle_t handle, const char* function_na
     for (uint32_t i = 0; i < handle->module->num_exports; ++i) {
         if (handle->module->exports[i].kind == ESPB_IMPORT_KIND_FUNC &&
             strcmp(handle->module->exports[i].name, function_name) == 0) {
-            uint32_t num_func_imports = 0;
-            for (uint32_t j = 0; j < handle->module->num_imports; ++j) {
-                if (handle->module->imports[j].kind == ESPB_IMPORT_KIND_FUNC) num_func_imports++;
-            }
-            func_idx_to_call = handle->module->exports[i].index + num_func_imports;
+            func_idx_to_call = handle->module->exports[i].index + handle->num_func_imports;
             found_func = true;
             break;
         }
