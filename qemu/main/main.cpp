@@ -6,6 +6,7 @@
 #include "espb_jit_precompile.h"
 #include "espb_embedded_modules.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/timers.h"
@@ -209,19 +210,28 @@ extern "C" void app_main(void)
         const EspbEmbeddedModule &module = espb_embedded_modules[module_index];
         const bool jit_mode = strncmp(module.name, "jit__", 5) == 0;
         printf("[ESPB_TEST] module=%s size=%u\n", module.name, (unsigned)module.size);
+        const int64_t module_start_us = esp_timer_get_time();
+        int64_t load_us = 0;
+        int64_t first_call_us = 0;
+        int64_t jit_compile_us = 0;
+        int64_t jit_exec_us = 0;
+        int64_t unload_us = 0;
 
         const uint32_t heap_before_load = esp_get_free_heap_size();
         const uint32_t min_heap_before = esp_get_minimum_free_heap_size();
         const UBaseType_t stack_hwm_before = uxTaskGetStackHighWaterMark(NULL);
 
         espb_handle_t handle = NULL;
+        const int64_t load_start_us = esp_timer_get_time();
         EspbResult result = espb_load_module(module.data, module.size, &handle);
         if (result != ESPB_OK) {
             printf("[ESPB_TEST] load_failed=%s error=%d\n", module.name, (int)result);
             return;
         }
+        load_us = esp_timer_get_time() - load_start_us;
         const uint32_t heap_after_load = esp_get_free_heap_size();
 
+        const int64_t first_call_start_us = esp_timer_get_time();
         result = espb_call_function_sync(handle, "app_main", args, 3, NULL);
         if (result != ESPB_OK) {
             printf("[ESPB_TEST] warmup_failed=%s error=%d\n", module.name, (int)result);
@@ -229,13 +239,17 @@ extern "C" void app_main(void)
             return;
         }
 
+        first_call_us = esp_timer_get_time() - first_call_start_us;
+
         if (jit_mode) {
+            const int64_t jit_compile_start_us = esp_timer_get_time();
             result = espb_jit_precompile_hot_functions(handle->instance, NULL);
             if (result != ESPB_OK) {
                 printf("[ESPB_TEST] precompile_failed=%s error=%d\n", module.name, (int)result);
                 espb_unload_module(handle);
                 return;
             }
+            jit_compile_us = esp_timer_get_time() - jit_compile_start_us;
         }
 
         uint32_t hot_count = 0;
@@ -284,12 +298,14 @@ extern "C" void app_main(void)
             strstr(module.name, "10_freertos_timer") != NULL;
 
         if (jit_mode) {
+            const int64_t jit_exec_start_us = esp_timer_get_time();
             result = espb_call_function_sync(handle, "app_main", args, 3, NULL);
             if (result != ESPB_OK) {
                 printf("[ESPB_TEST] call_failed=%s error=%d\n", module.name, (int)result);
                 espb_unload_module(handle);
                 return;
             }
+            jit_exec_us = esp_timer_get_time() - jit_exec_start_us;
         }
 
         if (is_bounded_rtos) {
@@ -301,7 +317,9 @@ extern "C" void app_main(void)
         const uint32_t min_heap_after = esp_get_minimum_free_heap_size();
         const UBaseType_t stack_hwm_after = uxTaskGetStackHighWaterMark(NULL);
 
+        const int64_t unload_start_us = esp_timer_get_time();
         espb_unload_module(handle);
+        unload_us = esp_timer_get_time() - unload_start_us;
         const uint32_t heap_after_unload = esp_get_free_heap_size();
         const UBaseType_t stack_hwm_delta =
             stack_hwm_before > stack_hwm_after ? stack_hwm_before - stack_hwm_after : 0;
@@ -312,6 +330,12 @@ extern "C" void app_main(void)
                (unsigned)min_heap_after, (unsigned)stack_hwm_before,
                (unsigned)stack_hwm_after, (unsigned)stack_hwm_delta);
         printf("[ESPB_TEST] module_done=%s mode=%s\n", module.name, jit_mode ? "jit" : "interpreter");
+        printf("[ESPB_TIME] module=%s mode=%s load_us=%lld first_call_us=%lld jit_compile_us=%lld jit_exec_us=%lld unload_us=%lld total_us=%lld\n",
+               module.name, jit_mode ? "jit" : "interpreter",
+               (long long)load_us, (long long)first_call_us,
+               (long long)jit_compile_us, (long long)jit_exec_us,
+               (long long)unload_us,
+               (long long)(esp_timer_get_time() - module_start_us));
     }
 
     printf("--- ESPB dual-mode QEMU tests finished ---\n");
