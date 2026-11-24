@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdint.h>
+#include "esp_timer.h"
 
 // Внешние обертки для iram_pool
 extern void iram_pool_init_wrapper(void);
@@ -40,16 +41,28 @@ struct espb_module_handle_t {
 EspbResult espb_load_module(const uint8_t *espb_data, size_t espb_size, espb_handle_t *out_handle) {
     printf("--- ESPB Loading Module ---\n");
 
+    int64_t load_stage_start_us = esp_timer_get_time();
     iram_pool_init_wrapper();
+    const int64_t iram_pool_us = esp_timer_get_time() - load_stage_start_us;
+
+    load_stage_start_us = esp_timer_get_time();
     if (espb_callback_system_init() != ESPB_OK) return ESPB_ERR_INVALID_STATE;
+    const int64_t callback_init_us = esp_timer_get_time() - load_stage_start_us;
+
+    load_stage_start_us = esp_timer_get_time();
     init_cpp_symbols();
+    const int64_t symbol_init_us = esp_timer_get_time() - load_stage_start_us;
 
     EspbModule *module = NULL;
+    load_stage_start_us = esp_timer_get_time();
     EspbResult result = espb_parse_module(&module, espb_data, espb_size);
+    const int64_t parse_us = esp_timer_get_time() - load_stage_start_us;
     if (result != ESPB_OK) return result;
 
     EspbInstance *instance = NULL;
+    load_stage_start_us = esp_timer_get_time();
     result = espb_instantiate(&instance, module);
+    const int64_t instantiate_us = esp_timer_get_time() - load_stage_start_us;
     if (result != ESPB_OK) {
         espb_free_module(module);
         return result;
@@ -72,6 +85,10 @@ EspbResult espb_load_module(const uint8_t *espb_data, size_t espb_size, espb_han
     }
     *out_handle = handle;
 
+    printf("[ESPB_LOAD_TIME] iram_pool_us=%lld callback_init_us=%lld symbol_init_us=%lld parse_us=%lld instantiate_us=%lld\n",
+           (long long)iram_pool_us, (long long)callback_init_us,
+           (long long)symbol_init_us, (long long)parse_us,
+           (long long)instantiate_us);
     printf("--- ESPB Module Loaded ---\n");
     return ESPB_OK;
 }
