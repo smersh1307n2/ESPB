@@ -103,7 +103,27 @@ jobs:
             .work/paired/opcode_audit.json
           if-no-files-found: error
 
-      - name: Replace checked-in ESPB module pairs
+  
+  publish:
+    needs: translate
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - name: Checkout ESPB_WORK
+        uses: actions/checkout@v4
+        with:
+          ref: ESPB_WORK
+          fetch-depth: 0
+
+      - name: Download translated ESPB artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: espb-llvm-translated-paired
+          path: .work/paired
+
+      - name: Replace and commit ESPB module pairs
         shell: bash
         run: |
           set -euo pipefail
@@ -121,8 +141,8 @@ jobs:
           modules = sorted(path.name for path in Path("main").glob("*.espb") if path.name.endswith((".jit.espb", ".interpreter.espb")))
           if len(modules) != 22:
               raise SystemExit(f"Expected 22 paired ESPB files in main/, got {len(modules)}")
-          block = "set(ESPB_MODULE_FILES\n" + "\n".join('    "' + name + '"' for name in modules) + "\n)"
-          updated, count = re.subn(r"set\(ESPB_MODULE_FILES\n.*?\n\)", block, text, count=1, flags=re.S)
+          block = "set(ESPB_MODULE_FILES\\n" + "\\n".join('    "' + name + '"' for name in modules) + "\\n)"
+          updated, count = re.subn(r"set\\(ESPB_MODULE_FILES\\n.*?\\n\\)", block, text, count=1, flags=re.S)
           if count != 1:
               raise SystemExit("Could not update ESPB_MODULE_FILES in main/CMakeLists.txt")
           cmake.write_text(updated, encoding="utf-8")
