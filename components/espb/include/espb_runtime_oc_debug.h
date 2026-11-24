@@ -20,5 +20,5 @@
 // Compile-time switch for extremely verbose interpreter (OC) debug tracing.
 // MUST be 0 for benchmarks.
 #ifndef ESPB_RUNTIME_OC_DEBUG
-#define ESPB_RUNTIME_OC_DEBUG 1
+#define ESPB_RUNTIME_OC_DEBUG 0
 #endif
