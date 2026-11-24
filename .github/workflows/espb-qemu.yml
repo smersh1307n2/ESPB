@@ -4,6 +4,7 @@ name: ESPB_WORK dual-mode QEMU tests
 # Re-run against signed-shift, Xtensa helper-ABI and per-opcode diagnostics.
 # Exercise updated task-handle cleanup and module-owned callback closure release.
 # Run dual-mode QEMU against the freshly published full paired qemu_seed corpus.
+# Repeat benchmark measurements to check QEMU timing variability.
 
 on:
   push:
