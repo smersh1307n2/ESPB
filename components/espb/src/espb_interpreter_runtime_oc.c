@@ -1096,6 +1096,9 @@ EspbResult espb_call_function(EspbInstance *instance, ExecutionContext *exec_ctx
         if (is_root_call) {
             exec_ctx->fp = frame_base;
             exec_ctx->sp = frame_base + frame_size_bytes;
+        } else {
+            exec_ctx->fp = frame_base;
+            exec_ctx->sp = frame_base + frame_size_bytes;
         }
 
 // `locals` points at this function's own shadow-stack frame.
@@ -1145,241 +1148,212 @@ EspbResult espb_call_function(EspbInstance *instance, ExecutionContext *exec_ctx
       //  TickType_t last_yield_time = xTaskGetTickCount();
         
 #if defined(__GNUC__) || defined(__clang__)
-    // --- Инфраструктура для Computed Goto ---
-    static void* dispatch_table[256];
-    static bool table_initialized = false;
-    if (!table_initialized) {
-        for (int i = 0; i < 256; i++) {
-            dispatch_table[i] = &&op_unhandled;
-        }
-        dispatch_table[0x00] = &&op_0x00;
-        dispatch_table[0x01] = &&op_0x01;
-        dispatch_table[0x02] = &&op_0x02;
-        dispatch_table[0x03] = &&op_0x03;
-        dispatch_table[0x04] = &&op_0x04;
-        dispatch_table[0x05] = &&op_0x05;
-        // JIT_REGION_START (0x06) отключён: региональный JIT не реализуем и не планируем.
-        dispatch_table[0x06] = &&op_unhandled;
-        dispatch_table[0x07] = &&op_unhandled; // RESERVED as per spec v1.7 (LOOP removed)
-        dispatch_table[0x0A] = &&op_0x0A;
-        dispatch_table[0x0B] = &&op_0x0B;
-        dispatch_table[0x0D] = &&op_0x0D;
-        dispatch_table[0x11] = &&op_0x11;
-        dispatch_table[0x12] = &&op_0x12;
-        dispatch_table[0x13] = &&op_0x13;
-        dispatch_table[0x14] = &&op_unhandled; // RESERVED
-        dispatch_table[0x15] = &&op_unhandled; // RESERVED
-        dispatch_table[0x16] = &&op_unhandled; // RESERVED
-        dispatch_table[0x18] = &&op_0x18;
-        dispatch_table[0x19] = &&op_0x19;
-        dispatch_table[0x1A] = &&op_0x1A;
-        dispatch_table[0x1B] = &&op_0x1B;
-        dispatch_table[0x1C] = &&op_0x1C;
-        dispatch_table[0x20] = &&op_0x20;
-        dispatch_table[0x21] = &&op_0x21;
-        dispatch_table[0x22] = &&op_0x22;
-        dispatch_table[0x23] = &&op_0x23;
-        dispatch_table[0x24] = &&op_0x24;
-        dispatch_table[0x26] = &&op_0x26;
-        dispatch_table[0x27] = &&op_0x27;
-        dispatch_table[0x28] = &&op_0x28;
-        dispatch_table[0x29] = &&op_0x29;
-        dispatch_table[0x2A] = &&op_0x2A;
-        dispatch_table[0x2B] = &&op_0x2B;
-        dispatch_table[0x2C] = &&op_0x2C;
-        dispatch_table[0x2D] = &&op_0x2D;
-        dispatch_table[0x2E] = &&op_0x2E;
-        dispatch_table[0x30] = &&op_0x30;
-        dispatch_table[0x31] = &&op_0x31;
-        dispatch_table[0x32] = &&op_0x32;
-        dispatch_table[0x33] = &&op_0x33;
-        dispatch_table[0x34] = &&op_0x34;
-        dispatch_table[0x36] = &&op_0x36;
-        dispatch_table[0x37] = &&op_0x37;
-        dispatch_table[0x38] = &&op_0x38;
-        dispatch_table[0x39] = &&op_0x39;
-        dispatch_table[0x3A] = &&op_0x3A;
-        dispatch_table[0x3B] = &&op_0x3B;
-        dispatch_table[0x3C] = &&op_0x3C;
-        dispatch_table[0x3D] = &&op_0x3D;
-        dispatch_table[0x3E] = &&op_0x3E;
-        dispatch_table[0x40] = &&op_0x40;
-        dispatch_table[0x41] = &&op_0x41;
-        dispatch_table[0x42] = &&op_0x42;
-        dispatch_table[0x43] = &&op_0x43;
-        dispatch_table[0x44] = &&op_0x44;
-        dispatch_table[0x45] = &&op_0x45;
-        dispatch_table[0x46] = &&op_0x46;
-        dispatch_table[0x47] = &&op_0x47;
-        dispatch_table[0x48] = &&op_0x48;
-        dispatch_table[0x49] = &&op_0x49;
-        dispatch_table[0x4A] = &&op_0x4A;
-        dispatch_table[0x4B] = &&op_0x4B;
-        dispatch_table[0x50] = &&op_0x50;
-        dispatch_table[0x51] = &&op_0x51;
-        dispatch_table[0x52] = &&op_0x52;
-        dispatch_table[0x53] = &&op_0x53;
-        dispatch_table[0x54] = &&op_0x54;
-        dispatch_table[0x55] = &&op_0x55;
-        dispatch_table[0x60] = &&op_0x60;
-        dispatch_table[0x61] = &&op_0x61;
-        dispatch_table[0x62] = &&op_0x62;
-        dispatch_table[0x63] = &&op_0x63;
-        dispatch_table[0x64] = &&op_0x64;
-        dispatch_table[0x65] = &&op_0x65;
-        dispatch_table[0x66] = &&op_0x66;
-        dispatch_table[0x67] = &&op_0x67;
-        dispatch_table[0x68] = &&op_0x68;
-        dispatch_table[0x69] = &&op_0x69;
-        dispatch_table[0x6A] = &&op_0x6A;
-        dispatch_table[0x6B] = &&op_0x6B;
-        dispatch_table[0x6C] = &&op_0x6C;
-        dispatch_table[0x6D] = &&op_0x6D;
-        dispatch_table[0x6E] = &&op_0x6E;
-        dispatch_table[0x6F] = &&op_0x6F;
-        dispatch_table[0x70] = &&op_0x70;
-        dispatch_table[0x71] = &&op_0x71;
-        dispatch_table[0x72] = &&op_0x72;
-        dispatch_table[0x73] = &&op_0x73;
-        dispatch_table[0x74] = &&op_0x74;
-        dispatch_table[0x75] = &&op_unhandled; // RESERVED as per spec v1.7
-        dispatch_table[0x76] = &&op_0x76;
-        dispatch_table[0x77] = &&op_unhandled; // RESERVED as per spec v1.7
-        dispatch_table[0x78] = &&op_0x78;
-        dispatch_table[0x79] = &&op_0x79;
-        dispatch_table[0x7A] = &&op_0x7A;
-        dispatch_table[0x7B] = &&op_0x7B;
-        dispatch_table[0x80] = &&op_0x80;
-        dispatch_table[0x81] = &&op_0x81;
-        dispatch_table[0x82] = &&op_0x82;
-        dispatch_table[0x83] = &&op_0x83;
-        dispatch_table[0x84] = &&op_0x84;
-        dispatch_table[0x85] = &&op_0x85;
-        dispatch_table[0x86] = &&op_0x86;
-        dispatch_table[0x87] = &&op_0x87;
-        dispatch_table[0x88] = &&op_0x88;
-        dispatch_table[0x89] = &&op_0x89;
-        dispatch_table[0x8E] = &&op_0x8E;
-        dispatch_table[0x8F] = &&op_0x8F;
-        dispatch_table[0x90] = &&op_0x90;
-        dispatch_table[0x92] = &&op_0x92;
-        dispatch_table[0x93] = &&op_0x93;
-        dispatch_table[0x94] = &&op_0x94;
-        dispatch_table[0x95] = &&op_0x95;
-        dispatch_table[0x96] = &&op_0x96;
-        dispatch_table[0x97] = &&op_0x97;
-        dispatch_table[0x98] = &&op_0x98;
-        dispatch_table[0x99] = &&op_0x99;
-        dispatch_table[0x9B] = &&op_0x9B;
-        dispatch_table[0x9C] = &&op_0x9C;
-        dispatch_table[0x9D] = &&op_0x9D;
-        dispatch_table[0x9E] = &&op_0x9E;
-        dispatch_table[0x9F] = &&op_0x9F;
-        dispatch_table[0xA0] = &&op_0xA0;
-        dispatch_table[0xA1] = &&op_0xA1;
-        dispatch_table[0xA4] = &&op_0xA4;
-        dispatch_table[0xA5] = &&op_0xA5;
-        dispatch_table[0xA6] = &&op_0xA6;
-        dispatch_table[0xA7] = &&op_0xA7;
-        dispatch_table[0xA8] = &&op_0xA8;
-        dispatch_table[0xA9] = &&op_0xA9;
-        dispatch_table[0xAA] = &&op_0xAA;
-        dispatch_table[0xAB] = &&op_0xAB;
-        dispatch_table[0xAC] = &&op_0xAC;
-        dispatch_table[0xAD] = &&op_0xAD;
-        dispatch_table[0xAE] = &&op_0xAE;
-        dispatch_table[0xAF] = &&op_0xAF;
-        dispatch_table[0xB0] = &&op_0xB0;
-        dispatch_table[0xB1] = &&op_0xB1;
-        dispatch_table[0xB2] = &&op_0xB2;
-        dispatch_table[0xB3] = &&op_0xB3;
-        dispatch_table[0xB4] = &&op_0xB4;
-        dispatch_table[0xB5] = &&op_0xB5;
-        dispatch_table[0xB6] = &&op_unhandled; // RESERVED
-        dispatch_table[0xB7] = &&op_unhandled; // RESERVED
-        dispatch_table[0xB8] = &&op_unhandled; // BITCAST not implemented
-        dispatch_table[0xB9] = &&op_unhandled; // BITCAST not implemented
-        dispatch_table[0xBA] = &&op_unhandled; // BITCAST not implemented
-        dispatch_table[0xBB] = &&op_unhandled; // BITCAST not implemented
-        dispatch_table[0xBD] = &&op_0xBD;
-        dispatch_table[0xBE] = &&op_0xBE;
-        dispatch_table[0xBF] = &&op_0xBF;
-        dispatch_table[0xC0] = &&op_0xC0;
-        dispatch_table[0xC1] = &&op_0xC1;
-        dispatch_table[0xC2] = &&op_0xC2;
-        dispatch_table[0xC3] = &&op_0xC3;
-        dispatch_table[0xC4] = &&op_0xC4;
-        dispatch_table[0xC5] = &&op_0xC5;
-        dispatch_table[0xC6] = &&op_0xC6;
-        dispatch_table[0xC7] = &&op_0xC7;
-        dispatch_table[0xC8] = &&op_0xC8;
-        dispatch_table[0xC9] = &&op_0xC9;
-        dispatch_table[0xCA] = &&op_0xCA;
-        dispatch_table[0xCB] = &&op_0xCB;
-        dispatch_table[0xCC] = &&op_0xCC;
-        dispatch_table[0xCD] = &&op_0xCD;
-        dispatch_table[0xCE] = &&op_0xCE;
-        dispatch_table[0xCF] = &&op_0xCF;
-        dispatch_table[0xD0] = &&op_0xD0;
-        dispatch_table[0xD1] = &&op_0xD1;
-        dispatch_table[0xD2] = &&op_0xD2;
-        dispatch_table[0xD3] = &&op_0xD3;
-        dispatch_table[0xD4] = &&op_0xD4;
-        dispatch_table[0xD5] = &&op_0xD5;
-        dispatch_table[0xD6] = &&op_0xD6;
-        dispatch_table[0xD7] = &&op_0xD7;
-        dispatch_table[0xD8] = &&op_0xD7;
-        dispatch_table[0xD9] = &&op_0xD7;
-        dispatch_table[0xDA] = &&op_0xD7;
-        dispatch_table[0xDB] = &&op_0xD7;
-        dispatch_table[0xDC] = &&op_0xD7;
-        dispatch_table[0xDD] = &&op_0xDD;
-        dispatch_table[0xDE] = &&op_0xDE;
-        dispatch_table[0xDF] = &&op_0xDF;
-        dispatch_table[0xE0] = &&op_0xE0;
-        dispatch_table[0xE1] = &&op_0xE1;
-        dispatch_table[0xE2] = &&op_0xE2;
-        dispatch_table[0xE3] = &&op_0xE3;
-        dispatch_table[0xE4] = &&op_0xE4;
-        dispatch_table[0xE5] = &&op_0xE5;
-        dispatch_table[0xE6] = &&op_0xE6;
-        dispatch_table[0xE7] = &&op_0xE7;
-        dispatch_table[0xE8] = &&op_0xE8;
-        dispatch_table[0xE9] = &&op_0xE9;
-        dispatch_table[0xEA] = &&op_0xEA;
-        dispatch_table[0xEB] = &&op_0xEB;
-        dispatch_table[0xEC] = &&op_0xEC;
-        dispatch_table[0xED] = &&op_0xED;
-        dispatch_table[0xEE] = &&op_0xEE;
-        dispatch_table[0xEF] = &&op_unhandled; // RESERVED
-        dispatch_table[0xF0] = &&op_0xF0;
-        dispatch_table[0xF1] = &&op_0xF0;
-        dispatch_table[0xF2] = &&op_0xF0;
-        dispatch_table[0xF3] = &&op_0xF0;
-        dispatch_table[0xF4] = &&op_0xF0;
-        dispatch_table[0xF5] = &&op_0xF0;
-        dispatch_table[0xF6] = &&op_0xF6;
-        dispatch_table[0xF7] = &&op_unhandled; // RESERVED
-        dispatch_table[0xF8] = &&op_unhandled; // TRY not implemented
-        dispatch_table[0xF9] = &&op_unhandled; // CATCH not implemented
-        dispatch_table[0xFA] = &&op_unhandled; // CATCH_ALL not implemented
-        dispatch_table[0xFB] = &&op_unhandled; // THROW not implemented
-        dispatch_table[0xFD] = &&op_unhandled; // PLATFORM.OP not implemented
-        dispatch_table[0xFE] = &&op_unhandled; // PLATFORM.OP not implemented
-        dispatch_table[0xFF] = &&op_unhandled; // RESERVED
-        dispatch_table[0x09] = &&op_0x09;
-        dispatch_table[0x0F] = &&op_0x0F;
-        dispatch_table[0x10] = &&op_0x10;
-        dispatch_table[0x1D] = &&op_0x1D;
-        dispatch_table[0x1E] = &&op_0x1E;
-        dispatch_table[0x1F] = &&op_0x1F;
-        dispatch_table[0x56] = &&op_0x56;
-        dispatch_table[0x57] = &&op_unhandled; // RESERVED as per spec v1.7
-        dispatch_table[0x58] = &&op_0x58;
-        dispatch_table[0xBC] = &&op_0xBC;
-        dispatch_table[0xFC] = &&op_0xFC;
-        table_initialized = true;
-    }
+    // --- Инфраструктура для Computed Goto (compile-time constant table) ---
+    static void* const dispatch_table[256] = {
+        [0 ... 255] = &&op_unhandled,
+        [0x00] = &&op_0x00,
+        [0x01] = &&op_0x01,
+        [0x02] = &&op_0x02,
+        [0x03] = &&op_0x03,
+        [0x04] = &&op_0x04,
+        [0x05] = &&op_0x05,
+        [0x09] = &&op_0x09,
+        [0x0A] = &&op_0x0A,
+        [0x0B] = &&op_0x0B,
+        [0x0D] = &&op_0x0D,
+        [0x0F] = &&op_0x0F,
+        [0x10] = &&op_0x10,
+        [0x11] = &&op_0x11,
+        [0x12] = &&op_0x12,
+        [0x13] = &&op_0x13,
+        [0x18] = &&op_0x18,
+        [0x19] = &&op_0x19,
+        [0x1A] = &&op_0x1A,
+        [0x1B] = &&op_0x1B,
+        [0x1C] = &&op_0x1C,
+        [0x1D] = &&op_0x1D,
+        [0x1E] = &&op_0x1E,
+        [0x1F] = &&op_0x1F,
+        [0x20] = &&op_0x20,
+        [0x21] = &&op_0x21,
+        [0x22] = &&op_0x22,
+        [0x23] = &&op_0x23,
+        [0x24] = &&op_0x24,
+        [0x26] = &&op_0x26,
+        [0x27] = &&op_0x27,
+        [0x28] = &&op_0x28,
+        [0x29] = &&op_0x29,
+        [0x2A] = &&op_0x2A,
+        [0x2B] = &&op_0x2B,
+        [0x2C] = &&op_0x2C,
+        [0x2D] = &&op_0x2D,
+        [0x2E] = &&op_0x2E,
+        [0x30] = &&op_0x30,
+        [0x31] = &&op_0x31,
+        [0x32] = &&op_0x32,
+        [0x33] = &&op_0x33,
+        [0x34] = &&op_0x34,
+        [0x36] = &&op_0x36,
+        [0x37] = &&op_0x37,
+        [0x38] = &&op_0x38,
+        [0x39] = &&op_0x39,
+        [0x3A] = &&op_0x3A,
+        [0x3B] = &&op_0x3B,
+        [0x3C] = &&op_0x3C,
+        [0x3D] = &&op_0x3D,
+        [0x3E] = &&op_0x3E,
+        [0x40] = &&op_0x40,
+        [0x41] = &&op_0x41,
+        [0x42] = &&op_0x42,
+        [0x43] = &&op_0x43,
+        [0x44] = &&op_0x44,
+        [0x45] = &&op_0x45,
+        [0x46] = &&op_0x46,
+        [0x47] = &&op_0x47,
+        [0x48] = &&op_0x48,
+        [0x49] = &&op_0x49,
+        [0x4A] = &&op_0x4A,
+        [0x4B] = &&op_0x4B,
+        [0x50] = &&op_0x50,
+        [0x51] = &&op_0x51,
+        [0x52] = &&op_0x52,
+        [0x53] = &&op_0x53,
+        [0x54] = &&op_0x54,
+        [0x55] = &&op_0x55,
+        [0x56] = &&op_0x56,
+        [0x58] = &&op_0x58,
+        [0x60] = &&op_0x60,
+        [0x61] = &&op_0x61,
+        [0x62] = &&op_0x62,
+        [0x63] = &&op_0x63,
+        [0x64] = &&op_0x64,
+        [0x65] = &&op_0x65,
+        [0x66] = &&op_0x66,
+        [0x67] = &&op_0x67,
+        [0x68] = &&op_0x68,
+        [0x69] = &&op_0x69,
+        [0x6A] = &&op_0x6A,
+        [0x6B] = &&op_0x6B,
+        [0x6C] = &&op_0x6C,
+        [0x6D] = &&op_0x6D,
+        [0x6E] = &&op_0x6E,
+        [0x6F] = &&op_0x6F,
+        [0x70] = &&op_0x70,
+        [0x71] = &&op_0x71,
+        [0x72] = &&op_0x72,
+        [0x73] = &&op_0x73,
+        [0x74] = &&op_0x74,
+        [0x76] = &&op_0x76,
+        [0x78] = &&op_0x78,
+        [0x79] = &&op_0x79,
+        [0x7A] = &&op_0x7A,
+        [0x7B] = &&op_0x7B,
+        [0x80] = &&op_0x80,
+        [0x81] = &&op_0x81,
+        [0x82] = &&op_0x82,
+        [0x83] = &&op_0x83,
+        [0x84] = &&op_0x84,
+        [0x85] = &&op_0x85,
+        [0x86] = &&op_0x86,
+        [0x87] = &&op_0x87,
+        [0x88] = &&op_0x88,
+        [0x89] = &&op_0x89,
+        [0x8E] = &&op_0x8E,
+        [0x8F] = &&op_0x8F,
+        [0x90] = &&op_0x90,
+        [0x92] = &&op_0x92,
+        [0x93] = &&op_0x93,
+        [0x94] = &&op_0x94,
+        [0x95] = &&op_0x95,
+        [0x96] = &&op_0x96,
+        [0x97] = &&op_0x97,
+        [0x98] = &&op_0x98,
+        [0x99] = &&op_0x99,
+        [0x9B] = &&op_0x9B,
+        [0x9C] = &&op_0x9C,
+        [0x9D] = &&op_0x9D,
+        [0x9E] = &&op_0x9E,
+        [0x9F] = &&op_0x9F,
+        [0xA0] = &&op_0xA0,
+        [0xA1] = &&op_0xA1,
+        [0xA4] = &&op_0xA4,
+        [0xA5] = &&op_0xA5,
+        [0xA6] = &&op_0xA6,
+        [0xA7] = &&op_0xA7,
+        [0xA8] = &&op_0xA8,
+        [0xA9] = &&op_0xA9,
+        [0xAA] = &&op_0xAA,
+        [0xAB] = &&op_0xAB,
+        [0xAC] = &&op_0xAC,
+        [0xAD] = &&op_0xAD,
+        [0xAE] = &&op_0xAE,
+        [0xAF] = &&op_0xAF,
+        [0xB0] = &&op_0xB0,
+        [0xB1] = &&op_0xB1,
+        [0xB2] = &&op_0xB2,
+        [0xB3] = &&op_0xB3,
+        [0xB4] = &&op_0xB4,
+        [0xB5] = &&op_0xB5,
+        [0xBC] = &&op_0xBC,
+        [0xBD] = &&op_0xBD,
+        [0xBE] = &&op_0xBE,
+        [0xBF] = &&op_0xBF,
+        [0xC0] = &&op_0xC0,
+        [0xC1] = &&op_0xC1,
+        [0xC2] = &&op_0xC2,
+        [0xC3] = &&op_0xC3,
+        [0xC4] = &&op_0xC4,
+        [0xC5] = &&op_0xC5,
+        [0xC6] = &&op_0xC6,
+        [0xC7] = &&op_0xC7,
+        [0xC8] = &&op_0xC8,
+        [0xC9] = &&op_0xC9,
+        [0xCA] = &&op_0xCA,
+        [0xCB] = &&op_0xCB,
+        [0xCC] = &&op_0xCC,
+        [0xCD] = &&op_0xCD,
+        [0xCE] = &&op_0xCE,
+        [0xCF] = &&op_0xCF,
+        [0xD0] = &&op_0xD0,
+        [0xD1] = &&op_0xD1,
+        [0xD2] = &&op_0xD2,
+        [0xD3] = &&op_0xD3,
+        [0xD4] = &&op_0xD4,
+        [0xD5] = &&op_0xD5,
+        [0xD6] = &&op_0xD6,
+        [0xD7] = &&op_0xD7,
+        [0xD8] = &&op_0xD7,
+        [0xD9] = &&op_0xD7,
+        [0xDA] = &&op_0xD7,
+        [0xDB] = &&op_0xD7,
+        [0xDC] = &&op_0xD7,
+        [0xDD] = &&op_0xDD,
+        [0xDE] = &&op_0xDE,
+        [0xDF] = &&op_0xDF,
+        [0xE0] = &&op_0xE0,
+        [0xE1] = &&op_0xE1,
+        [0xE2] = &&op_0xE2,
+        [0xE3] = &&op_0xE3,
+        [0xE4] = &&op_0xE4,
+        [0xE5] = &&op_0xE5,
+        [0xE6] = &&op_0xE6,
+        [0xE7] = &&op_0xE7,
+        [0xE8] = &&op_0xE8,
+        [0xE9] = &&op_0xE9,
+        [0xEA] = &&op_0xEA,
+        [0xEB] = &&op_0xEB,
+        [0xEC] = &&op_0xEC,
+        [0xED] = &&op_0xED,
+        [0xEE] = &&op_0xEE,
+        [0xF0] = &&op_0xF0,
+        [0xF1] = &&op_0xF0,
+        [0xF2] = &&op_0xF0,
+        [0xF3] = &&op_0xF0,
+        [0xF4] = &&op_0xF0,
+        [0xF5] = &&op_0xF0,
+        [0xF6] = &&op_0xF6,
+        [0xFC] = &&op_0xFC,
+    };
 #endif
 
 #define DISPATCH() \
@@ -1485,33 +1459,24 @@ op_unhandled:
                     // JIT выключен или не применим - стандартный путь через интерпретатор
                     const EspbFuncSignature* callee_sig = &module->signatures[actual_sig_idx];
 
-                    size_t saved_frame_size = num_virtual_regs * sizeof(Value);
                     size_t callee_frame_size = callee_body->header.num_virtual_regs * sizeof(Value);
 
-                    // 1. Проверяем, хватит ли места (быстрый путь inline)
-                    if (__builtin_expect(exec_ctx->sp + saved_frame_size + callee_frame_size > exec_ctx->shadow_stack_capacity, 0)) {
-                        int stack_status = _espb_grow_shadow_stack(exec_ctx, saved_frame_size + callee_frame_size);
+                    // Caller frame [fp..sp) stays intact below exec_ctx->sp; allocate callee directly at sp.
+                    if (__builtin_expect(exec_ctx->sp + callee_frame_size > exec_ctx->shadow_stack_capacity, 0)) {
+                        int stack_status = _espb_grow_shadow_stack(exec_ctx, callee_frame_size);
                         if (stack_status < 0) { return ESPB_ERR_OUT_OF_MEMORY; }
-                        if (stack_status > 0) { // Буфер перемещен, обновляем указатель на locals
+                        if (stack_status > 0) {
                             locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->fp);
                         }
                     }
 
-                    // 2. Копируем текущий кадр (locals) в теневой стек
-                    Value* saved_frame_location = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->sp);
-                    memcpy(saved_frame_location, locals, saved_frame_size);
-
-                    // 3. Сохраняем контекст вызывающей стороны
                     int return_pc = (int)(pc - instructions_ptr);
                     const EspbResult frame_result = push_call_frame(
-                        exec_ctx, return_pc, exec_ctx->fp, local_func_idx,
-                        saved_frame_location, num_virtual_regs);
+                        exec_ctx, return_pc, exec_ctx->fp, local_func_idx, NULL, 0);
                     if (frame_result != ESPB_OK) {
                         return frame_result;
                     }
 
-                    // Ограничиваем число аргументов размером обоих кадров.
-                    // Аргументы копируются напрямую после выделения кадра вызываемой функции.
                     uint32_t num_args_to_copy = MIN(callee_sig->num_params, FFI_ARGS_MAX);
                     uint32_t copied_args = num_args_to_copy;
                     if (copied_args > num_virtual_regs) copied_args = num_virtual_regs;
@@ -1519,19 +1484,20 @@ op_unhandled:
                         copied_args = callee_body->header.num_virtual_regs;
                     }
 
-                    // 5. Выделяем новый кадр
-                    exec_ctx->fp = exec_ctx->sp + saved_frame_size; // Новый кадр начинается ПОСЛЕ сохраненного
-                    exec_ctx->sp = exec_ctx->fp + callee_frame_size;   // Вершина стека сдвигается на размер нового кадра
+                    exec_ctx->fp = exec_ctx->sp;
+                    exec_ctx->sp = exec_ctx->fp + callee_frame_size;
 
-                    // 6. Копируем аргументы напрямую из сохраненного кадра caller.
-                    // Caller и callee занимают непересекающиеся области shadow stack.
                     Value* callee_locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->fp);
-                    if (copied_args > 0) {
+                    if (copied_args == 1) {
+                        callee_locals[0] = locals[0];
+                    } else if (copied_args > 1) {
                         memcpy(callee_locals, locals, (size_t)copied_args * sizeof(Value));
                     }
-                    if (copied_args < callee_body->header.num_virtual_regs) {
+                    const size_t callee_regs_to_init = MIN((size_t)callee_body->header.num_virtual_regs,
+                                                           (size_t)callee_body->header.max_reg_used + 1u);
+                    if ((size_t)copied_args < callee_regs_to_init) {
                         memset(callee_locals + copied_args, 0,
-                               (size_t)(callee_body->header.num_virtual_regs - copied_args) * sizeof(Value));
+                               (callee_regs_to_init - (size_t)copied_args) * sizeof(Value));
                     }
                     
                     // 7. Обновляем контекст интерпретатора для вызываемой функции
@@ -1626,28 +1592,25 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
         // --- Код для "хвостового" вызова (адаптирован из op_0x0A) ---
         const EspbFunctionBody* callee_body = &module->function_bodies[callee_local_func_idx];
         const EspbFuncSignature* callee_sig = &module->signatures[actual_sig_idx];
-        size_t saved_frame_size = num_virtual_regs * sizeof(Value);
         size_t callee_frame_size = callee_body->header.num_virtual_regs * sizeof(Value);
 
-        if (__builtin_expect(exec_ctx->sp + saved_frame_size + callee_frame_size > exec_ctx->shadow_stack_capacity, 0)) {
-            int stack_status = _espb_grow_shadow_stack(exec_ctx, saved_frame_size + callee_frame_size);
+        if (__builtin_expect(exec_ctx->sp + callee_frame_size > exec_ctx->shadow_stack_capacity, 0)) {
+            int stack_status = _espb_grow_shadow_stack(exec_ctx, callee_frame_size);
             if (stack_status < 0) { return ESPB_ERR_OUT_OF_MEMORY; }
-            if (stack_status > 0) { // Буфер перемещен, обновляем указатель на locals
+            if (stack_status > 0) {
                 locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->fp);
             }
         }
-        Value* saved_frame_location = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->sp);
-        memcpy(saved_frame_location, locals, saved_frame_size);
 
         int return_pc = (int)(pc - instructions_ptr);
-        if (push_call_frame(exec_ctx, return_pc, exec_ctx->fp, local_func_idx, saved_frame_location, num_virtual_regs) != ESPB_OK) {
+        if (push_call_frame(exec_ctx, return_pc, exec_ctx->fp, local_func_idx, NULL, 0) != ESPB_OK) {
             return ESPB_ERR_STACK_OVERFLOW;
         }
-        
+
         uint32_t num_args_to_copy = MIN(callee_sig->num_params, FFI_ARGS_MAX);
         uint32_t copied_args = MIN(num_args_to_copy, callee_body->header.num_virtual_regs);
 
-        exec_ctx->fp = exec_ctx->sp + saved_frame_size;
+        exec_ctx->fp = exec_ctx->sp;
         exec_ctx->sp = exec_ctx->fp + callee_frame_size;
         
         Value* callee_locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->fp);
@@ -1756,29 +1719,26 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
 
                 // --- Новые инструкции перехода ---
                 op_0x02: { // BR offset(i16)
-                    int16_t offset = *(int16_t*)pc;
-                    pc += 2;
+                    int16_t offset = READ_I16();
                     pc = (pc - 3) + offset;
                     ESPB_OP_LOG("BR offset %d", offset);
                     DISPATCH();
                 }
           op_0x03: { // BR_IF reg(u8), offset(i16)
-              uint8_t cond_reg = *pc++;
-              int16_t offset = *(int16_t*)pc;
-              pc += 2;
-              if (__builtin_expect(V_I32(locals[cond_reg]) != 0, 0)) {
+              uint8_t cond_reg = READ_U8();
+              int16_t offset = READ_I16();
+              if (V_I32(locals[cond_reg]) != 0) {
                   pc = (pc - 4) + offset;
               }
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-              ESP_LOGD(TAG, "BR_IF R%u (%s), offset %d", 
+              ESP_LOGD(TAG, "BR_IF R%u (%s), offset %d",
                        cond_reg, V_I32(locals[cond_reg]) ? "true" : "false", offset);
 #endif
               DISPATCH();
          }
              op_0x18: { // LDC.I32.IMM Rd(u8), imm32
-                 uint8_t rd = *pc++;
-                 int32_t imm = *(int32_t*)pc;
-                 pc += 4;
+                 uint8_t rd = READ_U8();
+                 int32_t imm = READ_I32();
                  V_I32(locals[rd]) = imm;
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                  ESP_LOGD(TAG, "LDC.I32.IMM R%d, %" PRId32, rd, imm);
@@ -1975,7 +1935,7 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                     // JIT выключен или не применим - стандартный путь через интерпретатор
                     bool is_leaf_function = (callee_body->header.flags & ESPB_FUNC_FLAG_IS_LEAF) != 0;
 
-                    size_t saved_frame_size = num_virtual_regs * sizeof(Value);
+                    (void)is_leaf_function;
                     size_t callee_frame_size = callee_body->header.num_virtual_regs * sizeof(Value);
                     uint32_t num_args_to_copy = MIN(callee_sig->num_params, FFI_ARGS_MAX);
                     uint32_t copied_args = num_args_to_copy;
@@ -1985,60 +1945,36 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                     }
 
                     int return_pc = (int)(pc - instructions_ptr);
-                    
-                    if (is_leaf_function) {
-                        // ✅ БЫСТРЫЙ ПУТЬ (для листовых функций)
-                        if (__builtin_expect(exec_ctx->sp + callee_frame_size > exec_ctx->shadow_stack_capacity, 0)) {
-                            int stack_status = _espb_grow_shadow_stack(exec_ctx, callee_frame_size);
-                            if (stack_status < 0) return ESPB_ERR_OUT_OF_MEMORY;
-                            if (stack_status > 0) {
-                                // realloc moved the shadow stack; refresh caller locals.
-                                locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->fp);
-                            }
+
+                    // Caller frame [fp..sp) stays intact below exec_ctx->sp; allocate callee directly at sp.
+                    if (__builtin_expect(exec_ctx->sp + callee_frame_size > exec_ctx->shadow_stack_capacity, 0)) {
+                        int stack_status = _espb_grow_shadow_stack(exec_ctx, callee_frame_size);
+                        if (stack_status < 0) return ESPB_ERR_OUT_OF_MEMORY;
+                        if (stack_status > 0) {
+                            locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->fp);
                         }
-
-                        // Inline push_call_frame для leaf функций
-                        if (push_call_frame(exec_ctx, return_pc, exec_ctx->fp,
-                                             local_func_idx, NULL, 0) != ESPB_OK) {
-                            return ESPB_ERR_STACK_OVERFLOW;
-                        }
-
-                        exec_ctx->fp = exec_ctx->sp;
-                        exec_ctx->sp = exec_ctx->fp + callee_frame_size;
-                        
-                    } else {
-                        // 🐢 МЕДЛЕННЫЙ ПУТЬ
-                        if (__builtin_expect(exec_ctx->sp + saved_frame_size + callee_frame_size > exec_ctx->shadow_stack_capacity, 0)) {
-                            int stack_status = _espb_grow_shadow_stack(exec_ctx, saved_frame_size + callee_frame_size);
-                            if (stack_status < 0) { return ESPB_ERR_OUT_OF_MEMORY; }
-                            if (stack_status > 0) {
-                                locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->fp);
-                            }
-                        }
-
-                        Value* saved_frame_location = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->sp);
-                        memcpy(saved_frame_location, locals, saved_frame_size);
-
-                        // Inline push_call_frame
-                        if (push_call_frame(exec_ctx, return_pc, exec_ctx->fp,
-                                             local_func_idx, saved_frame_location,
-                                             num_virtual_regs) != ESPB_OK) {
-                            return ESPB_ERR_STACK_OVERFLOW;
-                        }
-
-                        exec_ctx->fp = exec_ctx->sp + saved_frame_size;
-                        exec_ctx->sp = exec_ctx->fp + callee_frame_size;
                     }
-                    
-                    // --- Общая логика для обоих путей ---
+
+                    if (push_call_frame(exec_ctx, return_pc, exec_ctx->fp,
+                                         local_func_idx, NULL, 0) != ESPB_OK) {
+                        return ESPB_ERR_STACK_OVERFLOW;
+                    }
+
+                    exec_ctx->fp = exec_ctx->sp;
+                    exec_ctx->sp = exec_ctx->fp + callee_frame_size;
+
                     Value* callee_locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->fp);
-                    
-                    if (copied_args > 0) {
+
+                    if (copied_args == 1) {
+                        callee_locals[0] = locals[0];
+                    } else if (copied_args > 1) {
                         memcpy(callee_locals, locals, (size_t)copied_args * sizeof(Value));
                     }
-                    if (copied_args < callee_body->header.num_virtual_regs) {
+                    const size_t callee_regs_to_init = MIN((size_t)callee_body->header.num_virtual_regs,
+                                                           (size_t)callee_body->header.max_reg_used + 1u);
+                    if ((size_t)copied_args < callee_regs_to_init) {
                         memset(callee_locals + copied_args, 0,
-                               (size_t)(callee_body->header.num_virtual_regs - copied_args) * sizeof(Value));
+                               (callee_regs_to_init - (size_t)copied_args) * sizeof(Value));
                     }
 
                     local_func_idx = local_func_idx_to_call;
@@ -2815,12 +2751,11 @@ op_0x3E: { // NOT.I64 (unary)
                     if (ra_addr >= base_addr && ra_addr < base_addr + mem_size) {
                         // Standard case: Ra points into ESPB memory.
                         uint32_t ra_offset = (uint32_t)(ra_addr - base_addr);
-                        int64_t target_signed = (int64_t)ra_offset + offset;
-                        if (target_signed < 0 || (uint64_t)target_signed + sizeof(uint32_t) > mem_size) {
+                        uint32_t target = ra_offset + (uint32_t)(int32_t)offset;
+                        if (__builtin_expect(mem_size < sizeof(uint32_t) || target > mem_size - sizeof(uint32_t), 0)) {
                             ESP_LOGE(TAG, "STORE.I32 - Address out of bounds: base=0x%x offset=0x%x", (unsigned int)ra_offset, (unsigned int)offset);
                             return ESPB_ERR_MEMORY_ACCESS_OUT_OF_BOUNDS;
                         }
-                        uint32_t target = (uint32_t)target_signed;
                         memcpy(base + target, &val32, sizeof(int32_t));
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                         ESP_LOGD(TAG, "STORE.I32 R%u(%ld) -> mem[%" PRIu32 "]", rs, (long)val32, target);
@@ -3092,16 +3027,18 @@ op_0x3E: { // NOT.I64 (unary)
                     if (exec_ctx->call_stack_top > 0) {
                         // The frame to be cleaned is the one we are about to pop.
                         RuntimeFrame *frame = &exec_ctx->call_stack[exec_ctx->call_stack_top - 1];
-                        for (uint8_t i = 0; i < frame->alloca_count; i++) {
-                            if (frame->alloca_ptrs && frame->alloca_ptrs[i]) {
-                                espb_heap_free(instance, frame->alloca_ptrs[i]);
+                        if (__builtin_expect(frame->alloca_ptrs != NULL, 0)) {
+                            for (uint8_t i = 0; i < frame->alloca_count; i++) {
+                                if (frame->alloca_ptrs[i]) {
+                                    espb_heap_free(instance, frame->alloca_ptrs[i]);
+                                }
                             }
+                            free(frame->alloca_ptrs);
+                            frame->alloca_ptrs = NULL;
+                            frame->alloca_count = 0;
+                            frame->alloca_capacity = 0;
+                            frame->has_custom_aligned = false;
                         }
-                        free(frame->alloca_ptrs);
-                        frame->alloca_ptrs = NULL;
-                        frame->alloca_count = 0;
-                        frame->alloca_capacity = 0;
-                        frame->has_custom_aligned = false;
                     }
 
                     // 3. Pop the call frame to get caller's info
@@ -3129,7 +3066,7 @@ op_0x3E: { // NOT.I64 (unary)
 
                     // 5. Restore caller's full register frame if it was saved on the stack
                     // ОПТИМИЗАЦИЯ: условие almost always true для не-leaf функций
-                    if (__builtin_expect(saved_frame_ptr != NULL && num_regs_saved > 0, 1)) {
+                    if (__builtin_expect(saved_frame_ptr != NULL && num_regs_saved > 0, 0)) {
                         Value* caller_locals_ptr = (Value*)(exec_ctx->shadow_stack_buffer + restored_fp);
                         memcpy(caller_locals_ptr, saved_frame_ptr, num_regs_saved * sizeof(Value));
                     }
@@ -4386,12 +4323,11 @@ op_0xD6: // SELECT.PTR
 
                     if (ra_addr >= base_addr && ra_addr < base_addr + mem_size) {
                         uint32_t ra_off = (uint32_t)(ra_addr - base_addr);
-                        int64_t tgt = (int64_t)ra_off + offset;
-                        if (tgt < 0 || (uint64_t)tgt + sizeof(int32_t) > mem_size) {
+                        uint32_t target = ra_off + (uint32_t)(int32_t)offset;
+                        if (__builtin_expect(mem_size < sizeof(int32_t) || target > mem_size - sizeof(int32_t), 0)) {
                             ESP_LOGE(TAG, "LOAD.I32 - Address out of bounds: base=0x%x offset=0x%x", (unsigned int)ra_off, (unsigned int)offset);
                         return ESPB_ERR_MEMORY_ACCESS_OUT_OF_BOUNDS;
                         }
-                        uint32_t target = (uint32_t)tgt;
                         // Use memcpy for safe unaligned access
                         memcpy(&V_I32(locals[rd]), base + target, sizeof(int32_t));
                         SET_TYPE(locals[rd], ESPB_TYPE_I32);
@@ -5256,6 +5192,9 @@ function_epilogue:
         // Remove it as well so the same ExecutionContext can enter another
         // independent root function call safely.
         exec_ctx->call_stack_top = entry_saved_call_stack_top;
+    } else {
+        exec_ctx->sp = entry_saved_sp;
+        exec_ctx->fp = entry_saved_fp;
     }
 
     // Контекст выполнения (exec_ctx) освобождается внешней функцией, которая его создала.

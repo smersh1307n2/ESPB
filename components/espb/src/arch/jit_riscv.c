@@ -1051,15 +1051,15 @@ static inline uint8_t ph_ensure_loaded(JitContext* ctx, PeepholeRegCache* ph, ui
     // the new operand over the old vreg and lose the pending result.
     if (target_phys == 5 && ph->x5_valid && ph->x5_dirty &&
         ph->x5_vreg != vreg) {
-        emit_sw_phys(ctx, 5, (int16_t)(ph->x5_vreg * 8), 18);
+        emit_sw_phys(ctx, 5, (int16_t)(ph->x5_vreg * 8), 9);
         ph->x5_dirty = false;
     } else if (target_phys == 6 && ph->x6_valid && ph->x6_dirty &&
                ph->x6_vreg != vreg) {
-        emit_sw_phys(ctx, 6, (int16_t)(ph->x6_vreg * 8), 18);
+        emit_sw_phys(ctx, 6, (int16_t)(ph->x6_vreg * 8), 9);
         ph->x6_dirty = false;
     }
 
-    emit_lw_phys(ctx, target_phys, (int16_t)(vreg * 8), 18);
+    emit_lw_phys(ctx, target_phys, (int16_t)(vreg * 8), 9);
     ph_set(ph, target_phys, vreg, false);
     return target_phys;
 }
@@ -1073,17 +1073,17 @@ static inline void ph_flush(JitContext* ctx, PeepholeRegCache* ph) {
     // write back only dirty cached values
     if (ph->i64_valid && ph->i64_dirty && ph->i64_vreg != 0xFF) {
         // x5 = lo, x6 = hi
-        emit_sw_phys(ctx, 5, (int16_t)(ph->i64_vreg * 8), 18);
-        emit_sw_phys(ctx, 6, (int16_t)(ph->i64_vreg * 8 + 4), 18);
+        emit_sw_phys(ctx, 5, (int16_t)(ph->i64_vreg * 8), 9);
+        emit_sw_phys(ctx, 6, (int16_t)(ph->i64_vreg * 8 + 4), 9);
         ph->i64_dirty = false;
     }
 
     if (ph->x5_valid && ph->x5_dirty && ph->x5_vreg != 0xFF) {
-        emit_sw_phys(ctx, 5, (int16_t)(ph->x5_vreg * 8), 18);
+        emit_sw_phys(ctx, 5, (int16_t)(ph->x5_vreg * 8), 9);
         ph->x5_dirty = false;
     }
     if (ph->x6_valid && ph->x6_dirty && ph->x6_vreg != 0xFF) {
-        emit_sw_phys(ctx, 6, (int16_t)(ph->x6_vreg * 8), 18);
+        emit_sw_phys(ctx, 6, (int16_t)(ph->x6_vreg * 8), 9);
         ph->x6_dirty = false;
     }
 }
@@ -1358,8 +1358,8 @@ static inline void ph_flush_selective_for_branch(JitContext* ctx, PeepholeRegCac
         bool need = bb_reads_vreg_before_write(bytecode_start, bytecode_end, target_off, ph->i64_vreg) ||
                     bb_reads_vreg_before_write(bytecode_start, bytecode_end, fallthrough_off, ph->i64_vreg);
         if (need) {
-            emit_sw_phys(ctx, 5, (int16_t)(ph->i64_vreg * 8), 18);
-            emit_sw_phys(ctx, 6, (int16_t)(ph->i64_vreg * 8 + 4), 18);
+            emit_sw_phys(ctx, 5, (int16_t)(ph->i64_vreg * 8), 9);
+            emit_sw_phys(ctx, 6, (int16_t)(ph->i64_vreg * 8 + 4), 9);
         }
         ph->i64_dirty = false;
     }
@@ -1368,7 +1368,7 @@ static inline void ph_flush_selective_for_branch(JitContext* ctx, PeepholeRegCac
         bool need = bb_reads_vreg_before_write(bytecode_start, bytecode_end, target_off, ph->x5_vreg) ||
                     bb_reads_vreg_before_write(bytecode_start, bytecode_end, fallthrough_off, ph->x5_vreg);
         if (need) {
-            emit_sw_phys(ctx, 5, (int16_t)(ph->x5_vreg * 8), 18);
+            emit_sw_phys(ctx, 5, (int16_t)(ph->x5_vreg * 8), 9);
         }
         ph->x5_dirty = false;
     }
@@ -1377,7 +1377,7 @@ static inline void ph_flush_selective_for_branch(JitContext* ctx, PeepholeRegCac
         bool need = bb_reads_vreg_before_write(bytecode_start, bytecode_end, target_off, ph->x6_vreg) ||
                     bb_reads_vreg_before_write(bytecode_start, bytecode_end, fallthrough_off, ph->x6_vreg);
         if (need) {
-            emit_sw_phys(ctx, 6, (int16_t)(ph->x6_vreg * 8), 18);
+            emit_sw_phys(ctx, 6, (int16_t)(ph->x6_vreg * 8), 9);
         }
         ph->x6_dirty = false;
     }
@@ -1467,11 +1467,11 @@ void jit_call_espb_function(EspbInstance* instance, uint32_t local_func_idx, Val
             goto slow_path;
         }
 
-        uint16_t zero_regs = needed_regs;
+        uint16_t zero_regs = max_used;
         if (zero_regs < num_args) zero_regs = num_args;
         if (zero_regs == 0) zero_regs = 1;
 
-        // Argument registers are overwritten below; clear only the unused tail.
+        // Argument registers are overwritten below; clear only the unused tail up to max_used.
         for (uint8_t i = 0; i < num_args; i++) {
             callee_regs[i] = v_regs[i];
         }
@@ -2378,7 +2378,7 @@ static void jit_context_patch_branches(JitContext* ctx, const uint8_t* bytecode,
         
         // target_bytecode_offset уже содержит вычисленный целевой offset в байт-коде
         size_t target_bytecode = pp->target_bytecode_offset;
-        if (target_bytecode >= bytecode_size) {
+        if (target_bytecode > bytecode_size) {
             printf("[jit] ERROR: Branch target out of bounds (target=%zu, size=%zu) at native offset %zu\n", 
                    target_bytecode, bytecode_size, pp->patch_location);
             // Patch with EBREAK to crash instead of infinite loop
@@ -2433,9 +2433,10 @@ static void jit_context_patch_branches(JitContext* ctx, const uint8_t* bytecode,
                 memcpy(&old_instr, ctx->buffer + pp->patch_location, sizeof(old_instr));
                 uint8_t rs1 = (old_instr >> 15) & 0x1F;
                 uint8_t rs2 = (old_instr >> 20) & 0x1F;
+                uint8_t funct3 = (old_instr >> 12) & 0x7;
                 
                 uint32_t new_instr = (imm12 << 31) | (imm10_5 << 25) | (rs2 << 20) | 
-                                    (rs1 << 15) | (0b001 << 12) | (imm4_1 << 8) | 
+                                    (rs1 << 15) | ((uint32_t)funct3 << 12) | (imm4_1 << 8) |
                                     (imm11 << 7) | 0b1100011;
                 memcpy(ctx->buffer + pp->patch_location, &new_instr, sizeof(new_instr));
             } else {
@@ -2661,7 +2662,17 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
     // 2. ra если не leaf = 4 байта
     // 3. frame_size для spills
     // 4. Временное пространство для CALL_IMPORT (до 60 байт!)
-    bool stable_cache_enabled = !no_spill_fastpath;
+    bool has_fp_ops = false;
+    for (size_t i = 0; i < body->code_size; ++i) {
+        uint8_t op = body->code[i];
+        if (op == 0x1A || op == 0x1B || (op >= 0x50 && op <= 0x6F) ||
+            op == 0x78 || op == 0x79 || op == 0x86 || op == 0x87 ||
+            op == 0xD4 || op == 0xD5) {
+            has_fp_ops = true;
+            break;
+        }
+    }
+    bool stable_cache_enabled = !no_spill_fastpath && has_fp_ops;
 
     uint16_t saved_regs_size = 12; // s0, s1, s2
     if (stable_cache_enabled) {
@@ -2736,8 +2747,8 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
         emit_sw_phys(&ctx, 23, offset, 2);
     }
     
-    emit_addi_phys(&ctx, 9, 10, 0);  // s1 = a0 (instance)
-    emit_addi_phys(&ctx, 18, 11, 0); // s2 = a1 (v_regs)
+    emit_addi_phys(&ctx, 18, 10, 0); // s2 = a0 (instance)
+    emit_addi_phys(&ctx, 9, 11, 0);  // s1 = a1 (v_regs)
 
     // NO_SPILL fast-path: загружаем v0..max_reg_used из v_regs[] один раз в физические регистры
     // КРИТИЧНО: После компакции используемые регистры могут быть в диапазоне R8-R15,
@@ -2748,7 +2759,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
             for (uint8_t v = 0; v <= max_reg_used; v++) {
                 uint8_t phys = FP_MAP_VREG(v);
                 if (phys != 0) {
-                    emit_lw_phys(&ctx, phys, v * 8, 18);  // Загружаем младшие 32 бита
+                    emit_lw_phys(&ctx, phys, v * 8, 9);  // Загружаем младшие 32 бита
                 }
             }
         } else {
@@ -2766,8 +2777,8 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 }
                 
                 // Загружаем пару регистров (lo из offset+0, hi из offset+4)
-                emit_lw_phys(&ctx, phys_lo, v * 8 + 0, 18);  // Младшие 32 бита
-                emit_lw_phys(&ctx, phys_hi, v * 8 + 4, 18);  // Старшие 32 бита
+                emit_lw_phys(&ctx, phys_lo, v * 8 + 0, 9);  // Младшие 32 бита
+                emit_lw_phys(&ctx, phys_hi, v * 8 + 4, 9);  // Старшие 32 бита
             }
         }
     }
@@ -2809,10 +2820,10 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
     #define VCACHE_SPILL(slot, reg_lo, reg_hi) do { \
         if (stable_cache_enabled && (slot).kind != VC_NONE && (slot).dirty) { \
             if ((slot).kind == VC_F32) { \
-                emit_sw_phys(&ctx, (reg_lo), (slot).vreg * 8, 18); \
+                emit_sw_phys(&ctx, (reg_lo), (slot).vreg * 8, 9); \
             } else if ((slot).kind == VC_F64) { \
-                emit_sw_phys(&ctx, (reg_lo), (slot).vreg * 8, 18); \
-                emit_sw_phys(&ctx, (reg_hi), (slot).vreg * 8 + 4, 18); \
+                emit_sw_phys(&ctx, (reg_lo), (slot).vreg * 8, 9); \
+                emit_sw_phys(&ctx, (reg_hi), (slot).vreg * 8 + 4, 9); \
             } \
         } \
         (slot).kind = VC_NONE; \
@@ -2838,16 +2849,16 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
             emit_addi_phys(&ctx, (dst_hi), VC1_HI, 0); \
             vcache_mru = 1; \
         } else { \
-            emit_lw_phys(&ctx, (dst_lo), (vreg) * 8, 18); \
-            emit_lw_phys(&ctx, (dst_hi), (vreg) * 8 + 4, 18); \
+            emit_lw_phys(&ctx, (dst_lo), (vreg) * 8, 9); \
+            emit_lw_phys(&ctx, (dst_hi), (vreg) * 8 + 4, 9); \
         } \
     } while(0)
 
     // Store F64 result currently in a0/a1 into cache slots.
     #define VCACHE_STORE_F64_RESULT(rd_vreg) do { \
         if (!stable_cache_enabled) { \
-            emit_sw_phys(&ctx, 10, (rd_vreg) * 8, 18); \
-            emit_sw_phys(&ctx, 11, (rd_vreg) * 8 + 4, 18); \
+            emit_sw_phys(&ctx, 10, (rd_vreg) * 8, 9); \
+            emit_sw_phys(&ctx, 11, (rd_vreg) * 8 + 4, 9); \
         } else { \
             uint8_t _slot = (uint8_t)VCACHE_SELECT_SLOT_FOR_F64((rd_vreg)); \
             if (_slot == 0) { \
@@ -2882,10 +2893,10 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
     #define VCACHE_FLUSH_SLOT(slot, reg_lo, reg_hi) do { \
         if (stable_cache_enabled && (slot).kind != VC_NONE && (slot).dirty) { \
             if ((slot).kind == VC_F32) { \
-                emit_sw_phys(&ctx, (reg_lo), (slot).vreg * 8, 18); \
+                emit_sw_phys(&ctx, (reg_lo), (slot).vreg * 8, 9); \
             } else if ((slot).kind == VC_F64) { \
-                emit_sw_phys(&ctx, (reg_lo), (slot).vreg * 8, 18); \
-                emit_sw_phys(&ctx, (reg_hi), (slot).vreg * 8 + 4, 18); \
+                emit_sw_phys(&ctx, (reg_lo), (slot).vreg * 8, 9); \
+                emit_sw_phys(&ctx, (reg_hi), (slot).vreg * 8 + 4, 9); \
             } \
         } \
         (slot).kind = VC_NONE; \
@@ -2993,7 +3004,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 ph_reset(&ph);
                 
                 // Загружаем индекс из v_regs[ridx]
-                emit_lw_phys(&ctx, 5, ridx * 8, 18);  // t0 = v_regs[ridx] (index)
+                emit_lw_phys(&ctx, 5, ridx * 8, 9);  // t0 = v_regs[ridx] (index)
                 
                 // Проверка: если index >= num_targets, используем default
                 // Загружаем num_targets в t1
@@ -3162,7 +3173,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 // CMP+BR_IF ОПТИМИЗАЦИЯ: Если rcond == last_cmp_result_reg и результат в t0
                 // то не нужен load!
                 // Для корректности: всегда загружаем условие из памяти
-                emit_lw_phys(&ctx, 5, rcond * 8, 18);  // t0 = v_regs[rcond]
+                emit_lw_phys(&ctx, 5, rcond * 8, 9);  // t0 = v_regs[rcond]
                 ctx.last_cmp_result_reg = 0xFF;  // сброс трекера
                 
                 // Генерируем BNE с временным offset (будет исправлен позже)
@@ -3232,7 +3243,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 }
 
                 // a0 = instance (s1)
-                emit_addi_phys(&ctx, 10, 9, 0);
+                emit_addi_phys(&ctx, 10, 18, 0);
 
                 // a1 = import_idx
                 if (import_idx < 2048) {
@@ -3245,7 +3256,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 }
 
                 // a2 = v_regs (s2)
-                emit_addi_phys(&ctx, 12, 18, 0);
+                emit_addi_phys(&ctx, 12, 9, 0);
 
                 // a3 = num_virtual_regs (u16)
                 if (num_virtual_regs < 2048) {
@@ -3270,32 +3281,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 }
 
                 // NOTE: Debug call removed - it was clobbering R0-R7 before CALL_IMPORT!
-                // Setup args for espb_jit_call_import
-                emit_addi_phys(&ctx, 10, 9, 0);     // a0=instance
-                if (import_idx < 2048) {
-                    emit_addi_phys(&ctx, 11, 0, (int16_t)import_idx);
-                } else {
-                    uint32_t hi = ((import_idx + 0x800) & 0xFFFFF000);
-                    int16_t lo = (int16_t)(import_idx - hi);
-                    emit_lui_phys(&ctx, 11, hi);
-                    if (lo != 0) emit_addi_phys(&ctx, 11, 11, lo);
-                }
-                emit_addi_phys(&ctx, 12, 18, 0);    // a2=v_regs
-                if (num_virtual_regs < 2048) {
-                    emit_addi_phys(&ctx, 13, 0, (int16_t)num_virtual_regs);
-                } else {
-                    uint32_t hi = ((num_virtual_regs + 0x800) & 0xFFFFF000);
-                    int16_t lo = (int16_t)(num_virtual_regs - hi);
-                    emit_lui_phys(&ctx, 13, hi);
-                    if (lo != 0) emit_addi_phys(&ctx, 13, 13, lo);
-                }
-                emit_addi_phys(&ctx, 14, 0, (int16_t)has_variadic_info);
-                emit_addi_phys(&ctx, 15, 0, (int16_t)num_args);
-                if (has_variadic_info) {
-                    emit_addi_phys(&ctx, 16, 2, 8);
-                } else {
-                    emit_addi_phys(&ctx, 16, 0, 0);
-                }
+
 
                 // Call helper: espb_jit_call_import(instance, import_idx, v_regs, num_virtual_regs,
                 //                                 has_variadic_info, num_total_args, arg_types_ptr)
@@ -3321,7 +3307,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 // Поэтому не сохраняем a0-a7/t0-t6/s2 на каждый CALL.
 
                 // a0 = instance (s1)
-                emit_addi_phys(&ctx, 10, 9, 0);
+                emit_addi_phys(&ctx, 10, 18, 0);
 
                 // a1 = local_func_idx (helper сам преобразует в global)
                 if (local_func_idx < 2048) {
@@ -3334,7 +3320,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 }
 
                 // a2 = v_regs (s2)
-                emit_addi_phys(&ctx, 12, 18, 0);
+                emit_addi_phys(&ctx, 12, 9, 0);
 
                 // Call helper directly (emit_call_helper uses t0=x5)
                 emit_call_helper(&ctx, (uintptr_t)&jit_call_espb_function);
@@ -3350,10 +3336,10 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 memcpy(&type_idx, pc, sizeof(type_idx)); pc += sizeof(type_idx);
 
                 // a0 = instance
-                emit_addi_phys(&ctx, 10, 9, 0);
+                emit_addi_phys(&ctx, 10, 18, 0);
 
                 // a1 = target_ptr (PTR) from v_regs[rptr]
-                emit_lw_phys(&ctx, 11, rptr * 8, 18);
+                emit_lw_phys(&ctx, 11, rptr * 8, 9);
 
                 // a2 = type_idx
                 if (type_idx < 2048) {
@@ -3366,7 +3352,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 }
 
                 // a3 = v_regs
-                emit_addi_phys(&ctx, 13, 18, 0);
+                emit_addi_phys(&ctx, 13, 9, 0);
 
                 // a4 = num_virtual_regs
                 if (num_virtual_regs < 2048) {
@@ -3398,10 +3384,10 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 // (аналогично логике интерпретатора op_0x0B)
 
                 // a0 = instance (s1/x9)
-                emit_addi_phys(&ctx, 10, 9, 0);
+                emit_addi_phys(&ctx, 10, 18, 0);
 
                 // a1 = func_idx_or_ptr из v_regs[r_func_idx]
-                emit_lw_phys(&ctx, 11, r_func_idx * 8, 18);
+                emit_lw_phys(&ctx, 11, r_func_idx * 8, 9);
 
                 // a2 = type_idx
                 if (expected_type_idx < 2048) {
@@ -3414,7 +3400,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 }
 
                 // a3 = v_regs (s2/x18)
-                emit_addi_phys(&ctx, 13, 18, 0);
+                emit_addi_phys(&ctx, 13, 9, 0);
 
                 // a4 = num_virtual_regs
                 if (num_virtual_regs < 2048) {
@@ -3441,7 +3427,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 int16_t offset;
                 memcpy(&offset, pc, sizeof(offset)); pc += sizeof(offset);
                 
-                emit_lw_phys(&ctx, 5, ra * 8, 18);
+                emit_lw_phys(&ctx, 5, ra * 8, 9);
                 if (offset >= -2048 && offset < 2048) {
                     emit_lw_phys(&ctx, 5, offset, 5);
                 } else {
@@ -3453,7 +3439,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                     emit_add_phys(&ctx, 5, 5, 6);
                     emit_lw_phys(&ctx, 5, 0, 5);
                 }
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 break;
             }
 
@@ -3463,7 +3449,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 int16_t offset;
                 memcpy(&offset, pc, sizeof(offset)); pc += sizeof(offset);
 
-                emit_lw_phys(&ctx, 5, ra * 8, 18);
+                emit_lw_phys(&ctx, 5, ra * 8, 9);
                 if (offset >= -2048 && offset < 2048) {
                     emit_lw_phys(&ctx, 5, offset, 5);
                 } else {
@@ -3475,7 +3461,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                     emit_add_phys(&ctx, 5, 5, 6);
                     emit_lw_phys(&ctx, 5, 0, 5);
                 }
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 break;
             }
             
@@ -3485,7 +3471,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 int16_t offset;
                 memcpy(&offset, pc, sizeof(offset)); pc += sizeof(offset);
                 
-                emit_lw_phys(&ctx, 5, ra * 8, 18);
+                emit_lw_phys(&ctx, 5, ra * 8, 9);
                 if (offset >= -2048 && offset < 2048) {
                     emit_lw_phys(&ctx, 6, offset, 5);
                 } else {
@@ -3498,7 +3484,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                     emit_add_phys(&ctx, 7, 5, 7);
                     emit_lw_phys(&ctx, 6, 0, 7);
                 }
-                emit_sw_phys(&ctx, 6, rd * 8, 18);
+                emit_sw_phys(&ctx, 6, rd * 8, 9);
                 
                 if (offset + 4 >= -2048 && offset + 4 < 2048) {
                     emit_lw_phys(&ctx, 6, offset + 4, 5);
@@ -3511,7 +3497,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                     emit_add_phys(&ctx, 7, 5, 7);
                     emit_lw_phys(&ctx, 6, 0, 7);
                 }
-                emit_sw_phys(&ctx, 6, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 6, rd * 8 + 4, 9);
                 break;
             }
 
@@ -3522,7 +3508,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 memcpy(&offset, pc, sizeof(offset)); pc += sizeof(offset);
 
                 // Same encoding/storage as I64 load
-                emit_lw_phys(&ctx, 5, ra * 8, 18);
+                emit_lw_phys(&ctx, 5, ra * 8, 9);
 
                 // low word
                 if (offset >= -2048 && offset < 2048) {
@@ -3536,7 +3522,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                     emit_add_phys(&ctx, 7, 5, 7);
                     emit_lw_phys(&ctx, 6, 0, 7);
                 }
-                emit_sw_phys(&ctx, 6, rd * 8, 18);
+                emit_sw_phys(&ctx, 6, rd * 8, 9);
 
                 // high word
                 int32_t offset_hi = (int32_t)offset + 4;
@@ -3551,7 +3537,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                     emit_add_phys(&ctx, 7, 5, 7);
                     emit_lw_phys(&ctx, 6, 0, 7);
                 }
-                emit_sw_phys(&ctx, 6, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 6, rd * 8 + 4, 9);
                 break;
             }
 
@@ -3568,10 +3554,10 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                     if (pa != 0) {
                         addr_reg = pa;
                     } else {
-                        emit_lw_phys(&ctx, 5, ra * 8, 18);
+                        emit_lw_phys(&ctx, 5, ra * 8, 9);
                     }
                 } else {
-                    emit_lw_phys(&ctx, 5, ra * 8, 18);
+                    emit_lw_phys(&ctx, 5, ra * 8, 9);
                 }
 
                 // load pointer-sized value (RV32 => 4 bytes)
@@ -3596,9 +3582,9 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                     }
                 }
 
-                emit_sw_phys(&ctx, 6, rd * 8, 18);
+                emit_sw_phys(&ctx, 6, rd * 8, 9);
                 // clear high word for ptr
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                 break;
             }
             
@@ -3609,10 +3595,10 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 memcpy(&offset, pc, sizeof(offset)); pc += sizeof(offset);
                 
                 // Загружаем значение из v_regs[rs]
-                emit_lw_phys(&ctx, 6, rs * 8, 18);  // t1 = v_regs[rs]
+                emit_lw_phys(&ctx, 6, rs * 8, 9);  // t1 = v_regs[rs]
                 
                 // Загружаем базовый адрес из v_regs[ra]
-                emit_lw_phys(&ctx, 5, ra * 8, 18);  // t0 = v_regs[ra]
+                emit_lw_phys(&ctx, 5, ra * 8, 9);  // t0 = v_regs[ra]
                 
                 // Сохраняем в память
                 if (offset >= -2048 && offset < 2048) {
@@ -3636,8 +3622,8 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 memcpy(&offset, pc, sizeof(offset)); pc += sizeof(offset);
 
                 // f32 stored in low 32 bits of v_regs[rs]
-                emit_lw_phys(&ctx, 6, rs * 8, 18);
-                emit_lw_phys(&ctx, 5, ra * 8, 18);
+                emit_lw_phys(&ctx, 6, rs * 8, 9);
+                emit_lw_phys(&ctx, 5, ra * 8, 9);
 
                 if (offset >= -2048 && offset < 2048) {
                     emit_sw_phys(&ctx, 6, offset, 5);
@@ -3660,9 +3646,9 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 memcpy(&offset, pc, sizeof(offset)); pc += sizeof(offset);
 
                 // f64 stored as u64 across low/high 32-bit words
-                emit_lw_phys(&ctx, 6, rs * 8, 18);      // t1 = lo
-                emit_lw_phys(&ctx, 7, rs * 8 + 4, 18);  // t2 = hi
-                emit_lw_phys(&ctx, 5, ra * 8, 18);      // t0 = base
+                emit_lw_phys(&ctx, 6, rs * 8, 9);      // t1 = lo
+                emit_lw_phys(&ctx, 7, rs * 8 + 4, 9);  // t2 = hi
+                emit_lw_phys(&ctx, 5, ra * 8, 9);      // t0 = base
 
                 if (offset >= -2048 && offset < 2048) {
                     emit_sw_phys(&ctx, 6, offset, 5);
@@ -3687,10 +3673,10 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 memcpy(&offset, pc, sizeof(offset)); pc += sizeof(offset);
                 
                 // Загружаем базовый адрес
-                emit_lw_phys(&ctx, 5, ra * 8, 18);  // t0 = v_regs[ra]
+                emit_lw_phys(&ctx, 5, ra * 8, 9);  // t0 = v_regs[ra]
                 
                 // Загружаем младшие 32 бита из v_regs[rs]
-                emit_lw_phys(&ctx, 6, rs * 8, 18);
+                emit_lw_phys(&ctx, 6, rs * 8, 9);
                 
                 // Сохраняем младшие 32 бита
                 if (offset >= -2048 && offset < 2048) {
@@ -3703,11 +3689,11 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                     if (lo != 0) emit_addi_phys(&ctx, 7, 7, lo);
                     emit_add_phys(&ctx, 7, 5, 7);
                     emit_sw_phys(&ctx, 6, 0, 7);
-                    emit_lw_phys(&ctx, 5, ra * 8, 18);  // Перезагрузить базовый адрес
+                    emit_lw_phys(&ctx, 5, ra * 8, 9);  // Перезагрузить базовый адрес
                 }
                 
                 // Загружаем старшие 32 бита из v_regs[rs] + 4
-                emit_lw_phys(&ctx, 6, rs * 8 + 4, 18);
+                emit_lw_phys(&ctx, 6, rs * 8 + 4, 9);
                 
                 // Сохраняем старшие 32 бита
                 if (offset + 4 >= -2048 && offset + 4 < 2048) {
@@ -3729,8 +3715,8 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rs = *pc++;
                 
                 // Просто копируем младшие 32 бита
-                emit_lw_phys(&ctx, 5, rs * 8, 18);
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_lw_phys(&ctx, 5, rs * 8, 9);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 break;
             }
             
@@ -3738,13 +3724,13 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
                 
-                emit_lw_phys(&ctx, 5, rs * 8, 18);
+                emit_lw_phys(&ctx, 5, rs * 8, 9);
                 
                 // andi t0, t0, 0xFF (маска младших 8 бит)
                 uint32_t andi_instr = (0xFF << 20) | (5 << 15) | (0b111 << 12) | (5 << 7) | 0b0010011;
                 emit_instr(&ctx, andi_instr);
                 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 break;
             }
 
@@ -3752,13 +3738,13 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
                 
-                emit_lw_phys(&ctx, 5, rs * 8, 18);
+                emit_lw_phys(&ctx, 5, rs * 8, 9);
                 
                 // andi t0, t0, 0xFF (маска младших 8 бит)
                 uint32_t andi_instr = (0xFF << 20) | (5 << 15) | (0b111 << 12) | (5 << 7) | 0b0010011;
                 emit_instr(&ctx, andi_instr);
                 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 break;
             }
 
@@ -3766,16 +3752,16 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
 
-                emit_lw_phys(&ctx, 5, rs * 8, 18);
+                emit_lw_phys(&ctx, 5, rs * 8, 9);
 
                 // andi t0, t0, 0xFF
                 uint32_t andi_instr = (0xFF << 20) | (5 << 15) | (0b111 << 12) | (5 << 7) | 0b0010011;
                 emit_instr(&ctx, andi_instr);
 
                 // store low32
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 // store high32 = 0
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                 break;
             }
             
@@ -3783,7 +3769,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
                 
-                emit_lw_phys(&ctx, 5, rs * 8, 18);
+                emit_lw_phys(&ctx, 5, rs * 8, 9);
                 
                 // Маскируем младшие 16 бит: lui + and
                 // lui t1, 0 + addi t1, t1, 0xFFFF не работает, используем сдвиги
@@ -3795,7 +3781,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint32_t srli_instr = (16 << 20) | (5 << 15) | (0b101 << 12) | (5 << 7) | 0b0010011;
                 emit_instr(&ctx, srli_instr);
                 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 break;
             }
 
@@ -3803,7 +3789,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
 
-                emit_lw_phys(&ctx, 5, rs * 8, 18);
+                emit_lw_phys(&ctx, 5, rs * 8, 9);
 
                 // slli t0, t0, 24
                 uint32_t slli_instr = (24 << 20) | (5 << 15) | (0b001 << 12) | (5 << 7) | 0b0010011;
@@ -3813,7 +3799,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint32_t srai_instr = (0b0100000 << 25) | (24 << 20) | (5 << 15) | (0b101 << 12) | (5 << 7) | 0b0010011;
                 emit_instr(&ctx, srai_instr);
 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 break;
             }
             
@@ -3822,7 +3808,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rs = *pc++;
 
                 // Use low 32 bits of v_regs[rs], truncate to I8 with sign-extension back to I32
-                emit_lw_phys(&ctx, 5, rs * 8, 18);
+                emit_lw_phys(&ctx, 5, rs * 8, 9);
 
                 uint32_t slli_instr = (24 << 20) | (5 << 15) | (0b001 << 12) | (5 << 7) | 0b0010011;
                 emit_instr(&ctx, slli_instr);
@@ -3830,14 +3816,14 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint32_t srai_instr = (0b0100000 << 25) | (24 << 20) | (5 << 15) | (0b101 << 12) | (5 << 7) | 0b0010011;
                 emit_instr(&ctx, srai_instr);
 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 break;
             }
             case 0x95: { // TRUNC.I16.I8 Rd, Rs (truncate to I8)
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
 
-                emit_lw_phys(&ctx, 5, rs * 8, 18);
+                emit_lw_phys(&ctx, 5, rs * 8, 9);
 
                 // slli t0, t0, 24
                 uint32_t slli_instr = (24 << 20) | (5 << 15) | (0b001 << 12) | (5 << 7) | 0b0010011;
@@ -3847,14 +3833,14 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint32_t srai_instr = (0b0100000 << 25) | (24 << 20) | (5 << 15) | (0b101 << 12) | (5 << 7) | 0b0010011;
                 emit_instr(&ctx, srai_instr);
 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 break;
             }
             case 0x94: { // TRUNC.I32.I8 alias
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
 
-                emit_lw_phys(&ctx, 5, rs * 8, 18);
+                emit_lw_phys(&ctx, 5, rs * 8, 9);
 
                 uint32_t slli_instr = (24 << 20) | (5 << 15) | (0b001 << 12) | (5 << 7) | 0b0010011;
                 emit_instr(&ctx, slli_instr);
@@ -3862,7 +3848,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint32_t srai_instr = (0b0100000 << 25) | (24 << 20) | (5 << 15) | (0b101 << 12) | (5 << 7) | 0b0010011;
                 emit_instr(&ctx, srai_instr);
 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 break;
             }
 
@@ -3870,7 +3856,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
 
-                emit_lw_phys(&ctx, 5, rs * 8, 18);
+                emit_lw_phys(&ctx, 5, rs * 8, 9);
 
                 // slli t0, t0, 24 (shift left to get lowest byte in highest position)
                 uint32_t slli_instr = (24 << 20) | (5 << 15) | (0b001 << 12) | (5 << 7) | 0b0010011;
@@ -3881,12 +3867,12 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 emit_instr(&ctx, srai_instr);
 
                 // store low 32 bits
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
 
                 // sign-extend into high 32 bits: srai t0, t0, 31
                 uint32_t srai31_instr = (0b0100000 << 25) | (31 << 20) | (5 << 15) | (0b101 << 12) | (5 << 7) | 0b0010011;
                 emit_instr(&ctx, srai31_instr);
-                emit_sw_phys(&ctx, 5, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 5, rd * 8 + 4, 9);
                 break;
             }
             
@@ -3896,7 +3882,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 
                 // Truncate I32 to I16 with sign-extension back to I32
                 // Strategy: shift left 16 bits, then arithmetic shift right 16 bits
-                emit_lw_phys(&ctx, 5, rs * 8, 18);  // t0 = v_regs[rs]
+                emit_lw_phys(&ctx, 5, rs * 8, 9);  // t0 = v_regs[rs]
                 
                 // slli t0, t0, 16 (shift left to get lowest halfword in highest position)
                 uint32_t slli_instr = (16 << 20) | (5 << 15) | (0b001 << 12) | (5 << 7) | 0b0010011;
@@ -3906,7 +3892,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint32_t srai_instr = (0b0100000 << 25) | (16 << 20) | (5 << 15) | (0b101 << 12) | (5 << 7) | 0b0010011;
                 emit_instr(&ctx, srai_instr);
                 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 break;
             }
             
@@ -3915,11 +3901,11 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rs = *pc++;
                 
                 // Копируем младшие 32 бита
-                emit_lw_phys(&ctx, 5, rs * 8, 18);
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_lw_phys(&ctx, 5, rs * 8, 9);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 
                 // Обнуляем старшие 32 бита
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);  // x0 = 0
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);  // x0 = 0
                 break;
             }
             
@@ -3927,7 +3913,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
                 
-                emit_lw_phys(&ctx, 5, rs * 8, 18);
+                emit_lw_phys(&ctx, 5, rs * 8, 9);
                 
                 // Сдвигаем влево на 24, затем вправо арифметически на 24
                 // slli t0, t0, 24
@@ -3938,7 +3924,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint32_t srai_instr = (0b0100000 << 25) | (24 << 20) | (5 << 15) | (0b101 << 12) | (5 << 7) | 0b0010011;
                 emit_instr(&ctx, srai_instr);
                 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 break;
             }
             
@@ -3946,7 +3932,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
                 
-                emit_lw_phys(&ctx, 5, rs * 8, 18);
+                emit_lw_phys(&ctx, 5, rs * 8, 9);
                 
                 // slli t0, t0, 16
                 uint32_t slli_instr = (16 << 20) | (5 << 15) | (0b001 << 12) | (5 << 7) | 0b0010011;
@@ -3956,7 +3942,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint32_t srai_instr = (0b0100000 << 25) | (16 << 20) | (5 << 15) | (0b101 << 12) | (5 << 7) | 0b0010011;
                 emit_instr(&ctx, srai_instr);
                 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 break;
             }
             
@@ -3964,7 +3950,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
 
-                emit_lw_phys(&ctx, 5, rs * 8, 18);
+                emit_lw_phys(&ctx, 5, rs * 8, 9);
 
                 // slli t0, t0, 16
                 uint32_t slli_instr = (16 << 20) | (5 << 15) | (0b001 << 12) | (5 << 7) | 0b0010011;
@@ -3975,12 +3961,12 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 emit_instr(&ctx, srai_instr);
 
                 // store low 32 bits
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
 
                 // sign-extend into high 32 bits: srai t0, t0, 31
                 uint32_t srai31_instr = (0b0100000 << 25) | (31 << 20) | (5 << 15) | (0b101 << 12) | (5 << 7) | 0b0010011;
                 emit_instr(&ctx, srai31_instr);
-                emit_sw_phys(&ctx, 5, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 5, rd * 8 + 4, 9);
                 break;
             }
             case 0xA1: { // SEXT.I32.I64 alias
@@ -3988,14 +3974,14 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rs = *pc++;
 
                 // Копируем младшие 32 бита
-                emit_lw_phys(&ctx, 5, rs * 8, 18);
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_lw_phys(&ctx, 5, rs * 8, 9);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
 
                 // Расширяем знак в старшие 32 бита: srai t0, t0, 31
                 uint32_t srai_instr = (0b0100000 << 25) | (31 << 20) | (5 << 15) | (0b101 << 12) | (5 << 7) | 0b0010011;
                 emit_instr(&ctx, srai_instr);
 
-                emit_sw_phys(&ctx, 5, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 5, rd * 8 + 4, 9);
                 break;
             }
 
@@ -4009,21 +3995,21 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 if (vcache.kind == VC_F32 && vcache.vreg == r1) {
                     emit_addi_phys(&ctx, 10, 20, 0); // mv a0, s4
                 } else {
-                    emit_lw_phys(&ctx, 10, r1 * 8, 18);
+                    emit_lw_phys(&ctx, 10, r1 * 8, 9);
                 }
 
                 // load r2 -> a1
                 if (vcache.kind == VC_F32 && vcache.vreg == r2) {
                     emit_addi_phys(&ctx, 11, 20, 0); // mv a1, s4
                 } else {
-                    emit_lw_phys(&ctx, 11, r2 * 8, 18);
+                    emit_lw_phys(&ctx, 11, r2 * 8, 9);
                 }
 
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_fadd_f32_bits);
 
                 // evict old cached value if dirty
                 if (vcache.kind == VC_F32 && vcache.dirty && vcache.vreg != rd) {
-                    emit_sw_phys(&ctx, 20, vcache.vreg * 8, 18);
+                    emit_sw_phys(&ctx, 20, vcache.vreg * 8, 9);
                 }
 
                 // keep result in stable cache (s4)
@@ -4039,15 +4025,15 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t r2 = *pc++;
 
                 if (vcache.kind == VC_F32 && vcache.vreg == r1) emit_addi_phys(&ctx, 10, 20, 0);
-                else emit_lw_phys(&ctx, 10, r1 * 8, 18);
+                else emit_lw_phys(&ctx, 10, r1 * 8, 9);
 
                 if (vcache.kind == VC_F32 && vcache.vreg == r2) emit_addi_phys(&ctx, 11, 20, 0);
-                else emit_lw_phys(&ctx, 11, r2 * 8, 18);
+                else emit_lw_phys(&ctx, 11, r2 * 8, 9);
 
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_fsub_f32_bits);
 
                 if (vcache.kind == VC_F32 && vcache.dirty && vcache.vreg != rd) {
-                    emit_sw_phys(&ctx, 20, vcache.vreg * 8, 18);
+                    emit_sw_phys(&ctx, 20, vcache.vreg * 8, 9);
                 }
                 emit_addi_phys(&ctx, 20, 10, 0);
                 vcache.kind = VC_F32;
@@ -4061,15 +4047,15 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t r2 = *pc++;
 
                 if (vcache.kind == VC_F32 && vcache.vreg == r1) emit_addi_phys(&ctx, 10, 20, 0);
-                else emit_lw_phys(&ctx, 10, r1 * 8, 18);
+                else emit_lw_phys(&ctx, 10, r1 * 8, 9);
 
                 if (vcache.kind == VC_F32 && vcache.vreg == r2) emit_addi_phys(&ctx, 11, 20, 0);
-                else emit_lw_phys(&ctx, 11, r2 * 8, 18);
+                else emit_lw_phys(&ctx, 11, r2 * 8, 9);
 
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_fmul_f32_bits);
 
                 if (vcache.kind == VC_F32 && vcache.dirty && vcache.vreg != rd) {
-                    emit_sw_phys(&ctx, 20, vcache.vreg * 8, 18);
+                    emit_sw_phys(&ctx, 20, vcache.vreg * 8, 9);
                 }
                 emit_addi_phys(&ctx, 20, 10, 0);
                 vcache.kind = VC_F32;
@@ -4083,15 +4069,15 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t r2 = *pc++;
 
                 if (vcache.kind == VC_F32 && vcache.vreg == r1) emit_addi_phys(&ctx, 10, 20, 0);
-                else emit_lw_phys(&ctx, 10, r1 * 8, 18);
+                else emit_lw_phys(&ctx, 10, r1 * 8, 9);
 
                 if (vcache.kind == VC_F32 && vcache.vreg == r2) emit_addi_phys(&ctx, 11, 20, 0);
-                else emit_lw_phys(&ctx, 11, r2 * 8, 18);
+                else emit_lw_phys(&ctx, 11, r2 * 8, 9);
 
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_fdiv_f32_bits);
 
                 if (vcache.kind == VC_F32 && vcache.dirty && vcache.vreg != rd) {
-                    emit_sw_phys(&ctx, 20, vcache.vreg * 8, 18);
+                    emit_sw_phys(&ctx, 20, vcache.vreg * 8, 9);
                 }
                 emit_addi_phys(&ctx, 20, 10, 0);
                 vcache.kind = VC_F32;
@@ -4105,15 +4091,15 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t r2 = *pc++;
 
                 if (vcache.kind == VC_F32 && vcache.vreg == r1) emit_addi_phys(&ctx, 10, 20, 0);
-                else emit_lw_phys(&ctx, 10, r1 * 8, 18);
+                else emit_lw_phys(&ctx, 10, r1 * 8, 9);
 
                 if (vcache.kind == VC_F32 && vcache.vreg == r2) emit_addi_phys(&ctx, 11, 20, 0);
-                else emit_lw_phys(&ctx, 11, r2 * 8, 18);
+                else emit_lw_phys(&ctx, 11, r2 * 8, 9);
 
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_fmin_f32_bits);
 
                 if (vcache.kind == VC_F32 && vcache.dirty && vcache.vreg != rd) {
-                    emit_sw_phys(&ctx, 20, vcache.vreg * 8, 18);
+                    emit_sw_phys(&ctx, 20, vcache.vreg * 8, 9);
                 }
                 emit_addi_phys(&ctx, 20, 10, 0);
                 vcache.kind = VC_F32;
@@ -4127,15 +4113,15 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t r2 = *pc++;
 
                 if (vcache.kind == VC_F32 && vcache.vreg == r1) emit_addi_phys(&ctx, 10, 20, 0);
-                else emit_lw_phys(&ctx, 10, r1 * 8, 18);
+                else emit_lw_phys(&ctx, 10, r1 * 8, 9);
 
                 if (vcache.kind == VC_F32 && vcache.vreg == r2) emit_addi_phys(&ctx, 11, 20, 0);
-                else emit_lw_phys(&ctx, 11, r2 * 8, 18);
+                else emit_lw_phys(&ctx, 11, r2 * 8, 9);
 
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_fmax_f32_bits);
 
                 if (vcache.kind == VC_F32 && vcache.dirty && vcache.vreg != rd) {
-                    emit_sw_phys(&ctx, 20, vcache.vreg * 8, 18);
+                    emit_sw_phys(&ctx, 20, vcache.vreg * 8, 9);
                 }
                 emit_addi_phys(&ctx, 20, 10, 0);
                 vcache.kind = VC_F32;
@@ -4148,14 +4134,14 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rs = *pc++;
 
                 // t0 = v_regs[rs]
-                emit_lw_phys(&ctx, 5, rs * 8, 18);
+                emit_lw_phys(&ctx, 5, rs * 8, 9);
                 // clear MSB: (t0 << 1) >> 1
                 // slli t0, t0, 1
                 emit_instr(&ctx, (1u << 20) | (5u << 15) | (0b001u << 12) | (5u << 7) | 0b0010011u);
                 // srli t0, t0, 1
                 emit_instr(&ctx, (1u << 20) | (5u << 15) | (0b101u << 12) | (5u << 7) | 0b0010011u);
 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 break;
             }
             case 0x67: { // SQRT.F32
@@ -4163,12 +4149,12 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rs = *pc++;
 
                 if (vcache.kind == VC_F32 && vcache.vreg == rs) emit_addi_phys(&ctx, 10, 20, 0);
-                else emit_lw_phys(&ctx, 10, rs * 8, 18);
+                else emit_lw_phys(&ctx, 10, rs * 8, 9);
 
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_fsqrt_f32_bits);
 
                 if (vcache.kind == VC_F32 && vcache.dirty && vcache.vreg != rd) {
-                    emit_sw_phys(&ctx, 20, vcache.vreg * 8, 18);
+                    emit_sw_phys(&ctx, 20, vcache.vreg * 8, 9);
                 }
                 emit_addi_phys(&ctx, 20, 10, 0);
                 vcache.kind = VC_F32;
@@ -4257,15 +4243,15 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rs = *pc++;
 
                 // lo/hi = v_regs[rs]
-                emit_lw_phys(&ctx, 5, rs * 8, 18);
-                emit_lw_phys(&ctx, 6, rs * 8 + 4, 18);
+                emit_lw_phys(&ctx, 5, rs * 8, 9);
+                emit_lw_phys(&ctx, 6, rs * 8 + 4, 9);
 
                 // clear MSB of high word: (hi << 1) >> 1
                 emit_instr(&ctx, (1u << 20) | (6u << 15) | (0b001u << 12) | (6u << 7) | 0b0010011u); // slli x6,x6,1
                 emit_instr(&ctx, (1u << 20) | (6u << 15) | (0b101u << 12) | (6u << 7) | 0b0010011u); // srli x6,x6,1
 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
-                emit_sw_phys(&ctx, 6, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
+                emit_sw_phys(&ctx, 6, rd * 8 + 4, 9);
                 break;
             }
 
@@ -4286,7 +4272,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 if (stable_cache_enabled && vcache.kind == VC_F32 && vcache.vreg == rs) {
                     emit_addi_phys(&ctx, 10, VC0_LO, 0);
                 } else {
-                    emit_lw_phys(&ctx, 10, rs * 8, 18);
+                    emit_lw_phys(&ctx, 10, rs * 8, 9);
                 }
 
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_fpromote_f32_to_f64_bits);
@@ -4299,13 +4285,13 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rs = *pc++;
 
                 // a0/a1 = raw f64 bits
-                emit_lw_phys(&ctx, 10, rs * 8, 18);
-                emit_lw_phys(&ctx, 11, rs * 8 + 4, 18);
+                emit_lw_phys(&ctx, 10, rs * 8, 9);
+                emit_lw_phys(&ctx, 11, rs * 8 + 4, 9);
 
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_cvt_f64_i32);
 
                 // return i32 in a0
-                emit_sw_phys(&ctx, 10, rd * 8, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9);
                 break;
             }
 
@@ -4314,13 +4300,13 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rs = *pc++;
 
                 // a0 = u32
-                emit_lw_phys(&ctx, 10, rs * 8, 18);
+                emit_lw_phys(&ctx, 10, rs * 8, 9);
 
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_cvt_u32_f64);
 
                 // return double in a0/a1
-                emit_sw_phys(&ctx, 10, rd * 8, 18);
-                emit_sw_phys(&ctx, 11, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9);
+                emit_sw_phys(&ctx, 11, rd * 8 + 4, 9);
                 break;
             }
             
@@ -4329,14 +4315,14 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rs = *pc++;
 
                 // a0/a1 = v_regs[rs] (low/high)
-                emit_lw_phys(&ctx, 10, rs * 8, 18);
-                emit_lw_phys(&ctx, 11, rs * 8 + 4, 18);
+                emit_lw_phys(&ctx, 10, rs * 8, 9);
+                emit_lw_phys(&ctx, 11, rs * 8 + 4, 9);
 
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_cvt_u64_f64);
 
                 // return double in a0/a1
-                emit_sw_phys(&ctx, 10, rd * 8, 18);
-                emit_sw_phys(&ctx, 11, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9);
+                emit_sw_phys(&ctx, 11, rd * 8 + 4, 9);
                 break;
             }
 
@@ -4345,13 +4331,13 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rs = *pc++;
 
                 // a0/a1 = i64 bits
-                emit_lw_phys(&ctx, 10, rs * 8, 18);
-                emit_lw_phys(&ctx, 11, rs * 8 + 4, 18);
+                emit_lw_phys(&ctx, 10, rs * 8, 9);
+                emit_lw_phys(&ctx, 11, rs * 8 + 4, 9);
 
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_cvt_i64_f32_bits);
 
                 // result raw f32 bits in a0
-                emit_sw_phys(&ctx, 10, rd * 8, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9);
                 break;
             }
 
@@ -4360,8 +4346,8 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rs = *pc++;
 
                 // a0/a1 = i64 bits
-                emit_lw_phys(&ctx, 10, rs * 8, 18);
-                emit_lw_phys(&ctx, 11, rs * 8 + 4, 18);
+                emit_lw_phys(&ctx, 10, rs * 8, 9);
+                emit_lw_phys(&ctx, 11, rs * 8 + 4, 9);
 
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_cvt_i64_f64_bits);
                 VCACHE_STORE_F64_RESULT(rd);
@@ -4372,13 +4358,13 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
                 
-                emit_lw_phys(&ctx, 10, rs * 8, 18);
-                emit_lw_phys(&ctx, 11, rs * 8 + 4, 18);
+                emit_lw_phys(&ctx, 10, rs * 8, 9);
+                emit_lw_phys(&ctx, 11, rs * 8 + 4, 9);
                 
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_fpround_f64_to_f32_bits);
                 
-                emit_sw_phys(&ctx, 10, rd * 8, 18);
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                 
                 break;
             }
@@ -4387,11 +4373,11 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
 
-                emit_lw_phys(&ctx, 10, rs * 8, 18);
+                emit_lw_phys(&ctx, 10, rs * 8, 9);
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_cvt_f32_u32);
 
-                emit_sw_phys(&ctx, 10, rd * 8, 18);
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
 
                 break;
             }
@@ -4400,11 +4386,11 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
 
-                emit_lw_phys(&ctx, 10, rs * 8, 18);
+                emit_lw_phys(&ctx, 10, rs * 8, 9);
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_cvt_f32_u64);
 
-                emit_sw_phys(&ctx, 10, rd * 8, 18);
-                emit_sw_phys(&ctx, 11, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9);
+                emit_sw_phys(&ctx, 11, rd * 8 + 4, 9);
 
                 break;
             }
@@ -4413,12 +4399,12 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
 
-                emit_lw_phys(&ctx, 10, rs * 8, 18);
-                emit_lw_phys(&ctx, 11, rs * 8 + 4, 18);
+                emit_lw_phys(&ctx, 10, rs * 8, 9);
+                emit_lw_phys(&ctx, 11, rs * 8 + 4, 9);
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_cvt_f64_u32);
 
-                emit_sw_phys(&ctx, 10, rd * 8, 18);
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
 
                 break;
             }
@@ -4427,12 +4413,12 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
 
-                emit_lw_phys(&ctx, 10, rs * 8, 18);
-                emit_lw_phys(&ctx, 11, rs * 8 + 4, 18);
+                emit_lw_phys(&ctx, 10, rs * 8, 9);
+                emit_lw_phys(&ctx, 11, rs * 8 + 4, 9);
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_cvt_f64_u64);
 
-                emit_sw_phys(&ctx, 10, rd * 8, 18);
-                emit_sw_phys(&ctx, 11, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9);
+                emit_sw_phys(&ctx, 11, rd * 8 + 4, 9);
 
                 break;
             }
@@ -4441,12 +4427,12 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
 
-                emit_lw_phys(&ctx, 10, rs * 8, 18);
+                emit_lw_phys(&ctx, 10, rs * 8, 9);
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_cvt_f32_i32);
 
-                emit_sw_phys(&ctx, 10, rd * 8, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9);
                 emit_srai_phys(&ctx, 11, 10, 31);
-                emit_sw_phys(&ctx, 11, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 11, rd * 8 + 4, 9);
 
                 break;
             }
@@ -4455,11 +4441,11 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
 
-                emit_lw_phys(&ctx, 10, rs * 8, 18);
+                emit_lw_phys(&ctx, 10, rs * 8, 9);
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_cvt_f32_i64);
 
-                emit_sw_phys(&ctx, 10, rd * 8, 18);
-                emit_sw_phys(&ctx, 11, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9);
+                emit_sw_phys(&ctx, 11, rd * 8 + 4, 9);
 
                 break;
             }
@@ -4468,12 +4454,12 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
 
-                emit_lw_phys(&ctx, 10, rs * 8, 18);
-                emit_lw_phys(&ctx, 11, rs * 8 + 4, 18);
+                emit_lw_phys(&ctx, 10, rs * 8, 9);
+                emit_lw_phys(&ctx, 11, rs * 8 + 4, 9);
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_cvt_f64_i64);
 
-                emit_sw_phys(&ctx, 10, rd * 8, 18);
-                emit_sw_phys(&ctx, 11, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9);
+                emit_sw_phys(&ctx, 11, rd * 8 + 4, 9);
 
                 break;
             }
@@ -4482,11 +4468,11 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
 
-                emit_lw_phys(&ctx, 10, rs * 8, 18);
+                emit_lw_phys(&ctx, 10, rs * 8, 9);
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_cvt_u32_f32_bits);
 
-                emit_sw_phys(&ctx, 10, rd * 8, 18);
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
 
                 break;
             }
@@ -4495,12 +4481,12 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
 
-                emit_lw_phys(&ctx, 10, rs * 8, 18);
-                emit_lw_phys(&ctx, 11, rs * 8 + 4, 18);
+                emit_lw_phys(&ctx, 10, rs * 8, 9);
+                emit_lw_phys(&ctx, 11, rs * 8 + 4, 9);
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_cvt_u64_f32_bits);
 
-                emit_sw_phys(&ctx, 10, rd * 8, 18);
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
 
                 break;
             }
@@ -4509,11 +4495,11 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
 
-                emit_lw_phys(&ctx, 10, rs * 8, 18);
+                emit_lw_phys(&ctx, 10, rs * 8, 9);
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_cvt_i32_f32_bits);
 
-                emit_sw_phys(&ctx, 10, rd * 8, 18);
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
 
                 break;
             }
@@ -4522,11 +4508,11 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
 
-                emit_lw_phys(&ctx, 10, rs * 8, 18);
+                emit_lw_phys(&ctx, 10, rs * 8, 9);
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_cvt_i32_f64_bits);
 
-                emit_sw_phys(&ctx, 10, rd * 8, 18);
-                emit_sw_phys(&ctx, 11, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9);
+                emit_sw_phys(&ctx, 11, rd * 8 + 4, 9);
 
                 break;
             }
@@ -4569,11 +4555,11 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 static const uint8_t t_regs[7] = {5, 6, 7, 28, 29, 30, 31}; // t0-t6
                 for (int i = 0; i < 7; ++i) emit_sw_phys(&ctx, t_regs[i], i * 4, 8); // sw tX, i*4(s0)
                 emit_sw_phys(&ctx, 1, 28, 8); // sw ra, 28(s0) — jalr в emit_call_helper затирает ra
-                emit_sw_phys(&ctx, 9, 32, 8); // preserve s1 (instance)
+                emit_sw_phys(&ctx, 18, 32, 8); // preserve s2 (instance)
 
                 // a0 = instance (s1), a1 = v_regs (s2) — оба callee-saved, не трогаются хелпером
-                emit_addi_phys(&ctx, 10, 9, 0);
-                emit_addi_phys(&ctx, 11, 18, 0);
+                emit_addi_phys(&ctx, 10, 18, 0);
+                emit_addi_phys(&ctx, 11, 9, 0);
 
                 // a2 = num_regs_allocated
                 // ВАЖНО: нельзя использовать просто (max_reg_used+1) — bytecode может ссылаться
@@ -4618,10 +4604,10 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 // Восстанавливаем t0-t6 и ra из temp area (s0+0..s0+31)
                 for (int i = 0; i < 7; ++i) emit_lw_phys(&ctx, t_regs[i], i * 4, 8); // lw tX, i*4(s0)
                 emit_lw_phys(&ctx, 1, 28, 8); // lw ra, 28(s0)
-                emit_lw_phys(&ctx, 9, 32, 8); // restore s1 (instance)
+                emit_lw_phys(&ctx, 18, 32, 8); // restore s2 (instance)
                 // Make s2 restoration the final instruction in this helper sequence.
                 // a0 is the wrapper's v_regs return value and the restore loads above do not clobber it.
-                emit_addi_phys(&ctx, 18, 10, 0); // s2 = a0 (v_regs)
+                emit_addi_phys(&ctx, 9, 10, 0); // s1 = a0 (v_regs)
 #if defined(ESPB_JIT_ALLOCA_TRACE) && ESPB_JIT_ALLOCA_TRACE
                 if (rd == 16 && rs == 19 && trace_alloca_count < 8) {
                     size_t trace_i = trace_alloca_count++;
@@ -4639,10 +4625,10 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rs = *pc++;
                 
                 // Загружаем 32-bit значение (младшие 8 бит валидны)
-                emit_lw_phys(&ctx, 5, rs * 8, 18);
+                emit_lw_phys(&ctx, 5, rs * 8, 9);
                 
                 // Сохраняем обратно (копируем весь 32-bit word)
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 
                 break;
             }
@@ -4652,10 +4638,10 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t rs = *pc++;
                 
                 // Загружаем 32-bit значение (младшие 16 бит валидны)
-                emit_lw_phys(&ctx, 5, rs * 8, 18);
+                emit_lw_phys(&ctx, 5, rs * 8, 9);
                 
                 // Сохраняем обратно
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 
                 break;
             }
@@ -4666,11 +4652,11 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 
                 // PTRTOINT просто копирует 32-битное значение указателя в I32
                 // Загружаем нижние 32 бита (указатель) из v_regs[rs]
-                emit_lw_phys(&ctx, 5, rs * 8, 18);   // t0 = v_regs[rs] (PTR)
-                emit_sw_phys(&ctx, 5, rd * 8, 18);   // v_regs[rd] = t0
+                emit_lw_phys(&ctx, 5, rs * 8, 9);   // t0 = v_regs[rs] (PTR)
+                emit_sw_phys(&ctx, 5, rd * 8, 9);   // v_regs[rd] = t0
                 
                 // Очищаем старшие 32 бита
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                 
                 break;
             }
@@ -4681,11 +4667,11 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 
                 // INTTOPTR просто копирует 32-битное значение из rs в rd
                 // В ESPB PTR и I32 занимают одинаковое пространство (32 бита)
-                emit_lw_phys(&ctx, 5, rs * 8, 18);   // Загружаем значение из v_regs[rs]
-                emit_sw_phys(&ctx, 5, rd * 8, 18);   // Сохраняем в v_regs[rd]
+                emit_lw_phys(&ctx, 5, rs * 8, 9);   // Загружаем значение из v_regs[rs]
+                emit_sw_phys(&ctx, 5, rd * 8, 9);   // Сохраняем в v_regs[rd]
                 
                 // Очищаем старшие 32 бита (для PTR всегда 0)
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                 
                 break;
             }
@@ -4719,18 +4705,18 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 
                 // Prepare arguments: a0 = address (ptr), a1 = value
                 // a0 = v_regs[ra].ptr (address)
-                emit_lw_phys(&ctx, 10, ra * 8, 18);  // a0 = v_regs[ra]
+                emit_lw_phys(&ctx, 10, ra * 8, 9);  // a0 = v_regs[ra]
                 // a1 = v_regs[rv].i32 (value)
-                emit_lw_phys(&ctx, 11, rv * 8, 18);  // a1 = v_regs[rv]
+                emit_lw_phys(&ctx, 11, rv * 8, 9);  // a1 = v_regs[rv]
                 
                 // Call helper function
                 emit_call_helper(&ctx, helper);
                 
                 // Result is in a0, store to v_regs[rd]
-                emit_sw_phys(&ctx, 10, rd * 8, 18);  // v_regs[rd].lo = a0
+                emit_sw_phys(&ctx, 10, rd * 8, 9);  // v_regs[rd].lo = a0
                 
                 // Zero high 32 bits
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                 
                 break;
             }
@@ -4741,16 +4727,16 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 
                 // ESP32-C3: Use helper function instead of LR.W
                 // a0 = address
-                emit_lw_phys(&ctx, 10, ra * 8, 18);
+                emit_lw_phys(&ctx, 10, ra * 8, 9);
                 
                 // Call jit_atomic_load_4
                 emit_call_helper(&ctx, (uintptr_t)&jit_atomic_load_4);
                 
                 // Result in a0, store to v_regs[rd]
-                emit_sw_phys(&ctx, 10, rd * 8, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9);
                 
                 // Zero high 32 bits
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                 
                 break;
             }
@@ -4761,9 +4747,9 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 
                 // ESP32-C3: Use helper function instead of AMOSWAP
                 // a0 = address
-                emit_lw_phys(&ctx, 10, ra * 8, 18);
+                emit_lw_phys(&ctx, 10, ra * 8, 9);
                 // a1 = value
-                emit_lw_phys(&ctx, 11, rs * 8, 18);
+                emit_lw_phys(&ctx, 11, rs * 8, 9);
                 
                 // Call jit_atomic_store_4
                 emit_call_helper(&ctx, (uintptr_t)&jit_atomic_store_4);
@@ -4782,28 +4768,28 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 // After the call, expected contains the actual value read
                 
                 // a0 = address (v_regs[ra].ptr)
-                emit_lw_phys(&ctx, 10, ra * 8, 18);
+                emit_lw_phys(&ctx, 10, ra * 8, 9);
                 
                 // a1 = &v_regs[rexp].i32 (pointer to expected value)
                 // s2 (x18) contains v_regs base address
-                emit_addi_phys(&ctx, 11, 18, rexp * 8);  // a1 = v_regs + rexp*8
+                emit_addi_phys(&ctx, 11, 9, rexp * 8);  // a1 = v_regs + rexp*8
                 
                 // a2 = desired (v_regs[rdes].i32)
-                emit_lw_phys(&ctx, 12, rdes * 8, 18);
+                emit_lw_phys(&ctx, 12, rdes * 8, 9);
                 
                 // Call jit_atomic_compare_exchange_4
                 emit_call_helper(&ctx, (uintptr_t)&jit_atomic_compare_exchange_4);
                 
                 // After the call, v_regs[rexp] contains the actual value that was read
                 // Copy it to v_regs[rd]
-                emit_lw_phys(&ctx, 5, rexp * 8, 18);  // t0 = v_regs[rexp] (actual value)
-                emit_sw_phys(&ctx, 5, rd * 8, 18);   // v_regs[rd] = t0
+                emit_lw_phys(&ctx, 5, rexp * 8, 9);  // t0 = v_regs[rexp] (actual value)
+                emit_sw_phys(&ctx, 5, rd * 8, 9);   // v_regs[rd] = t0
                 
                 // Zero high 32 bits of the old-value result.
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                 // The CMPXCHG contract returns success in Rexp; helper returns it in a0.
-                emit_sw_phys(&ctx, 10, rexp * 8, 18);
-                emit_sw_phys(&ctx, 0, rexp * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rexp * 8, 9);
+                emit_sw_phys(&ctx, 0, rexp * 8 + 4, 9);
                 
                 break;
             }
@@ -4816,13 +4802,13 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 // Rd получит фактическое прочитанное значение
                 
                 // Загружаем адрес из v_regs[ra] в t1 (x6)
-                emit_lw_phys(&ctx, 6, ra * 8, 18);  // t1 = v_regs[ra] (адрес)
+                emit_lw_phys(&ctx, 6, ra * 8, 9);  // t1 = v_regs[ra] (адрес)
                 
                 // Загружаем expected из v_regs[rexp] в t2 (x7)
-                emit_lw_phys(&ctx, 7, rexp * 8, 18);  // t2 = v_regs[rexp] (expected)
+                emit_lw_phys(&ctx, 7, rexp * 8, 9);  // t2 = v_regs[rexp] (expected)
                 
                 // Загружаем desired из v_regs[rdes] в a3 (x13)
-                emit_lw_phys(&ctx, 13, rdes * 8, 18);  // a3 = v_regs[rdes] (desired)
+                emit_lw_phys(&ctx, 13, rdes * 8, 9);  // a3 = v_regs[rdes] (desired)
                 
                 // Реализация CAS через LR/SC loop
                 // retry:
@@ -4852,10 +4838,10 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 *branch_instr = encode_branch_instr(0b001, 5, 7, (int16_t)done_offset);
                 
                 // Сохраняем прочитанное значение в v_regs[rd]
-                emit_sw_phys(&ctx, 5, rd * 8, 18);  // v_regs[rd] = t0
+                emit_sw_phys(&ctx, 5, rd * 8, 9);  // v_regs[rd] = t0
                 
                 // Очищаем старшие 32 бита
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                 
                 break;
             }
@@ -4875,11 +4861,11 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 // Ra = адрес (PTR), Rv = 64-битное значение, Rd = получит старое 64-битное значение
                 
                 // a0 = адрес из v_regs[ra]
-                emit_lw_phys(&ctx, 10, ra * 8, 18);
+                emit_lw_phys(&ctx, 10, ra * 8, 9);
                 
                 // a1 = v_regs[rv] low, a2 = v_regs[rv] high (64-битное значение для операции)
-                emit_lw_phys(&ctx, 11, rv * 8, 18);
-                emit_lw_phys(&ctx, 12, rv * 8 + 4, 18);
+                emit_lw_phys(&ctx, 11, rv * 8, 9);
+                emit_lw_phys(&ctx, 12, rv * 8 + 4, 9);
                 
                 // a3 = __ATOMIC_SEQ_CST (5)
                 emit_addi_phys(&ctx, 13, 0, 5);
@@ -4896,8 +4882,8 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 }
                 
                 // Сохраняем результат (a0:a1) в v_regs[rd]
-                emit_sw_phys(&ctx, 10, rd * 8, 18);      // low
-                emit_sw_phys(&ctx, 11, rd * 8 + 4, 18);  // high
+                emit_sw_phys(&ctx, 10, rd * 8, 9);      // low
+                emit_sw_phys(&ctx, 11, rd * 8 + 4, 9);  // high
                 
                 break;
             }
@@ -4908,14 +4894,14 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 
                 // Для 64-битной атомарной загрузки используем wrapper
                 // a0 = адрес
-                emit_lw_phys(&ctx, 10, ra * 8, 18);
+                emit_lw_phys(&ctx, 10, ra * 8, 9);
                 
                 // Вызов __atomic_load_n для 64-бит
                 emit_call_helper(&ctx, (uintptr_t)&jit_atomic_load_8);
                 
                 // Результат в a0:a1, сохраняем в v_regs[rd]
-                emit_sw_phys(&ctx, 10, rd * 8, 18);      // low
-                emit_sw_phys(&ctx, 11, rd * 8 + 4, 18);  // high
+                emit_sw_phys(&ctx, 10, rd * 8, 9);      // low
+                emit_sw_phys(&ctx, 11, rd * 8 + 4, 9);  // high
                 
                 break;
             }
@@ -4925,11 +4911,11 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 uint8_t ra = *pc++;
                 
                 // a0 = адрес
-                emit_lw_phys(&ctx, 10, ra * 8, 18);
+                emit_lw_phys(&ctx, 10, ra * 8, 9);
                 
                 // a1 = value_low, a2 = value_high
-                emit_lw_phys(&ctx, 11, rs * 8, 18);
-                emit_lw_phys(&ctx, 12, rs * 8 + 4, 18);
+                emit_lw_phys(&ctx, 11, rs * 8, 9);
+                emit_lw_phys(&ctx, 12, rs * 8 + 4, 9);
                 
                 // Вызов __atomic_store_n для 64-бит
                 emit_call_helper(&ctx, (uintptr_t)&jit_atomic_store_8);
@@ -4954,14 +4940,14 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 
                 // CAS для 64-битных значений
                 // a0 = адрес
-                emit_lw_phys(&ctx, 10, ra * 8, 18);
+                emit_lw_phys(&ctx, 10, ra * 8, 9);
                 
                 // a1 = &expected (указатель на v_regs[rexp])
-                emit_addi_phys(&ctx, 11, 18, rexp * 8);
+                emit_addi_phys(&ctx, 11, 9, rexp * 8);
                 
                 // a2 = desired_low, a3 = desired_high
-                emit_lw_phys(&ctx, 12, rdes * 8, 18);
-                emit_lw_phys(&ctx, 13, rdes * 8 + 4, 18);
+                emit_lw_phys(&ctx, 12, rdes * 8, 9);
+                emit_lw_phys(&ctx, 13, rdes * 8 + 4, 9);
                 
                 // a4 = success_memorder (__ATOMIC_SEQ_CST = 5)
                 emit_addi_phys(&ctx, 14, 0, 5);
@@ -4973,13 +4959,13 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 emit_call_helper(&ctx, (uintptr_t)&jit_atomic_compare_exchange_8);
                 
                 // expected обновлён по месту в v_regs[rexp], копируем в v_regs[rd]
-                emit_lw_phys(&ctx, 5, rexp * 8, 18);
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
-                emit_lw_phys(&ctx, 5, rexp * 8 + 4, 18);
-                emit_sw_phys(&ctx, 5, rd * 8 + 4, 18);
+                emit_lw_phys(&ctx, 5, rexp * 8, 9);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
+                emit_lw_phys(&ctx, 5, rexp * 8 + 4, 9);
+                emit_sw_phys(&ctx, 5, rd * 8 + 4, 9);
                 // Helper return value is the cmpxchg success flag in a0.
-                emit_sw_phys(&ctx, 10, rexp * 8, 18);
-                emit_sw_phys(&ctx, 0, rexp * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rexp * 8, 9);
+                emit_sw_phys(&ctx, 0, rexp * 8 + 4, 9);
                 
                 break;
             }
@@ -4991,8 +4977,8 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 
                 // 64-битное сложение с immediate
                 // Загружаем значение (64-bit) из v_regs[rs]
-                emit_lw_phys(&ctx, 5, rs * 8, 18);      // t0 = low (old_low)
-                emit_lw_phys(&ctx, 6, rs * 8 + 4, 18);  // t1 = high
+                emit_lw_phys(&ctx, 5, rs * 8, 9);      // t0 = low (old_low)
+                emit_lw_phys(&ctx, 6, rs * 8 + 4, 9);  // t1 = high
                 
                 // Сохраняем old_low в t3 ДО модификации
                 emit_addi_phys(&ctx, 28, 5, 0);  // t3 = old_low
@@ -5012,8 +4998,8 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 }
                 
                 // Сохраняем результат
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
-                emit_sw_phys(&ctx, 6, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
+                emit_sw_phys(&ctx, 6, rd * 8 + 4, 9);
                 
                 break;
             }
@@ -5028,8 +5014,8 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 int16_t neg_imm = (int16_t)(-imm);  // Use int16_t to handle -(-128) = 128 correctly
                 
                 // Загружаем значение (64-bit) из v_regs[rs]
-                emit_lw_phys(&ctx, 5, rs * 8, 18);      // t0 = old_low
-                emit_lw_phys(&ctx, 6, rs * 8 + 4, 18);  // t1 = high
+                emit_lw_phys(&ctx, 5, rs * 8, 9);      // t0 = old_low
+                emit_lw_phys(&ctx, 6, rs * 8 + 4, 9);  // t1 = high
                 
                 // Сохраняем old_low в t3 ДО модификации
                 emit_addi_phys(&ctx, 28, 5, 0);  // t3 = old_low
@@ -5050,8 +5036,8 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 // imm == 0: no carry/borrow
                 
                 // Сохраняем результат
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
-                emit_sw_phys(&ctx, 6, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
+                emit_sw_phys(&ctx, 6, rd * 8 + 4, 9);
                 
                 break;
             }
@@ -5064,8 +5050,8 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 // 64-битное умножение на immediate
                 // Вызываем helper функцию для 64-bit multiplication
                 // a0:a1 = multiplicand (from v_regs[rs])
-                emit_lw_phys(&ctx, 10, rs * 8, 18);      // a0 = low
-                emit_lw_phys(&ctx, 11, rs * 8 + 4, 18);  // a1 = high
+                emit_lw_phys(&ctx, 10, rs * 8, 9);      // a0 = low
+                emit_lw_phys(&ctx, 11, rs * 8 + 4, 9);  // a1 = high
                 
                 // a2:a3 = multiplier (sign-extended imm8)
                 emit_addi_phys(&ctx, 12, 0, (int16_t)imm);  // a2 = imm (sign-extended)
@@ -5075,8 +5061,8 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_mul64);
                 
                 // Результат в a0:a1, сохраняем в v_regs[rd]
-                emit_sw_phys(&ctx, 10, rd * 8, 18);      // low
-                emit_sw_phys(&ctx, 11, rd * 8 + 4, 18);  // high
+                emit_sw_phys(&ctx, 10, rd * 8, 9);      // low
+                emit_sw_phys(&ctx, 11, rd * 8 + 4, 9);  // high
                 
                 break;
             }
@@ -5106,8 +5092,8 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                     while (temp > 1) { temp >>= 1; shift++; }
                     
                     // Загружаем значение (64-bit) из v_regs[r1]
-                    emit_lw_phys(&ctx, 5, r1 * 8, 18);      // t0 = low
-                    emit_lw_phys(&ctx, 6, r1 * 8 + 4, 18);  // t1 = high
+                    emit_lw_phys(&ctx, 5, r1 * 8, 9);      // t0 = low
+                    emit_lw_phys(&ctx, 6, r1 * 8 + 4, 9);  // t1 = high
                     
                     // Для signed division: if (val < 0) val += (divisor - 1)
                     // Проверяем знак (high part)
@@ -5149,8 +5135,8 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                     }
                     
                     // Сохраняем результат
-                    emit_sw_phys(&ctx, 5, rd * 8, 18);
-                    emit_sw_phys(&ctx, 6, rd * 8 + 4, 18);
+                    emit_sw_phys(&ctx, 5, rd * 8, 9);
+                    emit_sw_phys(&ctx, 6, rd * 8 + 4, 9);
                     
                 } else if (is_neg_power_of_2) {
                     // Деление на отрицательную степень 2: сдвиг + инверсия знака
@@ -5167,8 +5153,8 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
 divs_i64_general_case:
                     // Общий случай: вызываем helper функцию для 64-bit division
                     // a0:a1 = dividend (from v_regs[r1])
-                    emit_lw_phys(&ctx, 10, r1 * 8, 18);
-                    emit_lw_phys(&ctx, 11, r1 * 8 + 4, 18);
+                    emit_lw_phys(&ctx, 10, r1 * 8, 9);
+                    emit_lw_phys(&ctx, 11, r1 * 8 + 4, 9);
                     
                     // a2:a3 = divisor (sign-extended imm8)
                     emit_addi_phys(&ctx, 12, 0, (int16_t)imm);
@@ -5182,8 +5168,8 @@ divs_i64_general_case:
                     emit_call_helper(&ctx, (uintptr_t)&jit_divs_i64);
                     
                     // Результат в a0:a1
-                    emit_sw_phys(&ctx, 10, rd * 8, 18);
-                    emit_sw_phys(&ctx, 11, rd * 8 + 4, 18);
+                    emit_sw_phys(&ctx, 10, rd * 8, 9);
+                    emit_sw_phys(&ctx, 11, rd * 8 + 4, 9);
                 }
                 
                 break;
@@ -5212,8 +5198,8 @@ divs_i64_general_case:
                     while (temp > 1) { temp >>= 1; shift++; }
                     
                     // Загружаем значение (64-bit) из v_regs[r1]
-                    emit_lw_phys(&ctx, 5, r1 * 8, 18);      // t0 = low
-                    emit_lw_phys(&ctx, 6, r1 * 8 + 4, 18);  // t1 = high
+                    emit_lw_phys(&ctx, 5, r1 * 8, 9);      // t0 = low
+                    emit_lw_phys(&ctx, 6, r1 * 8 + 4, 9);  // t1 = high
                     
                     // Логический сдвиг вправо (64-bit unsigned)
                     if (shift == 0) {
@@ -5231,13 +5217,13 @@ divs_i64_general_case:
                     }
                     
                     // Сохраняем результат
-                    emit_sw_phys(&ctx, 5, rd * 8, 18);
-                    emit_sw_phys(&ctx, 6, rd * 8 + 4, 18);
+                    emit_sw_phys(&ctx, 5, rd * 8, 9);
+                    emit_sw_phys(&ctx, 6, rd * 8 + 4, 9);
                     
                 } else {
                     // Общий случай: вызываем helper
-                    emit_lw_phys(&ctx, 10, r1 * 8, 18);
-                    emit_lw_phys(&ctx, 11, r1 * 8 + 4, 18);
+                    emit_lw_phys(&ctx, 10, r1 * 8, 9);
+                    emit_lw_phys(&ctx, 11, r1 * 8 + 4, 9);
                     
                     // a2:a3 = divisor (zero-extended imm8)
                     emit_addi_phys(&ctx, 12, 0, (uint8_t)imm);
@@ -5247,8 +5233,8 @@ divs_i64_general_case:
                     emit_call_helper(&ctx, (uintptr_t)&jit_divu_i64);
                     
                     // Результат в a0:a1
-                    emit_sw_phys(&ctx, 10, rd * 8, 18);
-                    emit_sw_phys(&ctx, 11, rd * 8 + 4, 18);
+                    emit_sw_phys(&ctx, 10, rd * 8, 9);
+                    emit_sw_phys(&ctx, 11, rd * 8 + 4, 9);
                 }
                 
                 break;
@@ -5269,8 +5255,8 @@ divs_i64_general_case:
                 
                 // Для остатка используем helper
                 // a0:a1 = dividend
-                emit_lw_phys(&ctx, 10, r1 * 8, 18);
-                emit_lw_phys(&ctx, 11, r1 * 8 + 4, 18);
+                emit_lw_phys(&ctx, 10, r1 * 8, 9);
+                emit_lw_phys(&ctx, 11, r1 * 8 + 4, 9);
                 
                 // a2:a3 = divisor (zero-extended imm8)
                 emit_addi_phys(&ctx, 12, 0, (uint8_t)imm);
@@ -5280,8 +5266,8 @@ divs_i64_general_case:
                 emit_call_helper(&ctx, (uintptr_t)&jit_remu_i64);
                 
                 // Результат в a0:a1
-                emit_sw_phys(&ctx, 10, rd * 8, 18);
-                emit_sw_phys(&ctx, 11, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9);
+                emit_sw_phys(&ctx, 11, rd * 8 + 4, 9);
                 
                 break;
             }
@@ -5293,10 +5279,10 @@ divs_i64_general_case:
                 
                 // Сохраняем указатель (PTR) из v_regs[rs] в память по адресу v_regs[ra] + offset
                 // Загружаем адрес из v_regs[ra]
-                emit_lw_phys(&ctx, 5, ra * 8, 18);  // t0 = v_regs[ra] (base address)
+                emit_lw_phys(&ctx, 5, ra * 8, 9);  // t0 = v_regs[ra] (base address)
                 
                 // Загружаем значение указателя из v_regs[rs]
-                emit_lw_phys(&ctx, 6, rs * 8, 18);  // t1 = v_regs[rs] (pointer value)
+                emit_lw_phys(&ctx, 6, rs * 8, 9);  // t1 = v_regs[rs] (pointer value)
                 
                 // Вычисляем эффективный адрес и сохраняем
                 if (offset >= -2048 && offset < 2048) {
@@ -5335,11 +5321,11 @@ divs_i64_general_case:
                         addr_reg = pa;  // use physical register directly
                     } else {
                         // ra out of range, load from memory
-                        emit_lw_phys(&ctx, 5, ra * 8, 18);
+                        emit_lw_phys(&ctx, 5, ra * 8, 9);
                     }
                 } else {
                     // Standard path: load address from memory
-                    emit_lw_phys(&ctx, 5, ra * 8, 18);  // t0 = v_regs[ra] (address)
+                    emit_lw_phys(&ctx, 5, ra * 8, 9);  // t0 = v_regs[ra] (address)
                 }
                 
                 // Загружаем байт со знаковым расширением: LB (Load Byte signed)
@@ -5371,11 +5357,11 @@ divs_i64_general_case:
                 }
                 
                 // Standard path: store to memory
-                emit_sw_phys(&ctx, 6, rd * 8, 18);
+                emit_sw_phys(&ctx, 6, rd * 8, 9);
                 
                 // Sign extend to 64-bit: заполняем старшую часть в зависимости знака
                 emit_srai_phys(&ctx, 7, 6, 31);  // t2 = t1 >> 31 (sign extension)
-                emit_sw_phys(&ctx, 7, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 7, rd * 8 + 4, 9);
                 
                 break;
             }
@@ -5387,7 +5373,7 @@ divs_i64_general_case:
                 memcpy(&offset, pc, sizeof(offset)); pc += sizeof(offset);
                 
                 // Загружаем адрес из v_regs[ra]
-                emit_lw_phys(&ctx, 5, ra * 8, 18);  // t0 = v_regs[ra] (address)
+                emit_lw_phys(&ctx, 5, ra * 8, 9);  // t0 = v_regs[ra] (address)
                 
                 // Загружаем байт с нулевым расширением: LBU (Load Byte Unsigned)
                 // LBU rd, offset(rs1): opcode=0000011, funct3=100
@@ -5407,10 +5393,10 @@ divs_i64_general_case:
                 }
                 
                 // Сохраняем результат (zero-extended byte -> U32)
-                emit_sw_phys(&ctx, 6, rd * 8, 18);
+                emit_sw_phys(&ctx, 6, rd * 8, 9);
                 
                 // Zero extend to 64-bit: старшая часть = 0
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);  // x0 = 0
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);  // x0 = 0
                 
                 break;
             }
@@ -5428,10 +5414,10 @@ divs_i64_general_case:
                     if (pa != 0) {
                         addr_reg = pa;  // use physical register directly
                     } else {
-                        emit_lw_phys(&ctx, 5, ra * 8, 18);
+                        emit_lw_phys(&ctx, 5, ra * 8, 9);
                     }
                 } else {
-                    emit_lw_phys(&ctx, 5, ra * 8, 18);  // t0 = v_regs[ra] (address)
+                    emit_lw_phys(&ctx, 5, ra * 8, 9);  // t0 = v_regs[ra] (address)
                 }
                 
                 // Загружаем halfword со знаковым расширением: LH (Load Halfword signed)
@@ -5460,11 +5446,11 @@ divs_i64_general_case:
                 }
                 
                 // Standard path: store to memory
-                emit_sw_phys(&ctx, 6, rd * 8, 18);
+                emit_sw_phys(&ctx, 6, rd * 8, 9);
                 
                 // Sign extend to 64-bit
                 emit_srai_phys(&ctx, 7, 6, 31);  // t2 = t1 >> 31 (sign extension)
-                emit_sw_phys(&ctx, 7, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 7, rd * 8 + 4, 9);
                 
                 break;
             }
@@ -5476,7 +5462,7 @@ divs_i64_general_case:
                 memcpy(&offset, pc, sizeof(offset)); pc += sizeof(offset);
                 
                 // Загружаем адрес из v_regs[ra]
-                emit_lw_phys(&ctx, 5, ra * 8, 18);  // t0 = v_regs[ra] (address)
+                emit_lw_phys(&ctx, 5, ra * 8, 9);  // t0 = v_regs[ra] (address)
                 
                 // Загружаем halfword с нулевым расширением: LHU (Load Halfword Unsigned)
                 // LHU rd, offset(rs1): opcode=0000011, funct3=101
@@ -5495,10 +5481,10 @@ divs_i64_general_case:
                 }
                 
                 // Сохраняем результат (zero-extended halfword -> U32)
-                emit_sw_phys(&ctx, 6, rd * 8, 18);
+                emit_sw_phys(&ctx, 6, rd * 8, 9);
                 
                 // Zero extend to 64-bit
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);  // x0 = 0
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);  // x0 = 0
                 
                 break;
             }
@@ -5510,7 +5496,7 @@ divs_i64_general_case:
                 memcpy(&offset, pc, sizeof(offset)); pc += sizeof(offset);
                 
                 // Загружаем адрес из v_regs[ra]
-                emit_lw_phys(&ctx, 5, ra * 8, 18);  // t0 = v_regs[ra] (address)
+                emit_lw_phys(&ctx, 5, ra * 8, 9);  // t0 = v_regs[ra] (address)
                 
                 // Загружаем байт с нулевым расширением: LBU
                 if (offset >= -2048 && offset < 2048) {
@@ -5531,10 +5517,10 @@ divs_i64_general_case:
                 emit_instr(&ctx, (0 << 25) | (6 << 20) | (0 << 15) | (0b011 << 12) | (6 << 7) | 0b0110011);
                 
                 // Сохраняем результат
-                emit_sw_phys(&ctx, 6, rd * 8, 18);
+                emit_sw_phys(&ctx, 6, rd * 8, 9);
                 
                 // Zero extend to 64-bit
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                 
                 break;
             }
@@ -5555,16 +5541,16 @@ divs_i64_general_case:
                     if (pa != 0) {
                         addr_reg = pa;
                     } else {
-                        emit_lw_phys(&ctx, 5, ra * 8, 18);
+                        emit_lw_phys(&ctx, 5, ra * 8, 9);
                     }
                     if (ps != 0) {
                         val_reg = ps;
                     } else {
-                        emit_lw_phys(&ctx, 6, rs * 8, 18);
+                        emit_lw_phys(&ctx, 6, rs * 8, 9);
                     }
                 } else {
-                    emit_lw_phys(&ctx, 5, ra * 8, 18);  // t0 = v_regs[ra] (base address)
-                    emit_lw_phys(&ctx, 6, rs * 8, 18);  // t1 = v_regs[rs] (value)
+                    emit_lw_phys(&ctx, 5, ra * 8, 9);  // t0 = v_regs[ra] (base address)
+                    emit_lw_phys(&ctx, 6, rs * 8, 9);  // t1 = v_regs[rs] (value)
                 }
                 
                 // Сохраняем байт (SB - Store Byte)
@@ -5592,8 +5578,8 @@ divs_i64_general_case:
                 int16_t offset;
                 memcpy(&offset, pc, sizeof(offset)); pc += sizeof(offset);
                 
-                emit_lw_phys(&ctx, 5, ra * 8, 18);  // t0 = v_regs[ra] (base address)
-                emit_lw_phys(&ctx, 6, rs * 8, 18);  // t1 = v_regs[rs] (value)
+                emit_lw_phys(&ctx, 5, ra * 8, 9);  // t0 = v_regs[ra] (base address)
+                emit_lw_phys(&ctx, 6, rs * 8, 9);  // t1 = v_regs[rs] (value)
                 
                 // SB - Store Byte (unsigned same as signed at byte level)
                 if (offset >= -2048 && offset < 2048) {
@@ -5629,16 +5615,16 @@ divs_i64_general_case:
                     if (pa != 0) {
                         addr_reg = pa;
                     } else {
-                        emit_lw_phys(&ctx, 5, ra * 8, 18);
+                        emit_lw_phys(&ctx, 5, ra * 8, 9);
                     }
                     if (ps != 0) {
                         val_reg = ps;
                     } else {
-                        emit_lw_phys(&ctx, 6, rs * 8, 18);
+                        emit_lw_phys(&ctx, 6, rs * 8, 9);
                     }
                 } else {
-                    emit_lw_phys(&ctx, 5, ra * 8, 18);  // t0 = v_regs[ra] (base address)
-                    emit_lw_phys(&ctx, 6, rs * 8, 18);  // t1 = v_regs[rs] (value)
+                    emit_lw_phys(&ctx, 5, ra * 8, 9);  // t0 = v_regs[ra] (base address)
+                    emit_lw_phys(&ctx, 6, rs * 8, 9);  // t1 = v_regs[rs] (value)
                 }
                 
                 // SH - Store Halfword (16-bit, funct3=0b001)
@@ -5664,8 +5650,8 @@ divs_i64_general_case:
                 int16_t offset;
                 memcpy(&offset, pc, sizeof(offset)); pc += sizeof(offset);
                 
-                emit_lw_phys(&ctx, 5, ra * 8, 18);  // t0 = v_regs[ra] (base address)
-                emit_lw_phys(&ctx, 6, rs * 8, 18);  // t1 = v_regs[rs] (value)
+                emit_lw_phys(&ctx, 5, ra * 8, 9);  // t0 = v_regs[ra] (base address)
+                emit_lw_phys(&ctx, 6, rs * 8, 9);  // t1 = v_regs[rs] (value)
                 
                 // Convert to boolean: t1 = (t1 != 0) ? 1 : 0
                 // SNEZ rd, rs is pseudo-instruction for SLTU rd, x0, rs
@@ -5702,8 +5688,8 @@ divs_i64_general_case:
                 
                 // Для остатка нет простых оптимизаций со сдвигами, используем helper
                 // a0:a1 = dividend
-                emit_lw_phys(&ctx, 10, r1 * 8, 18);
-                emit_lw_phys(&ctx, 11, r1 * 8 + 4, 18);
+                emit_lw_phys(&ctx, 10, r1 * 8, 9);
+                emit_lw_phys(&ctx, 11, r1 * 8 + 4, 9);
                 
                 // a2:a3 = divisor (sign-extended imm8)
                 emit_addi_phys(&ctx, 12, 0, (int16_t)imm);
@@ -5717,8 +5703,8 @@ divs_i64_general_case:
                 emit_call_helper(&ctx, (uintptr_t)&jit_rems_i64);
                 
                 // Результат в a0:a1
-                emit_sw_phys(&ctx, 10, rd * 8, 18);
-                emit_sw_phys(&ctx, 11, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9);
+                emit_sw_phys(&ctx, 11, rd * 8 + 4, 9);
                 
                 break;
             }
@@ -5737,7 +5723,7 @@ divs_i64_general_case:
                         
                         // memory.init - copy from data segment to memory
                         // a0 = instance
-                        emit_addi_phys(&ctx, 10, 9, 0);
+                        emit_addi_phys(&ctx, 10, 18, 0);
                         
                         // a1 = data_seg_idx
                         if (data_seg_idx < 2048) {
@@ -5750,13 +5736,13 @@ divs_i64_general_case:
                         }
                         
                         // a2 = dst_addr from v_regs[rd]
-                        emit_lw_phys(&ctx, 12, rd * 8, 18);
+                        emit_lw_phys(&ctx, 12, rd * 8, 9);
                         
                         // a3 = src_offset from v_regs[rs]
-                        emit_lw_phys(&ctx, 13, rs * 8, 18);
+                        emit_lw_phys(&ctx, 13, rs * 8, 9);
                         
                         // a4 = count from v_regs[rn]
-                        emit_lw_phys(&ctx, 14, rn * 8, 18);
+                        emit_lw_phys(&ctx, 14, rn * 8, 9);
                         
                         // Call helper
                         emit_call_helper(&ctx, (uintptr_t)&jit_helper_memory_init);
@@ -5772,7 +5758,7 @@ divs_i64_general_case:
                         memcpy(&data_seg_idx, pc, sizeof(data_seg_idx)); pc += sizeof(data_seg_idx);
                         
                         // a0 = instance
-                        emit_addi_phys(&ctx, 10, 9, 0);
+                        emit_addi_phys(&ctx, 10, 18, 0);
                         
                         // a1 = data_seg_idx
                         if (data_seg_idx < 2048) {
@@ -5810,7 +5796,7 @@ divs_i64_general_case:
                         
                         // table.init - копирование элементов из пассивного сегмента в таблицу
                         // a0 = instance
-                        emit_addi_phys(&ctx, 10, 9, 0);
+                        emit_addi_phys(&ctx, 10, 18, 0);
                         
                         // a1 = table_idx
                         emit_addi_phys(&ctx, 11, 0, table_idx);
@@ -5826,13 +5812,13 @@ divs_i64_general_case:
                         }
                         
                         // a3 = dst_index из v_regs[rd]
-                        emit_lw_phys(&ctx, 13, rd * 8, 18);
+                        emit_lw_phys(&ctx, 13, rd * 8, 9);
                         
                         // a4 = src_offset из v_regs[rs]
-                        emit_lw_phys(&ctx, 14, rs * 8, 18);
+                        emit_lw_phys(&ctx, 14, rs * 8, 9);
                         
                         // a5 = count из v_regs[rn]
-                        emit_lw_phys(&ctx, 15, rn * 8, 18);
+                        emit_lw_phys(&ctx, 15, rn * 8, 9);
                         
                         // Вызываем helper
                         emit_call_helper(&ctx, (uintptr_t)&jit_helper_table_init);
@@ -5847,13 +5833,13 @@ divs_i64_general_case:
                         
                         // memset(dst, val, size)
                         // a0 = dst из v_regs[rd]
-                        emit_lw_phys(&ctx, 10, rd * 8, 18);
+                        emit_lw_phys(&ctx, 10, rd * 8, 9);
                         
                         // a1 = val из v_regs[rval] (только младший байт)
-                        emit_lw_phys(&ctx, 11, rval * 8, 18);
+                        emit_lw_phys(&ctx, 11, rval * 8, 9);
                         
                         // a2 = size из v_regs[rn]
-                        emit_lw_phys(&ctx, 12, rn * 8, 18);
+                        emit_lw_phys(&ctx, 12, rn * 8, 9);
                         
                         // Вызываем memset
                         emit_call_helper(&ctx, (uintptr_t)&memset);
@@ -5868,13 +5854,13 @@ divs_i64_general_case:
                         
                         // memcpy(dst, src, size)
                         // a0 = dst из v_regs[rd]
-                        emit_lw_phys(&ctx, 10, rd * 8, 18);
+                        emit_lw_phys(&ctx, 10, rd * 8, 9);
                         
                         // a1 = src из v_regs[rs]
-                        emit_lw_phys(&ctx, 11, rs * 8, 18);
+                        emit_lw_phys(&ctx, 11, rs * 8, 9);
                         
                         // a2 = size из v_regs[rn]
-                        emit_lw_phys(&ctx, 12, rn * 8, 18);
+                        emit_lw_phys(&ctx, 12, rn * 8, 9);
                         
                         // Вызываем memcpy
                         emit_call_helper(&ctx, (uintptr_t)&memcpy);
@@ -5888,19 +5874,19 @@ divs_i64_general_case:
                         uint8_t rsize = *pc++;
                         
                         // a0 = instance (s1 / x9)
-                        emit_addi_phys(&ctx, 10, 9, 0);
+                        emit_addi_phys(&ctx, 10, 18, 0);
                         
                         // a1 = old_ptr from v_regs[rptr]
-                        emit_lw_phys(&ctx, 11, rptr * 8, 18);
+                        emit_lw_phys(&ctx, 11, rptr * 8, 9);
                         
                         // a2 = new_size from v_regs[rsize]
-                        emit_lw_phys(&ctx, 12, rsize * 8, 18);
+                        emit_lw_phys(&ctx, 12, rsize * 8, 9);
                         
                         emit_call_helper(&ctx, (uintptr_t)&espb_heap_realloc);
                         
                         // Store result pointer
-                        emit_sw_phys(&ctx, 10, rd * 8, 18);
-                        emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                        emit_sw_phys(&ctx, 10, rd * 8, 9);
+                        emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                         
                         break;
                     }
@@ -5912,13 +5898,13 @@ divs_i64_general_case:
 
                         // The shared helper mirrors interpreter overflow and OOM semantics.
                         // It also avoids keeping temporary registers live across CALL.
-                        emit_addi_phys(&ctx, 10, 9, 0); // a0 = instance
-                        emit_lw_phys(&ctx, 11, rcount * 8, 18); // a1 = count
-                        emit_lw_phys(&ctx, 12, rsize * 8, 18); // a2 = element size
+                        emit_addi_phys(&ctx, 10, 18, 0); // a0 = instance
+                        emit_lw_phys(&ctx, 11, rcount * 8, 9); // a1 = count
+                        emit_lw_phys(&ctx, 12, rsize * 8, 9); // a2 = element size
                         emit_call_helper(&ctx, (uintptr_t)&espb_jit_heap_calloc);
 
-                        emit_sw_phys(&ctx, 10, rd * 8, 18);
-                        emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                        emit_sw_phys(&ctx, 10, rd * 8, 9);
+                        emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                         break;
                     }
 
@@ -5930,17 +5916,17 @@ divs_i64_general_case:
                         uint8_t rn = *pc++;  // count reg
                         
                         // a0 = instance
-                        emit_addi_phys(&ctx, 10, 9, 0);
+                        emit_addi_phys(&ctx, 10, 18, 0);
                         // a1 = dst_table_idx
                         emit_addi_phys(&ctx, 11, 0, dst_table_idx);
                         // a2 = src_table_idx
                         emit_addi_phys(&ctx, 12, 0, src_table_idx);
                         // a3 = dst_offset
-                        emit_lw_phys(&ctx, 13, rd * 8, 18);
+                        emit_lw_phys(&ctx, 13, rd * 8, 9);
                         // a4 = src_offset
-                        emit_lw_phys(&ctx, 14, rs * 8, 18);
+                        emit_lw_phys(&ctx, 14, rs * 8, 9);
                         // a5 = count
-                        emit_lw_phys(&ctx, 15, rn * 8, 18);
+                        emit_lw_phys(&ctx, 15, rn * 8, 9);
                         
                         emit_call_helper(&ctx, (uintptr_t)&jit_helper_table_copy);
                         break;
@@ -5954,19 +5940,19 @@ divs_i64_general_case:
                         
                         // table.fill - заполнить диапазон таблицы одним значением
                         // a0 = instance
-                        emit_addi_phys(&ctx, 10, 9, 0);
+                        emit_addi_phys(&ctx, 10, 18, 0);
                         
                         // a1 = table_idx
                         emit_addi_phys(&ctx, 11, 0, table_idx);
                         
                         // a2 = start_index из v_regs[rd]
-                        emit_lw_phys(&ctx, 12, rd * 8, 18);
+                        emit_lw_phys(&ctx, 12, rd * 8, 9);
                         
                         // a3 = fill_value из v_regs[rval]
-                        emit_lw_phys(&ctx, 13, rval * 8, 18);
+                        emit_lw_phys(&ctx, 13, rval * 8, 9);
                         
                         // a4 = count из v_regs[rn]
-                        emit_lw_phys(&ctx, 14, rn * 8, 18);
+                        emit_lw_phys(&ctx, 14, rn * 8, 9);
                         
                         // Вызываем helper
                         emit_call_helper(&ctx, (uintptr_t)&jit_helper_table_fill);
@@ -5986,12 +5972,12 @@ divs_i64_general_case:
                         // Загружаем напрямую из instance->table_size
                         
                         // Для простоты используем helper
-                        emit_addi_phys(&ctx, 10, 9, 0);  // a0 = instance
+                        emit_addi_phys(&ctx, 10, 18, 0);  // a0 = instance
                         emit_call_helper(&ctx, (uintptr_t)&jit_helper_table_size);
                         
                         // Результат в a0
-                        emit_sw_phys(&ctx, 10, rd * 8, 18);
-                        emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                        emit_sw_phys(&ctx, 10, rd * 8, 9);
+                        emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                         
                         break;
                     }
@@ -6001,10 +5987,10 @@ divs_i64_general_case:
                         
                         // espb_heap_free(instance, ptr)
                         // a0 = instance (s1/x9)
-                        emit_addi_phys(&ctx, 10, 9, 0);
+                        emit_addi_phys(&ctx, 10, 18, 0);
                         
                         // a1 = ptr из v_regs[rp]
-                        emit_lw_phys(&ctx, 11, rp * 8, 18);
+                        emit_lw_phys(&ctx, 11, rp * 8, 9);
                         
                         // Вызываем espb_heap_free(instance, ptr)
                         emit_call_helper(&ctx, (uintptr_t)&espb_heap_free);
@@ -6019,20 +6005,20 @@ divs_i64_general_case:
                         
                         // Rd = table[Rs]
                         // a0 = instance
-                        emit_addi_phys(&ctx, 10, 9, 0);
+                        emit_addi_phys(&ctx, 10, 18, 0);
                         
                         // a1 = table_idx
                         emit_addi_phys(&ctx, 11, 0, table_idx);
                         
                         // a2 = index из v_regs[rs]
-                        emit_lw_phys(&ctx, 12, rs * 8, 18);
+                        emit_lw_phys(&ctx, 12, rs * 8, 9);
                         
                         // Вызываем helper
                         emit_call_helper(&ctx, (uintptr_t)&jit_helper_table_get);
                         
                         // Результат (void*) в a0, сохраняем как I32 в v_regs[rd]
-                        emit_sw_phys(&ctx, 10, rd * 8, 18);
-                        emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                        emit_sw_phys(&ctx, 10, rd * 8, 9);
+                        emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                         
                         break;
                     }
@@ -6044,16 +6030,16 @@ divs_i64_general_case:
                         
                         // table[Rd] = Rval
                         // a0 = instance
-                        emit_addi_phys(&ctx, 10, 9, 0);
+                        emit_addi_phys(&ctx, 10, 18, 0);
                         
                         // a1 = table_idx
                         emit_addi_phys(&ctx, 11, 0, table_idx);
                         
                         // a2 = index из v_regs[rd]
-                        emit_lw_phys(&ctx, 12, rd * 8, 18);
+                        emit_lw_phys(&ctx, 12, rd * 8, 9);
                         
                         // a3 = value из v_regs[rval]
-                        emit_lw_phys(&ctx, 13, rval * 8, 18);
+                        emit_lw_phys(&ctx, 13, rval * 8, 9);
                         
                         // Вызываем helper функцию для установки элемента в таблицу
                         // Нужна helper функция: espb_table_set(instance, table_idx, index, value)
@@ -6068,17 +6054,17 @@ divs_i64_general_case:
                         
                         // Rd(PTR) = espb_heap_malloc(instance, Rs(I32))
                         // a0 = instance (s1/x9)
-                        emit_addi_phys(&ctx, 10, 9, 0);
+                        emit_addi_phys(&ctx, 10, 18, 0);
                         
                         // a1 = size из v_regs[rs]
-                        emit_lw_phys(&ctx, 11, rs * 8, 18);
+                        emit_lw_phys(&ctx, 11, rs * 8, 9);
                         
                         // Вызываем espb_heap_malloc(instance, size)
                         emit_call_helper(&ctx, (uintptr_t)&espb_heap_malloc);
                         
                         // Результат (указатель) в a0, сохраняем в v_regs[rd]
-                        emit_sw_phys(&ctx, 10, rd * 8, 18);
-                        emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);  // high = 0
+                        emit_sw_phys(&ctx, 10, rd * 8, 9);
+                        emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);  // high = 0
                         
                         break;
                     }
@@ -6109,7 +6095,7 @@ divs_i64_general_case:
                             emit_addi_phys(&ctx, pd, ps, 0);  // mv pd, ps
                         } else {
                             // Source out of range - load from memory to physical register
-                            emit_lw_phys(&ctx, pd, rs * 8, 18);
+                            emit_lw_phys(&ctx, pd, rs * 8, 9);
                         }
                         break;
                     }
@@ -6120,11 +6106,11 @@ divs_i64_general_case:
                 // LLVM/translator may emit MOV.32 even when register holds I64/U64/F64.
                 // So we copy full 8 bytes to avoid losing high word.
 
-                emit_lw_phys(&ctx, 5, rs * 8, 18);
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_lw_phys(&ctx, 5, rs * 8, 9);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
 
-                emit_lw_phys(&ctx, 5, rs * 8 + 4, 18);
-                emit_sw_phys(&ctx, 5, rd * 8 + 4, 18);
+                emit_lw_phys(&ctx, 5, rs * 8 + 4, 9);
+                emit_sw_phys(&ctx, 5, rd * 8 + 4, 9);
 
                 break;
             }
@@ -6135,15 +6121,15 @@ divs_i64_general_case:
                 
                 // Загружаем оба 32-bit слова (Value это 64-bit union)
                 // lw t0, rs*8(s2)     -- младшие 32 бита
-                emit_lw_phys(&ctx, 5, rs * 8, 18);
+                emit_lw_phys(&ctx, 5, rs * 8, 9);
                 // lw t1, rs*8+4(s2)   -- старшие 32 бита
-                emit_lw_phys(&ctx, 6, rs * 8 + 4, 18);
+                emit_lw_phys(&ctx, 6, rs * 8 + 4, 9);
                 
                 // Сохраняем в v_regs[rd]
                 // sw t0, rd*8(s2)
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 // sw t1, rd*8+4(s2)
-                emit_sw_phys(&ctx, 6, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 6, rd * 8 + 4, 9);
                 
                 break;
             }
@@ -6157,7 +6143,7 @@ divs_i64_general_case:
                 emit_addi_phys(&ctx, 5, 0, imm);
                 
                 // Сохраняем в v_regs[rd]
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 
                 break;
             }
@@ -6205,7 +6191,7 @@ divs_i64_general_case:
                 }
                 
                 // ВСЕГДА сохраняем в v_regs[rd] (даже если есть физический регистр)
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 
                 // Если есть физический регистр - копируем туда тоже
                 uint8_t phys_rd = map_vreg_to_phys(rd);
@@ -6233,7 +6219,7 @@ divs_i64_general_case:
                         emit_addi_phys(&ctx, 5, 5, lo);
                     }
                 }
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 
                 // Загружаем старшие 32 бита
                 int32_t hi32 = (int32_t)(imm >> 32);
@@ -6247,7 +6233,7 @@ divs_i64_general_case:
                         emit_addi_phys(&ctx, 5, 5, lo);
                     }
                 }
-                emit_sw_phys(&ctx, 5, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 5, rd * 8 + 4, 9);
                 
                 break;
             }
@@ -6273,7 +6259,7 @@ divs_i64_general_case:
                 }
                 
                 // Сохраняем в v_regs[rd]
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 
                 break;
             }
@@ -6299,7 +6285,7 @@ divs_i64_general_case:
                         emit_addi_phys(&ctx, 5, 5, lo);
                     }
                 }
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 
                 // Загружаем старшие 32 бита
                 int32_t hi32 = (int32_t)(imm64 >> 32);
@@ -6313,7 +6299,7 @@ divs_i64_general_case:
                         emit_addi_phys(&ctx, 5, 5, lo);
                     }
                 }
-                emit_sw_phys(&ctx, 5, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 5, rd * 8 + 4, 9);
                 
                 break;
             }
@@ -6332,7 +6318,7 @@ divs_i64_general_case:
                 }
                 
                 // Сохраняем в v_regs[rd]
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
                 
                 break;
             }
@@ -6343,7 +6329,7 @@ divs_i64_general_case:
                 memcpy(&symbol_idx, pc, sizeof(symbol_idx)); pc += sizeof(symbol_idx);
 
                 // a0 = instance
-                emit_addi_phys(&ctx, 10, 9, 0);
+                emit_addi_phys(&ctx, 10, 18, 0);
                 // a1 = symbol_idx
                 if (symbol_idx < 2048) {
                     emit_addi_phys(&ctx, 11, 0, (int16_t)symbol_idx);
@@ -6354,7 +6340,7 @@ divs_i64_general_case:
                     if (lo != 0) emit_addi_phys(&ctx, 11, 11, lo);
                 }
                 // a2 = v_regs
-                emit_addi_phys(&ctx, 12, 18, 0);
+                emit_addi_phys(&ctx, 12, 9, 0);
                 // a3 = num_virtual_regs
                 if (num_virtual_regs < 2048) {
                     emit_addi_phys(&ctx, 13, 0, (int16_t)num_virtual_regs);
@@ -6377,7 +6363,7 @@ divs_i64_general_case:
                 memcpy(&global_idx, pc, sizeof(global_idx)); pc += sizeof(global_idx);
 
                 // a0 = instance
-                emit_addi_phys(&ctx, 10, 9, 0);
+                emit_addi_phys(&ctx, 10, 18, 0);
                 // a1 = global_idx
                 if (global_idx < 2048) {
                     emit_addi_phys(&ctx, 11, 0, (int16_t)global_idx);
@@ -6388,7 +6374,7 @@ divs_i64_general_case:
                     if (lo != 0) emit_addi_phys(&ctx, 11, 11, lo);
                 }
                 // a2 = v_regs
-                emit_addi_phys(&ctx, 12, 18, 0);
+                emit_addi_phys(&ctx, 12, 9, 0);
                 // a3 = num_virtual_regs
                 if (num_virtual_regs < 2048) {
                     emit_addi_phys(&ctx, 13, 0, (int16_t)num_virtual_regs);
@@ -6411,7 +6397,7 @@ divs_i64_general_case:
                 uint8_t rs = *pc++;
 
                 // a0 = instance
-                emit_addi_phys(&ctx, 10, 9, 0);
+                emit_addi_phys(&ctx, 10, 18, 0);
                 // a1 = global_idx
                 if (global_idx < 2048) {
                     emit_addi_phys(&ctx, 11, 0, (int16_t)global_idx);
@@ -6422,7 +6408,7 @@ divs_i64_general_case:
                     if (lo != 0) emit_addi_phys(&ctx, 11, 11, lo);
                 }
                 // a2 = v_regs (const)
-                emit_addi_phys(&ctx, 12, 18, 0);
+                emit_addi_phys(&ctx, 12, 9, 0);
                 // a3 = num_virtual_regs
                 if (num_virtual_regs < 2048) {
                     emit_addi_phys(&ctx, 13, 0, (int16_t)num_virtual_regs);
@@ -6462,11 +6448,11 @@ divs_i64_general_case:
                         
                         // Load operands that are out of range from memory
                         if (p1 == 0) {
-                            emit_lw_phys(&ctx, 5, rs1 * 8, 18);  // t0 = v_regs[rs1]
+                            emit_lw_phys(&ctx, 5, rs1 * 8, 9);  // t0 = v_regs[rs1]
                             src1_reg = 5;
                         }
                         if (p2 == 0) {
-                            emit_lw_phys(&ctx, 6, rs2 * 8, 18);  // t1 = v_regs[rs2]
+                            emit_lw_phys(&ctx, 6, rs2 * 8, 9);  // t1 = v_regs[rs2]
                             src2_reg = 6;
                         }
                         
@@ -6760,17 +6746,17 @@ divs_i64_general_case:
                 ph_flush(&ctx, &ph);
 
                 // t0/t1 = r1(lo/hi), t2/t3 = r2(lo/hi)
-                emit_lw_phys(&ctx, 5, r1 * 8, 18);
-                emit_lw_phys(&ctx, 6, r1 * 8 + 4, 18);
-                emit_lw_phys(&ctx, 7, r2 * 8, 18);
-                emit_lw_phys(&ctx, 28, r2 * 8 + 4, 18);
+                emit_lw_phys(&ctx, 5, r1 * 8, 9);
+                emit_lw_phys(&ctx, 6, r1 * 8 + 4, 9);
+                emit_lw_phys(&ctx, 7, r2 * 8, 9);
+                emit_lw_phys(&ctx, 28, r2 * 8 + 4, 9);
 
                 // and
                 emit_instr(&ctx, (0b0000000 << 25) | (7u << 20) | (5u << 15) | (0b111u << 12) | (5u << 7) | 0b0110011u);   // and x5,x5,x7
                 emit_instr(&ctx, (0b0000000 << 25) | (28u << 20) | (6u << 15) | (0b111u << 12) | (6u << 7) | 0b0110011u); // and x6,x6,x28
 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
-                emit_sw_phys(&ctx, 6, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
+                emit_sw_phys(&ctx, 6, rd * 8 + 4, 9);
                 break;
             }
             case 0x39: { // OR.I64
@@ -6778,16 +6764,16 @@ divs_i64_general_case:
                 ctx.last_cmp_result_reg = 0xFF;
                 ph_flush(&ctx, &ph);
 
-                emit_lw_phys(&ctx, 5, r1 * 8, 18);
-                emit_lw_phys(&ctx, 6, r1 * 8 + 4, 18);
-                emit_lw_phys(&ctx, 7, r2 * 8, 18);
-                emit_lw_phys(&ctx, 28, r2 * 8 + 4, 18);
+                emit_lw_phys(&ctx, 5, r1 * 8, 9);
+                emit_lw_phys(&ctx, 6, r1 * 8 + 4, 9);
+                emit_lw_phys(&ctx, 7, r2 * 8, 9);
+                emit_lw_phys(&ctx, 28, r2 * 8 + 4, 9);
 
                 emit_instr(&ctx, (0b0000000 << 25) | (7u << 20) | (5u << 15) | (0b110u << 12) | (5u << 7) | 0b0110011u);   // or x5,x5,x7
                 emit_instr(&ctx, (0b0000000 << 25) | (28u << 20) | (6u << 15) | (0b110u << 12) | (6u << 7) | 0b0110011u); // or x6,x6,x28
 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
-                emit_sw_phys(&ctx, 6, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
+                emit_sw_phys(&ctx, 6, rd * 8 + 4, 9);
                 break;
             }
             case 0x3A: { // XOR.I64
@@ -6795,16 +6781,16 @@ divs_i64_general_case:
                 ctx.last_cmp_result_reg = 0xFF;
                 ph_flush(&ctx, &ph);
 
-                emit_lw_phys(&ctx, 5, r1 * 8, 18);
-                emit_lw_phys(&ctx, 6, r1 * 8 + 4, 18);
-                emit_lw_phys(&ctx, 7, r2 * 8, 18);
-                emit_lw_phys(&ctx, 28, r2 * 8 + 4, 18);
+                emit_lw_phys(&ctx, 5, r1 * 8, 9);
+                emit_lw_phys(&ctx, 6, r1 * 8 + 4, 9);
+                emit_lw_phys(&ctx, 7, r2 * 8, 9);
+                emit_lw_phys(&ctx, 28, r2 * 8 + 4, 9);
 
                 emit_instr(&ctx, (0b0000000 << 25) | (7u << 20) | (5u << 15) | (0b100u << 12) | (5u << 7) | 0b0110011u);   // xor x5,x5,x7
                 emit_instr(&ctx, (0b0000000 << 25) | (28u << 20) | (6u << 15) | (0b100u << 12) | (6u << 7) | 0b0110011u); // xor x6,x6,x28
 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
-                emit_sw_phys(&ctx, 6, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
+                emit_sw_phys(&ctx, 6, rd * 8 + 4, 9);
                 break;
             }
             case 0x3B: { // SHL.I64 Rd, R1, R2 (shamt = low32(R2)) — inline
@@ -6813,9 +6799,9 @@ divs_i64_general_case:
                 ph_flush(&ctx, &ph);
 
                 // lo=x5 hi=x6 sh=x7
-                emit_lw_phys(&ctx, 5, r1 * 8, 18);
-                emit_lw_phys(&ctx, 6, r1 * 8 + 4, 18);
-                emit_lw_phys(&ctx, 7, r2 * 8, 18);
+                emit_lw_phys(&ctx, 5, r1 * 8, 9);
+                emit_lw_phys(&ctx, 6, r1 * 8 + 4, 9);
+                emit_lw_phys(&ctx, 7, r2 * 8, 9);
                 // sh &= 63
                 emit_instr(&ctx, (63u << 20) | (7u << 15) | (0b111u << 12) | (7u << 7) | 0b0010011u); // andi x7,x7,63
 
@@ -6881,8 +6867,8 @@ divs_i64_general_case:
                     memcpy(ctx.buffer + jal_end1, &ins, 4);
                 }
 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
-                emit_sw_phys(&ctx, 6, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
+                emit_sw_phys(&ctx, 6, rd * 8 + 4, 9);
                 break;
             }
 
@@ -6891,9 +6877,9 @@ divs_i64_general_case:
                 ctx.last_cmp_result_reg = 0xFF;
                 ph_flush(&ctx, &ph);
 
-                emit_lw_phys(&ctx, 5, r1 * 8, 18);
-                emit_lw_phys(&ctx, 6, r1 * 8 + 4, 18);
-                emit_lw_phys(&ctx, 7, r2 * 8, 18);
+                emit_lw_phys(&ctx, 5, r1 * 8, 9);
+                emit_lw_phys(&ctx, 6, r1 * 8 + 4, 9);
+                emit_lw_phys(&ctx, 7, r2 * 8, 9);
                 emit_instr(&ctx, (63u << 20) | (7u << 15) | (0b111u << 12) | (7u << 7) | 0b0010011u); // andi sh
 
                 size_t br_zero = ctx.offset; emit_beq_phys(&ctx, 7, 0, 0);
@@ -6955,8 +6941,8 @@ divs_i64_general_case:
                     memcpy(ctx.buffer + jal_end1, &ins, 4);
                 }
 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
-                emit_sw_phys(&ctx, 6, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
+                emit_sw_phys(&ctx, 6, rd * 8 + 4, 9);
                 break;
             }
 
@@ -6965,9 +6951,9 @@ divs_i64_general_case:
                 ctx.last_cmp_result_reg = 0xFF;
                 ph_flush(&ctx, &ph);
 
-                emit_lw_phys(&ctx, 5, r1 * 8, 18);
-                emit_lw_phys(&ctx, 6, r1 * 8 + 4, 18);
-                emit_lw_phys(&ctx, 7, r2 * 8, 18);
+                emit_lw_phys(&ctx, 5, r1 * 8, 9);
+                emit_lw_phys(&ctx, 6, r1 * 8 + 4, 9);
+                emit_lw_phys(&ctx, 7, r2 * 8, 9);
                 emit_instr(&ctx, (63u << 20) | (7u << 15) | (0b111u << 12) | (7u << 7) | 0b0010011u);
 
                 size_t br_zero = ctx.offset; emit_beq_phys(&ctx, 7, 0, 0);
@@ -7025,8 +7011,8 @@ divs_i64_general_case:
                     memcpy(ctx.buffer + jal_end1, &ins, 4);
                 }
 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
-                emit_sw_phys(&ctx, 6, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
+                emit_sw_phys(&ctx, 6, rd * 8 + 4, 9);
                 break;
             }
             case 0x3E: { // NOT.I64 Rd, R1 (inline)
@@ -7034,15 +7020,15 @@ divs_i64_general_case:
                 ctx.last_cmp_result_reg = 0xFF;
                 ph_flush(&ctx, &ph);
 
-                emit_lw_phys(&ctx, 5, r1 * 8, 18);
-                emit_lw_phys(&ctx, 6, r1 * 8 + 4, 18);
+                emit_lw_phys(&ctx, 5, r1 * 8, 9);
+                emit_lw_phys(&ctx, 6, r1 * 8 + 4, 9);
 
                 // xori lo, lo, -1 ; xori hi, hi, -1
                 emit_instr(&ctx, ((uint32_t)0xFFFu << 20) | (5u << 15) | (0b100u << 12) | (5u << 7) | 0b0010011u);
                 emit_instr(&ctx, ((uint32_t)0xFFFu << 20) | (6u << 15) | (0b100u << 12) | (6u << 7) | 0b0010011u);
 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
-                emit_sw_phys(&ctx, 6, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
+                emit_sw_phys(&ctx, 6, rd * 8 + 4, 9);
                 break;
             }
 
@@ -7056,8 +7042,8 @@ divs_i64_general_case:
                 uint8_t sh = (uint8_t)(imm & 63u);
 
                 // Load source (lo/hi)
-                emit_lw_phys(&ctx, 5, r1 * 8, 18);
-                emit_lw_phys(&ctx, 6, r1 * 8 + 4, 18);
+                emit_lw_phys(&ctx, 5, r1 * 8, 9);
+                emit_lw_phys(&ctx, 6, r1 * 8 + 4, 9);
 
                 if (sh == 0) {
                     // no-op
@@ -7086,8 +7072,8 @@ divs_i64_general_case:
                 }
 
                 // Store result
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
-                emit_sw_phys(&ctx, 6, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
+                emit_sw_phys(&ctx, 6, rd * 8 + 4, 9);
                 break;
             }
             
@@ -7126,14 +7112,14 @@ divs_i64_general_case:
                     // если был другой i64 dirty — он сбросится на барьере, но тут мы в i64 op; сбросим если нужно
                     // (без сброса нельзя, иначе потеряем значения при замене кэша)
                     ph_flush(&ctx, &ph);
-                    emit_lw_phys(&ctx, 5, (int16_t)(rs1 * 8), 18);
-                    emit_lw_phys(&ctx, 6, (int16_t)(rs1 * 8 + 4), 18);
+                    emit_lw_phys(&ctx, 5, (int16_t)(rs1 * 8), 9);
+                    emit_lw_phys(&ctx, 6, (int16_t)(rs1 * 8 + 4), 9);
                     ph_set_i64(&ph, rs1, false);
                 }
 
                 // rs2 -> x7(lo)/x28(hi)
-                emit_lw_phys(&ctx, 7, (int16_t)(rs2 * 8), 18);
-                emit_lw_phys(&ctx, 28, (int16_t)(rs2 * 8 + 4), 18);
+                emit_lw_phys(&ctx, 7, (int16_t)(rs2 * 8), 9);
+                emit_lw_phys(&ctx, 28, (int16_t)(rs2 * 8 + 4), 9);
 
                 // low: x5 = x5 + x7
                 emit_add_phys(&ctx, 5, 5, 7);
@@ -7159,14 +7145,14 @@ divs_i64_general_case:
                 // i64 peephole: кэшируем rs1 в x5(lo)/x6(hi)
                 if (!ph_has_i64(&ph, rs1)) {
                     ph_flush(&ctx, &ph);
-                    emit_lw_phys(&ctx, 5, (int16_t)(rs1 * 8), 18);
-                    emit_lw_phys(&ctx, 6, (int16_t)(rs1 * 8 + 4), 18);
+                    emit_lw_phys(&ctx, 5, (int16_t)(rs1 * 8), 9);
+                    emit_lw_phys(&ctx, 6, (int16_t)(rs1 * 8 + 4), 9);
                     ph_set_i64(&ph, rs1, false);
                 }
 
                 // rs2 -> x7(lo)/x28(hi)
-                emit_lw_phys(&ctx, 7, (int16_t)(rs2 * 8), 18);
-                emit_lw_phys(&ctx, 28, (int16_t)(rs2 * 8 + 4), 18);
+                emit_lw_phys(&ctx, 7, (int16_t)(rs2 * 8), 9);
+                emit_lw_phys(&ctx, 28, (int16_t)(rs2 * 8 + 4), 9);
 
                 // low: x5 = x5 - x7
                 // borrow: x29 = (x5 < x7) computed BEFORE sub? we can compute borrow from original low.
@@ -7186,13 +7172,13 @@ divs_i64_general_case:
                 uint8_t rd = *pc++;
                 uint8_t rs1 = *pc++;
                 uint8_t rs2 = *pc++;
-                emit_lw_phys(&ctx, 10, rs1 * 8, 18);
-                emit_lw_phys(&ctx, 11, rs1 * 8 + 4, 18);
-                emit_lw_phys(&ctx, 12, rs2 * 8, 18);
-                emit_lw_phys(&ctx, 13, rs2 * 8 + 4, 18);
+                emit_lw_phys(&ctx, 10, rs1 * 8, 9);
+                emit_lw_phys(&ctx, 11, rs1 * 8 + 4, 9);
+                emit_lw_phys(&ctx, 12, rs2 * 8, 9);
+                emit_lw_phys(&ctx, 13, rs2 * 8 + 4, 9);
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_mul64);
-                emit_sw_phys(&ctx, 10, rd * 8, 18);
-                emit_sw_phys(&ctx, 11, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9);
+                emit_sw_phys(&ctx, 11, rd * 8 + 4, 9);
                 break;
             }
 
@@ -7200,13 +7186,13 @@ divs_i64_general_case:
                 uint8_t rd = *pc++;
                 uint8_t rs1 = *pc++;
                 uint8_t rs2 = *pc++;
-                emit_lw_phys(&ctx, 10, rs1 * 8, 18);
-                emit_lw_phys(&ctx, 11, rs1 * 8 + 4, 18);
-                emit_lw_phys(&ctx, 12, rs2 * 8, 18);
-                emit_lw_phys(&ctx, 13, rs2 * 8 + 4, 18);
+                emit_lw_phys(&ctx, 10, rs1 * 8, 9);
+                emit_lw_phys(&ctx, 11, rs1 * 8 + 4, 9);
+                emit_lw_phys(&ctx, 12, rs2 * 8, 9);
+                emit_lw_phys(&ctx, 13, rs2 * 8 + 4, 9);
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_divs64);
-                emit_sw_phys(&ctx, 10, rd * 8, 18);
-                emit_sw_phys(&ctx, 11, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9);
+                emit_sw_phys(&ctx, 11, rd * 8 + 4, 9);
                 break;
             }
 
@@ -7214,13 +7200,13 @@ divs_i64_general_case:
                 uint8_t rd = *pc++;
                 uint8_t rs1 = *pc++;
                 uint8_t rs2 = *pc++;
-                emit_lw_phys(&ctx, 10, rs1 * 8, 18);
-                emit_lw_phys(&ctx, 11, rs1 * 8 + 4, 18);
-                emit_lw_phys(&ctx, 12, rs2 * 8, 18);
-                emit_lw_phys(&ctx, 13, rs2 * 8 + 4, 18);
+                emit_lw_phys(&ctx, 10, rs1 * 8, 9);
+                emit_lw_phys(&ctx, 11, rs1 * 8 + 4, 9);
+                emit_lw_phys(&ctx, 12, rs2 * 8, 9);
+                emit_lw_phys(&ctx, 13, rs2 * 8 + 4, 9);
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_rems64);
-                emit_sw_phys(&ctx, 10, rd * 8, 18);
-                emit_sw_phys(&ctx, 11, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9);
+                emit_sw_phys(&ctx, 11, rd * 8 + 4, 9);
                 break;
             }
 
@@ -7230,19 +7216,19 @@ divs_i64_general_case:
                 uint8_t rs2 = *pc++;
                 
                 // Load dividend (64-bit) into a0/a1
-                emit_lw_phys(&ctx, 10, rs1 * 8, 18);     // a0 = low word
-                emit_lw_phys(&ctx, 11, rs1 * 8 + 4, 18); // a1 = high word
+                emit_lw_phys(&ctx, 10, rs1 * 8, 9);     // a0 = low word
+                emit_lw_phys(&ctx, 11, rs1 * 8 + 4, 9); // a1 = high word
                 
                 // Load divisor (64-bit) into a2/a3
-                emit_lw_phys(&ctx, 12, rs2 * 8, 18);     // a2 = low word
-                emit_lw_phys(&ctx, 13, rs2 * 8 + 4, 18); // a3 = high word
+                emit_lw_phys(&ctx, 12, rs2 * 8, 9);     // a2 = low word
+                emit_lw_phys(&ctx, 13, rs2 * 8 + 4, 9); // a3 = high word
                 
                 // Call jit_helper_divu64 wrapper
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_divu64);
                 
                 // Result in a0/a1 -> store to v_regs[rd]
-                emit_sw_phys(&ctx, 10, rd * 8, 18);
-                emit_sw_phys(&ctx, 11, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9);
+                emit_sw_phys(&ctx, 11, rd * 8 + 4, 9);
                 break;
             }
             
@@ -7250,13 +7236,13 @@ divs_i64_general_case:
                 uint8_t rd = *pc++;
                 uint8_t rs1 = *pc++;
                 uint8_t rs2 = *pc++;
-                emit_lw_phys(&ctx, 10, rs1 * 8, 18);
-                emit_lw_phys(&ctx, 11, rs1 * 8 + 4, 18);
-                emit_lw_phys(&ctx, 12, rs2 * 8, 18);
-                emit_lw_phys(&ctx, 13, rs2 * 8 + 4, 18);
+                emit_lw_phys(&ctx, 10, rs1 * 8, 9);
+                emit_lw_phys(&ctx, 11, rs1 * 8 + 4, 9);
+                emit_lw_phys(&ctx, 12, rs2 * 8, 9);
+                emit_lw_phys(&ctx, 13, rs2 * 8 + 4, 9);
                 emit_call_helper(&ctx, (uintptr_t)&jit_helper_remu64);
-                emit_sw_phys(&ctx, 10, rd * 8, 18);
-                emit_sw_phys(&ctx, 11, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9);
+                emit_sw_phys(&ctx, 11, rd * 8 + 4, 9);
                 break;
             }
             
@@ -7617,11 +7603,9 @@ divs_i64_general_case:
                 int fr = ph_find(&ph, rs);
                 uint8_t p = (fr != -1) ? (uint8_t)fr : ph_ensure_loaded(&ctx, &ph, rs, 5);
 
-                uint8_t tmp = (p == 6) ? 7 : 6;
-                emit_addi_phys(&ctx, tmp, 0, imm);
-
-                // or p, p, tmp
-                emit_instr(&ctx, (0b0000000 << 25) | (tmp << 20) | (p << 15) | (0b110 << 12) | (p << 7) | 0b0110011);
+                // ori p, p, imm (sign-extended imm12)
+                uint32_t ori_instr = ((uint32_t)(imm & 0xFFF) << 20) | (p << 15) | (0b110 << 12) | (p << 7) | 0b0010011;
+                emit_instr(&ctx, ori_instr);
 
                 ph_set(&ph, p, rd, true);
                 break;
@@ -7769,8 +7753,8 @@ divs_i64_general_case:
                 uint8_t r2 = *pc++;
                 
                 // Загружаем операнды
-                emit_lw_phys(&ctx, 5, r1 * 8, 18);  // t0 = v_regs[r1]
-                emit_lw_phys(&ctx, 6, r2 * 8, 18);  // t1 = v_regs[r2]
+                emit_lw_phys(&ctx, 5, r1 * 8, 9);  // t0 = v_regs[r1]
+                emit_lw_phys(&ctx, 6, r2 * 8, 9);  // t1 = v_regs[r2]
                 
                 // sub t2, t0, t1
                 emit_sub_phys(&ctx, 7, 5, 6);
@@ -7781,8 +7765,8 @@ divs_i64_general_case:
                 emit_instr(&ctx, instr);
                 
                 // Сохраняем результат
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18); // BOOL: clear high
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9); // BOOL: clear high
                 
                 break;
             }
@@ -7792,8 +7776,8 @@ divs_i64_general_case:
                 uint8_t r1 = *pc++;
                 uint8_t r2 = *pc++;
                 
-                emit_lw_phys(&ctx, 5, r1 * 8, 18);
-                emit_lw_phys(&ctx, 6, r2 * 8, 18);
+                emit_lw_phys(&ctx, 5, r1 * 8, 9);
+                emit_lw_phys(&ctx, 6, r2 * 8, 9);
                 
                 // sub t2, t0, t1
                 emit_sub_phys(&ctx, 7, 5, 6);
@@ -7802,8 +7786,8 @@ divs_i64_general_case:
                 uint32_t instr = (7 << 20) | (0 << 15) | (0b011 << 12) | (5 << 7) | 0b0110011;
                 emit_instr(&ctx, instr);
                 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18); // BOOL: clear high
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9); // BOOL: clear high
                 
                 // CMP+BR_IF оптимизация
                 ctx.last_cmp_result_reg = rd;
@@ -7824,7 +7808,7 @@ divs_i64_general_case:
                     uint32_t instr = (0b0000000 << 25) | (p2 << 20) | (p1 << 15) | (0b010 << 12) | (pd << 7) | 0b0110011;
                     emit_instr(&ctx, instr);
                     // BOOL: clear high word in memory (v_regs[rd]+4)
-                    emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                    emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                     // CMP+BR_IF tracking: result in pd, not t0; just clear
                     ctx.last_cmp_result_reg = 0xFF;
                     ctx.last_cmp_in_t0 = false;
@@ -7834,15 +7818,15 @@ divs_i64_general_case:
                 uint8_t r1 = *pc++;
                 uint8_t r2 = *pc++;
                 
-                emit_lw_phys(&ctx, 5, r1 * 8, 18);
-                emit_lw_phys(&ctx, 6, r2 * 8, 18);
+                emit_lw_phys(&ctx, 5, r1 * 8, 9);
+                emit_lw_phys(&ctx, 6, r2 * 8, 9);
                 
                 // slt t0, t0, t1  (signed less than)
                 uint32_t instr = (0b0000000 << 25) | (6 << 20) | (5 << 15) | (0b010 << 12) | (5 << 7) | 0b0110011;
                 emit_instr(&ctx, instr);
                 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18); // BOOL: clear high
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9); // BOOL: clear high
                 
                 // CMP+BR_IF оптимизация
                 ctx.last_cmp_result_reg = rd;
@@ -7857,15 +7841,15 @@ divs_i64_general_case:
                 uint8_t r2 = *pc++;
 
                 // R1 > R2  <==>  R2 < R1
-                emit_lw_phys(&ctx, 5, r1 * 8, 18);
-                emit_lw_phys(&ctx, 6, r2 * 8, 18);
+                emit_lw_phys(&ctx, 5, r1 * 8, 9);
+                emit_lw_phys(&ctx, 6, r2 * 8, 9);
 
                 // slt t0, t1, t0  (R2 < R1)
                 uint32_t instr = (0b0000000u << 25) | (5u << 20) | (6u << 15) | (0b010u << 12) | (5u << 7) | 0b0110011u;
                 emit_instr(&ctx, instr);
 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                 break;
             }
 
@@ -7874,8 +7858,8 @@ divs_i64_general_case:
                 uint8_t r1 = *pc++;
                 uint8_t r2 = *pc++;
 
-                emit_lw_phys(&ctx, 5, r1 * 8, 18);
-                emit_lw_phys(&ctx, 6, r2 * 8, 18);
+                emit_lw_phys(&ctx, 5, r1 * 8, 9);
+                emit_lw_phys(&ctx, 6, r2 * 8, 9);
 
                 // R1 <= R2  <==>  !(R2 < R1)
                 // slt t0, t1, t0 (R2 < R1)
@@ -7885,8 +7869,8 @@ divs_i64_general_case:
                 uint32_t xori_instr = (1u << 20) | (5u << 15) | (0b100u << 12) | (5u << 7) | 0b0010011u;
                 emit_instr(&ctx, xori_instr);
 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                 break;
             }
 
@@ -7895,8 +7879,8 @@ divs_i64_general_case:
                 uint8_t r1 = *pc++;
                 uint8_t r2 = *pc++;
 
-                emit_lw_phys(&ctx, 5, r1 * 8, 18);
-                emit_lw_phys(&ctx, 6, r2 * 8, 18);
+                emit_lw_phys(&ctx, 5, r1 * 8, 9);
+                emit_lw_phys(&ctx, 6, r2 * 8, 9);
 
                 // R1 >= R2  <==>  !(R1 < R2)
                 // slt t0, t0, t1 (R1 < R2)
@@ -7906,8 +7890,8 @@ divs_i64_general_case:
                 uint32_t xori_instr = (1u << 20) | (5u << 15) | (0b100u << 12) | (5u << 7) | 0b0010011u;
                 emit_instr(&ctx, xori_instr);
 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                 break;
             }
 
@@ -7916,15 +7900,15 @@ divs_i64_general_case:
                 uint8_t r1 = *pc++;
                 uint8_t r2 = *pc++;
 
-                emit_lw_phys(&ctx, 5, r1 * 8, 18);
-                emit_lw_phys(&ctx, 6, r2 * 8, 18);
+                emit_lw_phys(&ctx, 5, r1 * 8, 9);
+                emit_lw_phys(&ctx, 6, r2 * 8, 9);
 
                 // sltu t0, t0, t1
                 uint32_t instr = (0b0000000u << 25) | (6u << 20) | (5u << 15) | (0b011u << 12) | (5u << 7) | 0b0110011u;
                 emit_instr(&ctx, instr);
 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                 break;
             }
 
@@ -7933,16 +7917,16 @@ divs_i64_general_case:
                 uint8_t r1 = *pc++;
                 uint8_t r2 = *pc++;
 
-                emit_lw_phys(&ctx, 5, r1 * 8, 18);
-                emit_lw_phys(&ctx, 6, r2 * 8, 18);
+                emit_lw_phys(&ctx, 5, r1 * 8, 9);
+                emit_lw_phys(&ctx, 6, r2 * 8, 9);
 
                 // R1 > R2  <==>  R2 < R1 (unsigned)
                 // sltu t0, t1, t0
                 uint32_t instr = (0b0000000u << 25) | (5u << 20) | (6u << 15) | (0b011u << 12) | (5u << 7) | 0b0110011u;
                 emit_instr(&ctx, instr);
 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                 break;
             }
 
@@ -7951,8 +7935,8 @@ divs_i64_general_case:
                uint8_t r1 = *pc++;
                uint8_t r2 = *pc++;
 
-               emit_lw_phys(&ctx, 5, r1 * 8, 18);
-               emit_lw_phys(&ctx, 6, r2 * 8, 18);
+               emit_lw_phys(&ctx, 5, r1 * 8, 9);
+               emit_lw_phys(&ctx, 6, r2 * 8, 9);
 
                // R1 <= R2  <==>  !(R2 < R1)
                // sltu t0, t1, t0  (R2 < R1)
@@ -7962,8 +7946,8 @@ divs_i64_general_case:
                uint32_t xori_instr = (1u << 20) | (5u << 15) | (0b100u << 12) | (5u << 7) | 0b0010011u;
                emit_instr(&ctx, xori_instr);
 
-               emit_sw_phys(&ctx, 5, rd * 8, 18);
-               emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+               emit_sw_phys(&ctx, 5, rd * 8, 9);
+               emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                break;
            }
 
@@ -7972,8 +7956,8 @@ divs_i64_general_case:
                uint8_t r1 = *pc++;
                uint8_t r2 = *pc++;
 
-               emit_lw_phys(&ctx, 5, r1 * 8, 18);
-               emit_lw_phys(&ctx, 6, r2 * 8, 18);
+               emit_lw_phys(&ctx, 5, r1 * 8, 9);
+               emit_lw_phys(&ctx, 6, r2 * 8, 9);
 
                // R1 >= R2  <==>  !(R1 < R2)
                // sltu t0, t0, t1  (R1 < R2)
@@ -7983,8 +7967,8 @@ divs_i64_general_case:
                uint32_t xori_instr = (1u << 20) | (5u << 15) | (0b100u << 12) | (5u << 7) | 0b0010011u;
                emit_instr(&ctx, xori_instr);
 
-               emit_sw_phys(&ctx, 5, rd * 8, 18);
-               emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+               emit_sw_phys(&ctx, 5, rd * 8, 9);
+               emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                break;
            }
             
@@ -7996,13 +7980,13 @@ divs_i64_general_case:
                 // IMPORTANT: don't clobber s0 (x8). Use temporaries only.
 
                 // lo diff -> t2
-                emit_lw_phys(&ctx, 5, r1 * 8, 18);      // t0 = R1_lo
-                emit_lw_phys(&ctx, 6, r2 * 8, 18);      // t1 = R2_lo
+                emit_lw_phys(&ctx, 5, r1 * 8, 9);      // t0 = R1_lo
+                emit_lw_phys(&ctx, 6, r2 * 8, 9);      // t1 = R2_lo
                 emit_sub_phys(&ctx, 7, 5, 6);           // t2 = lo_diff
 
                 // hi diff -> t3 (x28)
-                emit_lw_phys(&ctx, 5, r1 * 8 + 4, 18);  // t0 = R1_hi
-                emit_lw_phys(&ctx, 6, r2 * 8 + 4, 18);  // t1 = R2_hi
+                emit_lw_phys(&ctx, 5, r1 * 8 + 4, 9);  // t0 = R1_hi
+                emit_lw_phys(&ctx, 6, r2 * 8 + 4, 9);  // t1 = R2_hi
                 emit_sub_phys(&ctx, 28, 5, 6);          // t3 = hi_diff
 
                 // or t2, t2, t3
@@ -8013,8 +7997,8 @@ divs_i64_general_case:
                 uint32_t sltiu_instr = (1 << 20) | (7 << 15) | (0b011 << 12) | (5 << 7) | 0b0010011;
                 emit_instr(&ctx, sltiu_instr);
 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                 break;
             }
             
@@ -8026,13 +8010,13 @@ divs_i64_general_case:
                 // IMPORTANT: don't clobber s0 (x8). Use temporaries only.
 
                 // lo diff -> t2
-                emit_lw_phys(&ctx, 5, r1 * 8, 18);
-                emit_lw_phys(&ctx, 6, r2 * 8, 18);
+                emit_lw_phys(&ctx, 5, r1 * 8, 9);
+                emit_lw_phys(&ctx, 6, r2 * 8, 9);
                 emit_sub_phys(&ctx, 7, 5, 6);
 
                 // hi diff -> t3 (x28)
-                emit_lw_phys(&ctx, 5, r1 * 8 + 4, 18);
-                emit_lw_phys(&ctx, 6, r2 * 8 + 4, 18);
+                emit_lw_phys(&ctx, 5, r1 * 8 + 4, 9);
+                emit_lw_phys(&ctx, 6, r2 * 8 + 4, 9);
                 emit_sub_phys(&ctx, 28, 5, 6);
 
                 // or t2, t2, t3
@@ -8043,8 +8027,8 @@ divs_i64_general_case:
                 uint32_t sltu_instr = (7 << 20) | (0 << 15) | (0b011 << 12) | (5 << 7) | 0b0110011;
                 emit_instr(&ctx, sltu_instr);
 
-                emit_sw_phys(&ctx, 5, rd * 8, 18);
-                emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 5, rd * 8, 9);
+                emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                 break;
             }
             
@@ -8057,13 +8041,13 @@ divs_i64_general_case:
                 uint8_t rfalse = *pc++;
                 
                 // Загружаем условие
-                emit_lw_phys(&ctx, 5, rcond * 8, 18);  // t0 = condition
+                emit_lw_phys(&ctx, 5, rcond * 8, 9);  // t0 = condition
                 
                 // Копируем полный 64-битный слот Value (корректно и для F64/I64, и для F32/PTR)
-                emit_lw_phys(&ctx, 6, rtrue * 8, 18);      // t1 = true_lo
-                emit_lw_phys(&ctx, 28, rtrue * 8 + 4, 18); // t3 = true_hi
-                emit_lw_phys(&ctx, 7, rfalse * 8, 18);     // t2 = false_lo
-                emit_lw_phys(&ctx, 29, rfalse * 8 + 4, 18);// t4 = false_hi
+                emit_lw_phys(&ctx, 6, rtrue * 8, 9);      // t1 = true_lo
+                emit_lw_phys(&ctx, 28, rtrue * 8 + 4, 9); // t3 = true_hi
+                emit_lw_phys(&ctx, 7, rfalse * 8, 9);     // t2 = false_lo
+                emit_lw_phys(&ctx, 29, rfalse * 8 + 4, 9);// t4 = false_hi
                 
                 // Если condition == 0, пропускаем выбор true
                 size_t br_skip = ctx.offset;
@@ -8073,8 +8057,8 @@ divs_i64_general_case:
                 uint32_t br_ins = encode_branch_instr(0b000, 5, 0, (int16_t)(ctx.offset - br_skip));
                 memcpy(ctx.buffer + br_skip, &br_ins, 4);
                 
-                emit_sw_phys(&ctx, 7, rd * 8, 18);
-                emit_sw_phys(&ctx, 29, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 7, rd * 8, 9);
+                emit_sw_phys(&ctx, 29, rd * 8 + 4, 9);
                 
                 break;
             }
@@ -8104,7 +8088,7 @@ divs_i64_general_case:
                         for (uint8_t v = 0; v <= max_reg_used; v++) {
                             uint8_t phys = FP_MAP_VREG(v);
                             if (phys != 0) {
-                                emit_sw_phys(&ctx, phys, v * 8, 18);
+                                emit_sw_phys(&ctx, phys, v * 8, 9);
                             }
                         }
                     } else {
@@ -8121,15 +8105,15 @@ divs_i64_general_case:
                             }
                             
                             // Сохраняем пару регистров (lo в offset+0, hi в offset+4)
-                            emit_sw_phys(&ctx, phys_lo, v * 8 + 0, 18);  // Младшие 32 бита
-                            emit_sw_phys(&ctx, phys_hi, v * 8 + 4, 18);  // Старшие 32 бита
+                            emit_sw_phys(&ctx, phys_lo, v * 8 + 0, 9);  // Младшие 32 бита
+                            emit_sw_phys(&ctx, phys_hi, v * 8 + 4, 9);  // Старшие 32 бита
                         }
                     }
                 }
 
                 // Загружаем возвращаемое значение (64-bit) из v_regs[0]
-                emit_lw_phys(&ctx, 10, 0, 18);      // a0 = v_regs[0] (младшие 32 бита)
-                emit_lw_phys(&ctx, 11, 4, 18);      // a1 = v_regs[0]+4 (старшие 32 бита)
+                emit_lw_phys(&ctx, 10, 0, 9);      // a0 = v_regs[0] (младшие 32 бита)
+                emit_lw_phys(&ctx, 11, 4, 9);      // a1 = v_regs[0]+4 (старшие 32 бита)
                 
                 // Restore saved regs using the SAME layout/order as prologue (offset walks down)
                 int restore_offset = total_frame_size;
@@ -8184,31 +8168,31 @@ divs_i64_general_case:
             // ===== I64 Signed/Unsigned Comparisons & FP Comparisons & SELECT =====
             case 0xCC: case 0xCD: case 0xCE: case 0xCF: { // CMP.I64 signed
                 uint8_t rd = *pc++; uint8_t r1 = *pc++; uint8_t r2 = *pc++;
-                emit_lw_phys(&ctx, 10, r1 * 8, 18); emit_lw_phys(&ctx, 11, r1 * 8 + 4, 18);
-                emit_lw_phys(&ctx, 12, r2 * 8, 18); emit_lw_phys(&ctx, 13, r2 * 8 + 4, 18);
+                emit_lw_phys(&ctx, 10, r1 * 8, 9); emit_lw_phys(&ctx, 11, r1 * 8 + 4, 9);
+                emit_lw_phys(&ctx, 12, r2 * 8, 9); emit_lw_phys(&ctx, 13, r2 * 8 + 4, 9);
                 uintptr_t helper = (opcode == 0xCC) ? (uintptr_t)&jit_helper_cmp_lts_i64 :
                                    (opcode == 0xCD) ? (uintptr_t)&jit_helper_cmp_gt_i64 :
                                    (opcode == 0xCE) ? (uintptr_t)&jit_helper_cmp_le_i64 :
                                                       (uintptr_t)&jit_helper_cmp_ge_i64;
                 emit_call_helper(&ctx, helper);
-                emit_sw_phys(&ctx, 10, rd * 8, 18); emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9); emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                 break;
             }
             case 0xD0: case 0xD1: case 0xD2: case 0xD3: { // CMP.I64 unsigned
                 uint8_t rd = *pc++; uint8_t r1 = *pc++; uint8_t r2 = *pc++;
-                emit_lw_phys(&ctx, 10, r1 * 8, 18); emit_lw_phys(&ctx, 11, r1 * 8 + 4, 18);
-                emit_lw_phys(&ctx, 12, r2 * 8, 18); emit_lw_phys(&ctx, 13, r2 * 8 + 4, 18);
+                emit_lw_phys(&ctx, 10, r1 * 8, 9); emit_lw_phys(&ctx, 11, r1 * 8 + 4, 9);
+                emit_lw_phys(&ctx, 12, r2 * 8, 9); emit_lw_phys(&ctx, 13, r2 * 8 + 4, 9);
                 uintptr_t helper = (opcode == 0xD0) ? (uintptr_t)&jit_helper_cmp_ltu_i64 :
                                    (opcode == 0xD1) ? (uintptr_t)&jit_helper_cmp_gtu_i64 :
                                    (opcode == 0xD2) ? (uintptr_t)&jit_helper_cmp_leu_i64 :
                                                       (uintptr_t)&jit_helper_cmp_geu_i64;
                 emit_call_helper(&ctx, helper);
-                emit_sw_phys(&ctx, 10, rd * 8, 18); emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9); emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                 break;
             }
             case 0xE0: case 0xE1: case 0xE2: case 0xE3: case 0xE4: case 0xE5: { // CMP.F32
                 uint8_t rd = *pc++; uint8_t r1 = *pc++; uint8_t r2 = *pc++;
-                emit_lw_phys(&ctx, 10, r1 * 8, 18); emit_lw_phys(&ctx, 11, r2 * 8, 18);
+                emit_lw_phys(&ctx, 10, r1 * 8, 9); emit_lw_phys(&ctx, 11, r2 * 8, 9);
                 uintptr_t helper = (opcode == 0xE0) ? (uintptr_t)&jit_helper_cmp_eq_f32 :
                                    (opcode == 0xE1) ? (uintptr_t)&jit_helper_cmp_ne_f32 :
                                    (opcode == 0xE2) ? (uintptr_t)&jit_helper_cmp_lt_f32 :
@@ -8216,13 +8200,13 @@ divs_i64_general_case:
                                    (opcode == 0xE4) ? (uintptr_t)&jit_helper_cmp_le_f32 :
                                                       (uintptr_t)&jit_helper_cmp_ge_f32;
                 emit_call_helper(&ctx, helper);
-                emit_sw_phys(&ctx, 10, rd * 8, 18); emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9); emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                 break;
             }
             case 0xE6: case 0xE7: case 0xE8: case 0xE9: case 0xEA: case 0xEB: { // CMP.F64
                 uint8_t rd = *pc++; uint8_t r1 = *pc++; uint8_t r2 = *pc++;
-                emit_lw_phys(&ctx, 10, r1 * 8, 18); emit_lw_phys(&ctx, 11, r1 * 8 + 4, 18);
-                emit_lw_phys(&ctx, 12, r2 * 8, 18); emit_lw_phys(&ctx, 13, r2 * 8 + 4, 18);
+                emit_lw_phys(&ctx, 10, r1 * 8, 9); emit_lw_phys(&ctx, 11, r1 * 8 + 4, 9);
+                emit_lw_phys(&ctx, 12, r2 * 8, 9); emit_lw_phys(&ctx, 13, r2 * 8 + 4, 9);
                 uintptr_t helper = (opcode == 0xE6) ? (uintptr_t)&jit_helper_cmp_eq_f64 :
                                    (opcode == 0xE7) ? (uintptr_t)&jit_helper_cmp_ne_f64 :
                                    (opcode == 0xE8) ? (uintptr_t)&jit_helper_cmp_lt_f64 :
@@ -8230,31 +8214,31 @@ divs_i64_general_case:
                                    (opcode == 0xEA) ? (uintptr_t)&jit_helper_cmp_le_f64 :
                                                       (uintptr_t)&jit_helper_cmp_ge_f64;
                 emit_call_helper(&ctx, helper);
-                emit_sw_phys(&ctx, 10, rd * 8, 18); emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 10, rd * 8, 9); emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                 break;
             }
             case 0xBE: { // SELECT.I32
                 uint8_t rd = *pc++; uint8_t rcond = *pc++; uint8_t rtrue = *pc++; uint8_t rfalse = *pc++;
-                emit_lw_phys(&ctx, 5, rcond * 8, 18); emit_lw_phys(&ctx, 6, rtrue * 8, 18); emit_lw_phys(&ctx, 7, rfalse * 8, 18);
+                emit_lw_phys(&ctx, 5, rcond * 8, 9); emit_lw_phys(&ctx, 6, rtrue * 8, 9); emit_lw_phys(&ctx, 7, rfalse * 8, 9);
                 size_t br_skip = ctx.offset;
                 emit_beq_phys(&ctx, 5, 0, 0);
                 emit_addi_phys(&ctx, 7, 6, 0);
                 uint32_t br_ins = encode_branch_instr(0b000, 5, 0, (int16_t)(ctx.offset - br_skip));
                 memcpy(ctx.buffer + br_skip, &br_ins, 4);
-                emit_sw_phys(&ctx, 7, rd * 8, 18); emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 7, rd * 8, 9); emit_sw_phys(&ctx, 0, rd * 8 + 4, 9);
                 break;
             }
             case 0xBF: { // SELECT.I64
                 uint8_t rd = *pc++; uint8_t rcond = *pc++; uint8_t rtrue = *pc++; uint8_t rfalse = *pc++;
-                emit_lw_phys(&ctx, 5, rcond * 8, 18);
-                emit_lw_phys(&ctx, 6, rtrue * 8, 18); emit_lw_phys(&ctx, 28, rtrue * 8 + 4, 18);
-                emit_lw_phys(&ctx, 7, rfalse * 8, 18); emit_lw_phys(&ctx, 29, rfalse * 8 + 4, 18);
+                emit_lw_phys(&ctx, 5, rcond * 8, 9);
+                emit_lw_phys(&ctx, 6, rtrue * 8, 9); emit_lw_phys(&ctx, 28, rtrue * 8 + 4, 9);
+                emit_lw_phys(&ctx, 7, rfalse * 8, 9); emit_lw_phys(&ctx, 29, rfalse * 8 + 4, 9);
                 size_t br_skip = ctx.offset;
                 emit_beq_phys(&ctx, 5, 0, 0);
                 emit_addi_phys(&ctx, 7, 6, 0); emit_addi_phys(&ctx, 29, 28, 0);
                 uint32_t br_ins = encode_branch_instr(0b000, 5, 0, (int16_t)(ctx.offset - br_skip));
                 memcpy(ctx.buffer + br_skip, &br_ins, 4);
-                emit_sw_phys(&ctx, 7, rd * 8, 18); emit_sw_phys(&ctx, 29, rd * 8 + 4, 18);
+                emit_sw_phys(&ctx, 7, rd * 8, 9); emit_sw_phys(&ctx, 29, rd * 8 + 4, 9);
                 break;
             }
             
