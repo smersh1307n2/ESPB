@@ -102,3 +102,5 @@ jobs:
             .work/paired/manifest.json
             .work/paired/opcode_audit.json
           if-no-files-found: error
+
+# Re-run LLVM_ESPB translation against the current ESPB_WORK sources.
