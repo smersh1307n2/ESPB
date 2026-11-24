@@ -44,12 +44,20 @@ typedef struct EspbCallbackInfo {
     struct EspbCallbackInfo *next;    // Для связанного списка
 } EspbCallbackInfo;
 
+// ExecutionContext, принадлежащий конкретному вызову callback.
+// Один closure может одновременно исполняться несколькими FreeRTOS task.
+typedef struct EspbCallbackExecution {
+    ExecutionContext *exec_ctx;
+    struct EspbCallbackExecution *next;
+} EspbCallbackExecution;
+
 // Структура для контекста callback замыкания
 typedef struct EspbCallbackClosure {
     ffi_closure *closure_ptr;         // Указатель на FFI замыкание
     void *executable_code;            // Исполняемый код замыкания
     EspbCallbackInfo *callback_info;  // Информация о callback
     EspbInstance *instance;           // Экземпляр ESPB модуля
+    EspbCallbackExecution *active_exec_contexts; // Контексты незавершенных callback-вызовов
     struct EspbCallbackClosure *next; // Для связанного списка
 } EspbCallbackClosure;
 
