@@ -615,8 +615,9 @@ typedef struct RuntimeFrame {
     // -----------------------------------------------------------
 
     // Система отслеживания ALLOCA выделений
-    void *alloca_ptrs[32];     // Массив ALLOCA указателей (увеличен с 16)
+    void **alloca_ptrs;        // Динамический список ALLOCA указателей
     uint8_t alloca_count;      // Количество выделений
+    uint8_t alloca_capacity;   // Вместимость списка ALLOCA
     bool has_custom_aligned;   // Флаг custom alignment
 } RuntimeFrame;
 
@@ -625,6 +626,7 @@ typedef struct RuntimeFrame {
 typedef struct ExecutionContext {
     RuntimeFrame* call_stack;
     int call_stack_top;
+    int call_stack_capacity;
 
     // shadow_stack теперь используется как единый виртуальный стек
     uint8_t* shadow_stack_buffer;
