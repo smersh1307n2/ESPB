@@ -1483,26 +1483,24 @@ op_unhandled:
                         return ESPB_ERR_STACK_OVERFLOW; // Не должно произойти, так как стек вызовов не растет
                     }
 
-                    // 4. Изолируем аргументы во временном буфере
-                    Value temp_args[FFI_ARGS_MAX];
+                    // Ограничиваем число аргументов размером обоих кадров.
+                    // Аргументы копируются напрямую после выделения кадра вызываемой функции.
                     uint32_t num_args_to_copy = MIN(callee_sig->num_params, FFI_ARGS_MAX);
                     uint32_t copied_args = num_args_to_copy;
                     if (copied_args > num_virtual_regs) copied_args = num_virtual_regs;
                     if (copied_args > callee_body->header.num_virtual_regs) {
                         copied_args = callee_body->header.num_virtual_regs;
                     }
-                    for (uint32_t i = 0; i < copied_args; ++i) {
-                        temp_args[i] = locals[i];
-                    }
 
                     // 5. Выделяем новый кадр
                     exec_ctx->fp = exec_ctx->sp + saved_frame_size; // Новый кадр начинается ПОСЛЕ сохраненного
                     exec_ctx->sp = exec_ctx->fp + callee_frame_size;   // Вершина стека сдвигается на размер нового кадра
 
-                    // 6. Копируем аргументы в новый кадр
+                    // 6. Копируем аргументы напрямую из сохраненного кадра caller.
+                    // Caller и callee занимают непересекающиеся области shadow stack.
                     Value* callee_locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->fp);
-                    for (uint32_t i = 0; i < copied_args; ++i) {
-                        callee_locals[i] = temp_args[i];
+                    if (copied_args > 0) {
+                        memcpy(callee_locals, locals, (size_t)copied_args * sizeof(Value));
                     }
                     if (copied_args < callee_body->header.num_virtual_regs) {
                         memset(callee_locals + copied_args, 0,
@@ -1619,30 +1617,27 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
             return ESPB_ERR_STACK_OVERFLOW;
         }
         
-        Value temp_args[FFI_ARGS_MAX];
         uint32_t num_args_to_copy = MIN(callee_sig->num_params, FFI_ARGS_MAX);
-        for (uint32_t i = 0; i < num_args_to_copy; i++) {
-            // Аргументы расположены в R0, R1, R2, ...
-            // Если func_ptr_reg находится среди аргументов, пропускаем его (сдвигаем индексы)
-            uint32_t src_reg = i;
-            if (func_ptr_reg <= src_reg) {
-                src_reg++; // Skip func_ptr_reg
-            }
-            if (src_reg < num_virtual_regs) {
-                temp_args[i] = locals[src_reg];
-            } else {
-                // Если не хватает аргументов, заполняем нулями (или можно вернуть ошибку)
-                memset(&temp_args[i], 0, sizeof(Value));
-            }
-        }
+        uint32_t copied_args = MIN(num_args_to_copy, callee_body->header.num_virtual_regs);
 
         exec_ctx->fp = exec_ctx->sp + saved_frame_size;
         exec_ctx->sp = exec_ctx->fp + callee_frame_size;
         
         Value* callee_locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->fp);
-        memset(callee_locals, 0, callee_frame_size);
-        for (uint32_t i = 0; i < num_args_to_copy; i++) {
-            if(i < callee_body->header.num_virtual_regs) callee_locals[i] = temp_args[i];
+        for (uint32_t i = 0; i < copied_args; ++i) {
+            uint32_t src_reg = i;
+            if (func_ptr_reg <= src_reg) {
+                ++src_reg; // Function pointer occupies one register.
+            }
+            if (src_reg < num_virtual_regs) {
+                callee_locals[i] = locals[src_reg];
+            } else {
+                callee_locals[i] = (Value){0};
+            }
+        }
+        if (copied_args < callee_body->header.num_virtual_regs) {
+            memset(callee_locals + copied_args, 0,
+                   (size_t)(callee_body->header.num_virtual_regs - copied_args) * sizeof(Value));
         }
         
         local_func_idx = callee_local_func_idx;
@@ -1945,23 +1940,24 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
 
                     size_t saved_frame_size = num_virtual_regs * sizeof(Value);
                     size_t callee_frame_size = callee_body->header.num_virtual_regs * sizeof(Value);
-                    Value temp_args[FFI_ARGS_MAX];
                     uint32_t num_args_to_copy = MIN(callee_sig->num_params, FFI_ARGS_MAX);
                     uint32_t copied_args = num_args_to_copy;
                     if (copied_args > num_virtual_regs) copied_args = num_virtual_regs;
                     if (copied_args > callee_body->header.num_virtual_regs) {
                         copied_args = callee_body->header.num_virtual_regs;
                     }
-                    for (uint32_t i = 0; i < copied_args; ++i) {
-                        temp_args[i] = locals[i];
-                    }
-                    
+
                     int return_pc = (int)(pc - instructions_ptr);
                     
                     if (is_leaf_function) {
                         // ✅ БЫСТРЫЙ ПУТЬ (для листовых функций)
                         if (__builtin_expect(exec_ctx->sp + callee_frame_size > exec_ctx->shadow_stack_capacity, 0)) {
-                            if (_espb_grow_shadow_stack(exec_ctx, callee_frame_size) < 0) return ESPB_ERR_OUT_OF_MEMORY;
+                            int stack_status = _espb_grow_shadow_stack(exec_ctx, callee_frame_size);
+                            if (stack_status < 0) return ESPB_ERR_OUT_OF_MEMORY;
+                            if (stack_status > 0) {
+                                // realloc moved the shadow stack; refresh caller locals.
+                                locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->fp);
+                            }
                         }
 
                         // Inline push_call_frame для leaf функций
@@ -2013,8 +2009,8 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                     // --- Общая логика для обоих путей ---
                     Value* callee_locals = (Value*)(exec_ctx->shadow_stack_buffer + exec_ctx->fp);
                     
-                    for (uint32_t i = 0; i < copied_args; ++i) {
-                        callee_locals[i] = temp_args[i];
+                    if (copied_args > 0) {
+                        memcpy(callee_locals, locals, (size_t)copied_args * sizeof(Value));
                     }
                     if (copied_args < callee_body->header.num_virtual_regs) {
                         memset(callee_locals + copied_args, 0,
