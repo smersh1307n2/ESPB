@@ -62,6 +62,21 @@ static ffi_type* espb_type_to_ffi_type_internal(EspbValueType es_type) {
     }
 }
 
+/* Free callback execution contexts abandoned when a native task is deleted
+ * while its ESPB callback is still running. Call only after the native source
+ * has been stopped/quiesced for this closure. */
+static void espb_free_closure_execution_contexts(EspbCallbackClosure *closure) {
+    if (!closure) return;
+    EspbCallbackExecution *entry = closure->active_exec_contexts;
+    closure->active_exec_contexts = NULL;
+    while (entry) {
+        EspbCallbackExecution *next = entry->next;
+        if (entry->exec_ctx) free_execution_context(entry->exec_ctx);
+        free(entry);
+        entry = next;
+    }
+}
+
 EspbResult espb_callback_system_init(void) {
     if (g_callback_system.initialized) {
         return ESPB_OK; // Уже инициализирована
@@ -114,6 +129,7 @@ void espb_callback_system_deinit(void) {
                 ffi_closure_free(current->closure_ptr);
             }
             
+            espb_free_closure_execution_contexts(current);
             if (current->callback_info) {
                 free(current->callback_info);
             }
@@ -216,6 +232,28 @@ void espb_universal_callback_handler(ffi_cif *cif, void *ret_value, void **ffi_a
         ESP_LOGE(TAG, "Failed to create execution context for callback");
         return;
     }
+
+    EspbCallbackExecution *callback_execution =
+        (EspbCallbackExecution*)calloc(1, sizeof(EspbCallbackExecution));
+    if (!callback_execution) {
+        free_execution_context(callback_exec_ctx);
+        ESP_LOGE(TAG, "Failed to allocate callback execution tracking node");
+        return;
+    }
+    callback_execution->exec_ctx = callback_exec_ctx;
+
+    /* Keep each invocation separate: the same closure can be entered by
+     * multiple tasks concurrently. Module cleanup reclaims contexts left
+     * behind by a task deleted before this handler can return. */
+    if (xSemaphoreTake(g_callback_system.mutex, portMAX_DELAY) != pdTRUE) {
+        free_execution_context(callback_exec_ctx);
+        free(callback_execution);
+        ESP_LOGE(TAG, "Could not register callback execution context");
+        return;
+    }
+    callback_execution->next = closure->active_exec_contexts;
+    closure->active_exec_contexts = callback_execution;
+    xSemaphoreGive(g_callback_system.mutex);
 
     // Подготавливаем аргументы для ESPB функции
     Value espb_args[ESPB_CALLBACK_MAX_PARAMS];
@@ -350,8 +388,15 @@ void espb_universal_callback_handler(ffi_cif *cif, void *ret_value, void **ffi_a
 
     // Принудительный вывод больше не нужен - реальная ESPB функция должна работать
     
-    // УНИЧТОЖИТЬ ЛОКАЛЬНЫЙ КОНТЕКСТ
+    // Remove this invocation from the closure's per-call list before freeing.
+    if (xSemaphoreTake(g_callback_system.mutex, portMAX_DELAY) == pdTRUE) {
+        EspbCallbackExecution **link = &closure->active_exec_contexts;
+        while (*link && *link != callback_execution) link = &(*link)->next;
+        if (*link == callback_execution) *link = callback_execution->next;
+        xSemaphoreGive(g_callback_system.mutex);
+    }
     free_execution_context(callback_exec_ctx);
+    free(callback_execution);
     
    ESP_LOGD(TAG, "=== TIMER CALLBACK COMPLETED ===");
 }
@@ -608,6 +653,10 @@ EspbResult espb_free_callback_closure(void *closure_ptr) {
         return ESPB_ERR_INVALID_OPERAND;
     }
 
+    // Native callback source must already be stopped; reclaim any invocation
+    // contexts left by tasks deleted while executing this closure.
+    espb_free_closure_execution_contexts(found_closure);
+
     // Освобождаем ресурсы
     if (found_closure->closure_ptr) {
        ESP_LOGD(TAG, "Freeing closure: closure=%p, exec=%p", 
@@ -666,6 +715,7 @@ void espb_free_callback_closures_for_instance(EspbInstance *instance) {
     /* Every detached node is now exclusively owned by this cleanup call. */
     while (owned) {
         EspbCallbackClosure *next = owned->next;
+        espb_free_closure_execution_contexts(owned);
         if (owned->closure_ptr) {
             ffi_closure_free(owned->closure_ptr);
             owned->closure_ptr = NULL;
