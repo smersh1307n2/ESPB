@@ -3499,12 +3499,16 @@ EspbResult espb_jit_compile_function_xtensa_inline(
         // NOT.I32 has two operands; the other cached ALU ops have three.
         // Locate the following opcode at the correct instruction boundary.
         const size_t vcache_operand_bytes = (op == 0x2E) ? 2u : 3u;
-        const bool vcache_next = vcacheable &&
-            ((size_t)(end - pc) >= vcache_operand_bytes + 1u) &&
-            (((pc[vcache_operand_bytes] >= 0x20 && pc[vcache_operand_bytes] <= 0x22) ||
-              (pc[vcache_operand_bytes] >= 0x28 && pc[vcache_operand_bytes] <= 0x2E) ||
-              (pc[vcache_operand_bytes] >= 0x40 && pc[vcache_operand_bytes] <= 0x41)) &&
-            !(vcache_block_map[last_off + 1u + vcache_operand_bytes] & 0x01u);
+        bool vcache_next = false;
+        if (vcacheable && (size_t)(end - pc) >= vcache_operand_bytes + 1u) {
+            const uint8_t next_op = pc[vcache_operand_bytes];
+            const bool next_vcacheable =
+                (next_op >= 0x20 && next_op <= 0x22) ||
+                (next_op >= 0x28 && next_op <= 0x2E) ||
+                (next_op >= 0x40 && next_op <= 0x41);
+            vcache_next = next_vcacheable &&
+                !(vcache_block_map[last_off + 1u + vcache_operand_bytes] & 0x01u);
+        }
         if (!vcacheable) XTENSA_VCACHE_FLUSH();
         const uint32_t op_loads_before = ctx.emitted_loads;
         const uint32_t op_stores_before = ctx.emitted_stores;
