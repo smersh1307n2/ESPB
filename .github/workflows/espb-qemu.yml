@@ -212,7 +212,7 @@ jobs:
               cp "$jit_module" "modules/opcode_groups/$stem.espb"
               count=$((count + 1))
             done
-            test "$count" -eq 11
+            test "$count" -eq 10
             echo "ESPB_OPCODE_GROUPS_SOURCE_RUN=seed"
             echo "ESPB_OPCODE_GROUPS_STAGED=$count"
           else
@@ -300,7 +300,7 @@ jobs:
               cp "$jit_module" "modules/opcode_groups/$stem.espb"
               count=$((count + 1))
             done
-            test "$count" -eq 10
+            test "$count" -eq 11
             echo "ESPB_OPCODE_GROUPS_SOURCE_RUN=${{ steps.paired_run.outputs.run_id }}"
             echo "ESPB_OPCODE_GROUPS_STAGED=$count"
           fi
