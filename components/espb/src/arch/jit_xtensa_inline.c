@@ -3460,9 +3460,14 @@ EspbResult espb_jit_compile_function_xtensa_inline(
         // Flush before recording native-address mapping: every branch target enters
         // with coherent v_regs. Helper/division opcodes never see a dirty cache.
         const bool vcacheable = vcache_function_safe &&
-            ((op >= 0x20 && op <= 0x22) || (op >= 0x28 && op <= 0x2D));
-        const bool vcache_next = vcacheable && ((size_t)(end - pc) >= 4) &&
-            (((pc[3] >= 0x20 && pc[3] <= 0x22) || (pc[3] >= 0x28 && pc[3] <= 0x2D)));
+            ((op >= 0x20 && op <= 0x22) || (op >= 0x28 && op <= 0x2E));
+        // NOT.I32 has two operands; the other cached ALU ops have three.
+        // Locate the following opcode at the correct instruction boundary.
+        const size_t vcache_operand_bytes = (op == 0x2E) ? 2u : 3u;
+        const bool vcache_next = vcacheable &&
+            ((size_t)(end - pc) >= vcache_operand_bytes + 1u) &&
+            (((pc[vcache_operand_bytes] >= 0x20 && pc[vcache_operand_bytes] <= 0x22) ||
+              (pc[vcache_operand_bytes] >= 0x28 && pc[vcache_operand_bytes] <= 0x2E)));
         if (!vcacheable) XTENSA_VCACHE_FLUSH();
         const uint32_t op_loads_before = ctx.emitted_loads;
         const uint32_t op_stores_before = ctx.emitted_stores;
@@ -4172,11 +4177,9 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
                 
-                // The opcode loop flushes the vreg cache before NOT (NOT is a
-                // coherence barrier). Keep this operation out of the cache as well:
-                // write the result directly so a later cached ALU read reloads it
-                // from the canonical Value slot.
-                emit_l32i(&ctx, 8, 6, (uint16_t)(rs * 8));
+                // NOT.I32 participates in the same branch-free I32 cache
+                // as the binary ALU ops; load the source from cache when present.
+                XTENSA_VCACHE_LOAD(rs, 8);
                 
                 // Xtensa doesn't have a native NOT instruction.
                 // Implement NOT as XOR with -1 (all bits set):
@@ -4187,9 +4190,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_u8(&ctx, 0x88);
                 emit_u8(&ctx, 0x30);
                 
-                // Publish directly to v_regs; the pre-op cache flush guarantees
-                // there is no dirty cached copy of rd to overwrite this value.
-                emit_s32i(&ctx, 8, 6, (uint16_t)(rd * 8));
+                XTENSA_VCACHE_FINISH(rd, 8, vcache_next);
                 break;
             }
 
