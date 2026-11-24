@@ -389,14 +389,24 @@ void espb_universal_callback_handler(ffi_cif *cif, void *ret_value, void **ffi_a
     // Принудительный вывод больше не нужен - реальная ESPB функция должна работать
     
     // Remove this invocation from the closure's per-call list before freeing.
+    bool callback_execution_unlinked = false;
     if (xSemaphoreTake(g_callback_system.mutex, portMAX_DELAY) == pdTRUE) {
         EspbCallbackExecution **link = &closure->active_exec_contexts;
         while (*link && *link != callback_execution) link = &(*link)->next;
-        if (*link == callback_execution) *link = callback_execution->next;
+        if (*link == callback_execution) {
+            *link = callback_execution->next;
+            callback_execution_unlinked = true;
+        }
         xSemaphoreGive(g_callback_system.mutex);
     }
-    free_execution_context(callback_exec_ctx);
-    free(callback_execution);
+    if (callback_execution_unlinked) {
+        free_execution_context(callback_exec_ctx);
+        free(callback_execution);
+    } else {
+        /* Leave it registered for instance cleanup rather than risk a dangling
+         * list node/double free if synchronization failed unexpectedly. */
+        ESP_LOGE(TAG, "Could not unlink callback execution context; deferred to closure cleanup");
+    }
     
    ESP_LOGD(TAG, "=== TIMER CALLBACK COMPLETED ===");
 }
