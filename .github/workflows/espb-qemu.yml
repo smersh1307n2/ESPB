@@ -443,9 +443,9 @@ jobs:
             exit 1
           fi
 
-          fibonacci_pass_count="$(grep -F -c 'Result is CORRECT.' qemu.log || true)"
+          fibonacci_pass_count="$(grep -F -c '[ESPB_GROUP] fibonacci=PASS' qemu.log || true)"
           if [ "$fibonacci_pass_count" -lt 2 ]; then
-            echo "Expected interpreter and JIT Fibonacci checks (at least 2), found $fibonacci_pass_count"
+            echo "Expected interpreter and JIT Fibonacci semantic PASS (at least 2), found $fibonacci_pass_count"
             exit 1
           fi
 
