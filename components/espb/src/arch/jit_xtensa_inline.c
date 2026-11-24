@@ -3495,7 +3495,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
         // Flush before recording native-address mapping: every branch target enters
         // with coherent v_regs. Helper/division opcodes never see a dirty cache.
         const bool vcacheable = vcache_function_safe && !(vcache_block_map[last_off] & 0x01u) &&
-            ((op >= 0x20 && op <= 0x22) || (op >= 0x28 && op <= 0x2E) || (op >= 0x40 && op <= 0x41));
+            ((op >= 0x20 && op <= 0x22) || (op >= 0x28 && op <= 0x2E) || (op >= 0x40 && op <= 0x42));
         // NOT.I32 has two operands; the other cached ALU ops have three.
         // Locate the following opcode at the correct instruction boundary.
         const size_t vcache_operand_bytes = (op == 0x2E) ? 2u : 3u;
@@ -3505,7 +3505,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
             const bool next_vcacheable =
                 (next_op >= 0x20 && next_op <= 0x22) ||
                 (next_op >= 0x28 && next_op <= 0x2E) ||
-                (next_op >= 0x40 && next_op <= 0x41);
+                (next_op >= 0x40 && next_op <= 0x42);
             vcache_next = next_vcacheable &&
                 !(vcache_block_map[last_off + 1u + vcache_operand_bytes] & 0x01u);
         }
@@ -5446,13 +5446,10 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     JIT_LOGW(TAG, "[wr0] bc_off=%u op=0x42 MUL.I32.IMM8 r1=%u imm=%d", (unsigned)last_off, (unsigned)r1, (int)imm8);
                 }
 
-                uint16_t r1_off = (uint16_t)(r1 * 8);
-                uint16_t rd_off = (uint16_t)(rd * 8);
+                XTENSA_VCACHE_LOAD(r1, 8);
 
-                // a8 = v_regs[r1].low32
-                emit_l32i(&ctx, 8, 6, r1_off);
-
-                // a9 = imm32 (sign-extended from imm8)
+                // a9 = sign-extended immediate; keep the multiply result in the
+                // block-local vreg cache instead of storing/reloading v_regs.
                 emit_movi(&ctx, 9, (int16_t)imm8);
 
                 // mull a8, a8, a9
@@ -5460,11 +5457,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_u8(&ctx, 0x88);  // (as << 4) | ar, as=a8, ar=a8
                 emit_u8(&ctx, 0x82);  // (op2 << 4) | 2 (mull)
 
-                // store result low32
-                emit_s32i(&ctx, 8, 6, rd_off);
-                // clear high32
-                emit_movi_n(&ctx, 8, 0);
-                emit_s32i(&ctx, 8, 6, (uint16_t)(rd_off + 4));
+                XTENSA_VCACHE_FINISH(rd, 8, vcache_next);
                 break;
             }
 
