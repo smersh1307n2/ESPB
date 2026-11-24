@@ -3460,14 +3460,15 @@ EspbResult espb_jit_compile_function_xtensa_inline(
         // Flush before recording native-address mapping: every branch target enters
         // with coherent v_regs. Helper/division opcodes never see a dirty cache.
         const bool vcacheable = vcache_function_safe &&
-            ((op >= 0x20 && op <= 0x22) || (op >= 0x28 && op <= 0x2E));
+            ((op >= 0x20 && op <= 0x22) || (op >= 0x28 && op <= 0x2E) || (op >= 0x40 && op <= 0x41));
         // NOT.I32 has two operands; the other cached ALU ops have three.
         // Locate the following opcode at the correct instruction boundary.
         const size_t vcache_operand_bytes = (op == 0x2E) ? 2u : 3u;
         const bool vcache_next = vcacheable &&
             ((size_t)(end - pc) >= vcache_operand_bytes + 1u) &&
             (((pc[vcache_operand_bytes] >= 0x20 && pc[vcache_operand_bytes] <= 0x22) ||
-              (pc[vcache_operand_bytes] >= 0x28 && pc[vcache_operand_bytes] <= 0x2E)));
+              (pc[vcache_operand_bytes] >= 0x28 && pc[vcache_operand_bytes] <= 0x2E) ||
+              (pc[vcache_operand_bytes] >= 0x40 && pc[vcache_operand_bytes] <= 0x41)));
         if (!vcacheable) XTENSA_VCACHE_FLUSH();
         const uint32_t op_loads_before = ctx.emitted_loads;
         const uint32_t op_stores_before = ctx.emitted_stores;
@@ -5377,24 +5378,11 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     JIT_LOGW(TAG, "[wr0] bc_off=%u op=0x40 ADD.I32.IMM8 r1=%u imm=%d", (unsigned)last_off, (unsigned)r1, (int)imm8);
                 }
 
-                uint16_t r1_off = (uint16_t)(r1 * 8);
-                uint16_t rd_off = (uint16_t)(rd * 8);
-
-                // a8 = v_regs[r1].low32
-                emit_l32i(&ctx, 8, 6, r1_off);
-
-                // a8 = a8 + imm8
+                XTENSA_VCACHE_LOAD(r1, 8);
                 emit_addi(&ctx, 8, 8, imm8);
-
-                // store result low32
-                emit_s32i(&ctx, 8, 6, rd_off);
-                // clear high32
-                emit_movi_n(&ctx, 8, 0);
-                emit_s32i(&ctx, 8, 6, (uint16_t)(rd_off + 4));
+                XTENSA_VCACHE_FINISH(rd, 8, vcache_next);
                 break;
-            }
-
-            case 0x41: { // SUB.I32.IMM8 Rd(u8), R1(u8), imm8(i8)
+            }            case 0x41: { // SUB.I32.IMM8 Rd(u8), R1(u8), imm8(i8)
                 if (pc + 3 > end) { ctx.error = true; break; }
                 uint8_t rd = *pc++;
                 uint8_t r1 = *pc++;
@@ -5404,24 +5392,11 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     JIT_LOGW(TAG, "[wr0] bc_off=%u op=0x41 SUB.I32.IMM8 r1=%u imm=%d", (unsigned)last_off, (unsigned)r1, (int)imm8);
                 }
 
-                uint16_t r1_off = (uint16_t)(r1 * 8);
-                uint16_t rd_off = (uint16_t)(rd * 8);
-
-                // a8 = v_regs[r1].low32
-                emit_l32i(&ctx, 8, 6, r1_off);
-
-                // a8 = a8 - imm8
+                XTENSA_VCACHE_LOAD(r1, 8);
                 emit_addi(&ctx, 8, 8, (int8_t)(-imm8));
-
-                // store result low32
-                emit_s32i(&ctx, 8, 6, rd_off);
-                // clear high32
-                emit_movi_n(&ctx, 8, 0);
-                emit_s32i(&ctx, 8, 6, (uint16_t)(rd_off + 4));
+                XTENSA_VCACHE_FINISH(rd, 8, vcache_next);
                 break;
-            }
-
-            case 0x42: { // MUL.I32.IMM8 Rd(u8), R1(u8), imm8(i8)
+            }            case 0x42: { // MUL.I32.IMM8 Rd(u8), R1(u8), imm8(i8)
                 if (pc + 3 > end) { ctx.error = true; break; }
                 uint8_t rd = *pc++;
                 uint8_t r1 = *pc++;
