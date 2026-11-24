@@ -33,6 +33,9 @@ JIT_HOT void app_main(int32_t arg, const char *text, void *user_data)
 
     const uint64_t result = fibonacci_iterative(FIBONACCI_N);
     const int ok = result == FIBONACCI_N85_EXPECTED;
-    /* Keep only the runner's semantic marker; avoid the extra 64-bit printf. */
-    printf("[ESPB_GROUP] fibonacci=%s\n", ok ? "PASS" : "FAIL");
+    printf("[ESPB_DETAIL] fibonacci n=%u actual=%llu expected=%llu\\n",
+           (unsigned)FIBONACCI_N,
+           (unsigned long long)result,
+           (unsigned long long)FIBONACCI_N85_EXPECTED);
+    printf("[ESPB_GROUP] fibonacci=%s\\n", ok ? "PASS" : "FAIL");
 }
