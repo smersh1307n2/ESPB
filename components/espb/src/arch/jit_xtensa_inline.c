@@ -2004,6 +2004,8 @@ static void emit_addi_a8_a1_16(XtensaJitContext* ctx) {
 
 // MOV.N aR, aS (narrow move, 2 bytes)
 static void emit_mov_n(XtensaJitContext* ctx, uint8_t ar, uint8_t as) {
+    // A move between the same physical register is redundant; omit it in JIT output.
+    if (ar == as) return;
     // Verified by objdump:
     //   mov.n a12,a11 => bytes CD 0B
     // Encoding: base 0x0D, reg fields packed.
