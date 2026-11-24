@@ -23,6 +23,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include "esp_system.h"
+#include "esp_heap_caps.h"
 
 // Включаем заголовочные файлы ESP-IDF для функций работы с памятью
 // Эти функции определены в ESP-IDF SDK
@@ -485,6 +486,10 @@ EspbResult espb_create_callback_closure(
              (unsigned long)global_func_idx, (unsigned long)local_func_idx, espb_sig_idx, 
              espb_sig->num_params, espb_sig->num_returns);
 
+    ESP_LOGI(TAG, "[CBMEM] stage=create_begin heap=%u exec=%u",
+             (unsigned)esp_get_free_heap_size(),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_EXEC));
+
     // Создаем структуру информации о callback
     EspbCallbackInfo *callback_info = (EspbCallbackInfo*)calloc(1, sizeof(EspbCallbackInfo));
     if (!callback_info) {
@@ -620,6 +625,9 @@ EspbResult espb_create_callback_closure(
     xSemaphoreGive(g_callback_system.mutex);
 
     *out_closure_ptr = closure->executable_code;
+    ESP_LOGI(TAG, "[CBMEM] stage=create_done heap=%u exec=%u",
+             (unsigned)esp_get_free_heap_size(),
+             (unsigned)heap_caps_get_free_size(MALLOC_CAP_EXEC));
     
    ESP_LOGD(TAG, "Created callback closure: espb_func=%lu, closure=%p, exec=%p",
              (unsigned long)espb_func_idx, closure->closure_ptr, closure->executable_code);
@@ -725,6 +733,9 @@ void espb_free_callback_closures_for_instance(EspbInstance *instance) {
     /* Every detached node is now exclusively owned by this cleanup call. */
     while (owned) {
         EspbCallbackClosure *next = owned->next;
+        ESP_LOGI(TAG, "[CBMEM] stage=free_begin heap=%u exec=%u",
+                 (unsigned)esp_get_free_heap_size(),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_EXEC));
         espb_free_closure_execution_contexts(owned);
         if (owned->closure_ptr) {
             ffi_closure_free(owned->closure_ptr);
@@ -733,6 +744,9 @@ void espb_free_callback_closures_for_instance(EspbInstance *instance) {
         free(owned->callback_info);
         owned->callback_info = NULL;
         free(owned);
+        ESP_LOGI(TAG, "[CBMEM] stage=free_done heap=%u exec=%u",
+                 (unsigned)esp_get_free_heap_size(),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_EXEC));
         owned = next;
     }
 }
