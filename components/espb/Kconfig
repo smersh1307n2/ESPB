@@ -51,7 +51,7 @@ menu "ESPB Configuration"
         
         config ESPB_SHADOW_STACK_INITIAL_SIZE
             int "Initial shadow stack size (bytes)"
-            default 4096
+            default 1024
             help
                 The initial size of the shadow stack used by the ESPB interpreter
                 for saving registers during function calls. This stack will grow
