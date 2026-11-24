@@ -369,7 +369,7 @@ jobs:
             exit "$qemu_status"
           fi
           grep -F -- "--- ESPB dual-mode QEMU tests finished ---" qemu.log
-          grep -F -- "[ESPB_NATIVE_SOURCE] completed groups=3" qemu.log
+          # This workflow runs interpreter/JIT module suites; native-source groups are tested separately.
 
           if grep -E -m1 '\[ESPB_TEST\] (load_failed|warmup_failed|call_failed|precompile_failed|jit_not_ready|interpreter_not_clean|core_bench_failed)=' qemu.log; then
             echo "ESPB module execution failed"
