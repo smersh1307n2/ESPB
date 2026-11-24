@@ -18,6 +18,7 @@
 struct espb_module_handle_t {
     EspbInstance *instance;
     EspbModule *module;
+    uint32_t num_func_imports;
 };
 
 typedef void (*qemu_cb1_t)(void *);
