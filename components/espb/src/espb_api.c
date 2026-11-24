@@ -23,6 +23,7 @@
 #include "espb_jit_dispatcher.h"
 #include <stdio.h>
 #include <string.h>
+#include "esp_system.h"
 
 // Внешние обертки для iram_pool
 extern void iram_pool_init_wrapper(void);
@@ -73,9 +74,13 @@ void espb_unload_module(espb_handle_t handle) {
         printf("--- ESPB Unloading Module ---\n");
         // The API handle owns both the instance and parsed module metadata.
         // Closures retain pointers to this instance/module; release before freeing either.
+        printf("[UNLOAD_HEAP] stage=before_callbacks heap=%u\\n", (unsigned)esp_get_free_heap_size());
         espb_free_callback_closures_for_instance(handle->instance);
+        printf("[UNLOAD_HEAP] stage=after_callbacks heap=%u\\n", (unsigned)esp_get_free_heap_size());
         espb_free_instance(handle->instance);
+        printf("[UNLOAD_HEAP] stage=after_instance heap=%u\\n", (unsigned)esp_get_free_heap_size());
         espb_free_module(handle->module);
+        printf("[UNLOAD_HEAP] stage=after_module heap=%u\\n", (unsigned)esp_get_free_heap_size());
         free(handle);
         printf("--- ESPB Module Unloaded ---\n");
     }
