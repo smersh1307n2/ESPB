@@ -455,8 +455,10 @@ jobs:
                 if (kv[1] == "heap_after_exec") exec_heap = kv[2] + 0
                 if (kv[1] == "heap_after_unload") after = kv[2] + 0
               }
-              if (ready > 0 && exec_heap + 512 < ready) {
-                printf "Heap growth during execution: ready=%u after_exec=%u\n", ready, exec_heap
+              /* Native callback contexts may remain live until module unload.
+               * The leak invariant is that unload restores the pre-load heap. */
+              if (before > 0 && after + 512 < before) {
+                printf "Heap leak after module unload: module=%s before=%u after=%u\n", $2, before, after
                 failed = 1
               }
               count++
