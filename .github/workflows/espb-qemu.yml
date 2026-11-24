@@ -454,8 +454,12 @@ jobs:
           fi
 
           fibonacci_pass_count="$(grep -F -c '[ESPB_GROUP] fibonacci=PASS' qemu.log || true)"
-          if [ "$fibonacci_pass_count" -lt 2 ]; then
-            echo "Expected interpreter and JIT Fibonacci semantic PASS (at least 2), found $fibonacci_pass_count"
+          # The historical main/test.espb benchmark does not emit ESPB_GROUP
+          # markers. It performs one interpreter run and two JIT runs (warm-up
+          # plus measured execution); each must print the expected result.
+          fibonacci_correct_count="$(grep -F -c 'Result is CORRECT.' qemu.log || true)"
+          if [ "$fibonacci_pass_count" -lt 2 ] && [ "$fibonacci_correct_count" -lt 3 ]; then
+            echo "Fibonacci semantic check failed: group_passes=$fibonacci_pass_count correct_results=$fibonacci_correct_count"
             exit 1
           fi
 
