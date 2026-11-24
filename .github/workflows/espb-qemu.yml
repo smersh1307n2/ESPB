@@ -353,8 +353,11 @@ jobs:
           # The timeout sends SIGINT; QEMU prints "terminating on signal 2" and
           # aborts with 134 after the firmware has already completed. Accept only
           # that specific shutdown sequence, never an arbitrary QEMU abort.
-          if { [ "$qemu_status" -eq 134 ] || [ "$qemu_status" -eq 1 ]; } &&
-             grep -Fq -- "--- ESPB dual-mode QEMU tests finished ---" qemu.log &&
+          # idf.py may propagate the emulator's SIGINT/abort as different
+          # nonzero statuses (including wrapper-specific codes). Trust the
+          # completed firmware markers, not the wrapper exit code, but only
+          # for the exact expected SIGINT shutdown sequence.
+          if grep -Fq -- "--- ESPB dual-mode QEMU tests finished ---" qemu.log &&
              grep -Fq -- "Returned from app_main()" qemu.log &&
              grep -Fq -- "terminating on signal 2" qemu.log &&
              grep -Fq -- "Aborted!" qemu.log; then
