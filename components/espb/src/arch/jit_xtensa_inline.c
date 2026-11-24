@@ -3113,7 +3113,8 @@ static bool xtensa_vcache_scan_branch_free(const uint8_t *code, size_t code_size
                 case 0x04: operand_bytes = 8; break;
                 case 0x07: operand_bytes = 1; break;
                 case 0x08: case 0x0B: operand_bytes = 2; break;
-                case 0x09: case 0x16: operand_bytes = 5; break;
+                case 0x09: operand_bytes = 3; break;
+                case 0x16: operand_bytes = 5; break;
                 case 0x17: operand_bytes = 4; break;
                 case 0x18: case 0x19: operand_bytes = 3; break;
                 default: goto undecodable;
