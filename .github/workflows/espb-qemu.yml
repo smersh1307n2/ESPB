@@ -39,7 +39,8 @@ permissions:
 
 concurrency:
   group: espb-work-qemu-dual-mode
-  cancel-in-progress: true
+  # Keep the latest test queued instead of cancelling a QEMU run mid-flight.
+  cancel-in-progress: false
 
 jobs:
   qemu:
