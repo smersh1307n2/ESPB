@@ -773,7 +773,8 @@ static ffi_type* espb_type_to_ffi_type(EspbValueType es_type) {
 #pragma GCC diagnostic ignored "-Wunused-variable"
 
 // --- Константы для ядра интерпретатора ---
-#define CALL_STACK_SIZE 64   // Максимальная глубина стека вызовов (CallFrame)
+#define CALL_STACK_SIZE 64   // Максимальная глубина стека вызовов
+#define CALL_STACK_INITIAL_CAPACITY 8
 
 // Используем значения из Kconfig или значения по умолчанию, если Kconfig не определен
 #ifdef CONFIG_ESPB_SHADOW_STACK_INITIAL_SIZE
@@ -797,15 +798,14 @@ ExecutionContext* init_execution_context(void) {
         return NULL;
     }
 
-    ctx->call_stack = (RuntimeFrame*)malloc(CALL_STACK_SIZE * sizeof(RuntimeFrame));
+    ctx->call_stack = (RuntimeFrame*)malloc(CALL_STACK_INITIAL_CAPACITY * sizeof(RuntimeFrame));
     if (!ctx->call_stack) {
         ESP_LOGE(TAG, "Failed to allocate memory for call stack");
         free(ctx);
         return NULL;
     }
-    // Frames are initialized when pushed (including alloca_count and
-    // has_custom_aligned). The alloca_ptrs tail is read only up to alloca_count,
-    // so clearing the full 64-frame array here is unnecessary.
+    // Frames are initialized on push; only the active capacity is allocated.
+    ctx->call_stack_capacity = CALL_STACK_INITIAL_CAPACITY;
 
 
     ctx->shadow_stack_buffer = (uint8_t*)malloc(INITIAL_SHADOW_STACK_CAPACITY);
@@ -834,6 +834,9 @@ ExecutionContext* init_execution_context(void) {
 void free_execution_context(ExecutionContext *ctx) {
     if (ctx) {
         if (ctx->call_stack) {
+            for (int i = 0; i < ctx->call_stack_top; ++i) {
+                free(ctx->call_stack[i].alloca_ptrs);
+            }
             free(ctx->call_stack);
         }
         if (ctx->shadow_stack_buffer) {
@@ -875,18 +878,28 @@ static inline EspbResult push_call_frame(ExecutionContext *ctx, int return_pc, s
         ESP_LOGE(TAG, "Call stack overflow");
         return ESPB_ERR_STACK_OVERFLOW;
     }
+    if (__builtin_expect(ctx->call_stack_top >= ctx->call_stack_capacity, 0)) {
+        int new_capacity = ctx->call_stack_capacity * 2;
+        if (new_capacity > CALL_STACK_SIZE) new_capacity = CALL_STACK_SIZE;
+        RuntimeFrame *new_stack = (RuntimeFrame*)realloc(
+            ctx->call_stack, (size_t)new_capacity * sizeof(RuntimeFrame));
+        if (!new_stack) {
+            ESP_LOGE(TAG, "Failed to grow call stack to %d frames", new_capacity);
+            return ESPB_ERR_OUT_OF_MEMORY;
+        }
+        ctx->call_stack = new_stack;
+        ctx->call_stack_capacity = new_capacity;
+    }
     RuntimeFrame* frame = &ctx->call_stack[ctx->call_stack_top++];
     frame->ReturnPC = return_pc;
     frame->SavedFP = saved_fp;
     frame->caller_local_func_idx = caller_local_func_idx;
     frame->saved_frame = frame_to_save;
     frame->saved_num_virtual_regs = num_regs_to_save;
-    
-    // Инициализация ALLOCA трекера для нового кадра
+    frame->alloca_ptrs = NULL;
     frame->alloca_count = 0;
+    frame->alloca_capacity = 0;
     frame->has_custom_aligned = false;
-    // memset удален: массив отслеживается через alloca_count, инициализация не нужна
-    
     return ESPB_OK;
 }
 
@@ -1801,6 +1814,17 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                         ESP_LOGE(TAG, "ALLOCA - Too many allocations per frame (max 32)");
                         return ESPB_ERR_OUT_OF_MEMORY;
                     }
+                    if (frame->alloca_count >= frame->alloca_capacity) {
+                        uint8_t new_capacity = frame->alloca_capacity ? (uint8_t)(frame->alloca_capacity * 2) : 4;
+                        if (new_capacity > 32) new_capacity = 32;
+                        void **new_ptrs = (void**)realloc(frame->alloca_ptrs, (size_t)new_capacity * sizeof(void*));
+                        if (!new_ptrs) {
+                            ESP_LOGE(TAG, "ALLOCA - failed to grow allocation tracker");
+                            return ESPB_ERR_OUT_OF_MEMORY;
+                        }
+                        frame->alloca_ptrs = new_ptrs;
+                        frame->alloca_capacity = new_capacity;
+                    }
 
                     // Выделение памяти через heap manager с обязательным выравниванием по 8 байт
                     // для совместимости с i64 операциями
@@ -1836,8 +1860,7 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                     }
 
                     // Отслеживаем выделение
-                    frame->alloca_ptrs[frame->alloca_count] = allocated_ptr;
-                    frame->alloca_count++;
+                    frame->alloca_ptrs[frame->alloca_count++] = allocated_ptr;
 
                     // Устанавливаем результат
                     SET_TYPE(locals[rd_alloc], ESPB_TYPE_PTR);
@@ -1964,17 +1987,10 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                         }
 
                         // Inline push_call_frame для leaf функций
-                        if (__builtin_expect(exec_ctx->call_stack_top >= 64, 0)) {
+                        if (push_call_frame(exec_ctx, return_pc, exec_ctx->fp,
+                                             local_func_idx, NULL, 0) != ESPB_OK) {
                             return ESPB_ERR_STACK_OVERFLOW;
                         }
-                        RuntimeFrame* frame = &exec_ctx->call_stack[exec_ctx->call_stack_top++];
-                        frame->ReturnPC = return_pc;
-                        frame->SavedFP = exec_ctx->fp;
-                        frame->caller_local_func_idx = local_func_idx;
-                        frame->saved_frame = NULL;
-                        frame->saved_num_virtual_regs = 0;
-                        frame->alloca_count = 0;
-                        frame->has_custom_aligned = false;
 
                         exec_ctx->fp = exec_ctx->sp;
                         exec_ctx->sp = exec_ctx->fp + callee_frame_size;
@@ -1993,17 +2009,11 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                         memcpy(saved_frame_location, locals, saved_frame_size);
 
                         // Inline push_call_frame
-                        if (__builtin_expect(exec_ctx->call_stack_top >= 64, 0)) {
+                        if (push_call_frame(exec_ctx, return_pc, exec_ctx->fp,
+                                             local_func_idx, saved_frame_location,
+                                             num_virtual_regs) != ESPB_OK) {
                             return ESPB_ERR_STACK_OVERFLOW;
                         }
-                        RuntimeFrame* frame = &exec_ctx->call_stack[exec_ctx->call_stack_top++];
-                        frame->ReturnPC = return_pc;
-                        frame->SavedFP = exec_ctx->fp;
-                        frame->caller_local_func_idx = local_func_idx;
-                        frame->saved_frame = saved_frame_location;
-                        frame->saved_num_virtual_regs = num_virtual_regs;
-                        frame->alloca_count = 0;
-                        frame->has_custom_aligned = false;
 
                         exec_ctx->fp = exec_ctx->sp + saved_frame_size;
                         exec_ctx->sp = exec_ctx->fp + callee_frame_size;
@@ -3071,16 +3081,16 @@ op_0x3E: { // NOT.I64 (unary)
                     if (exec_ctx->call_stack_top > 0) {
                         // The frame to be cleaned is the one we are about to pop.
                         RuntimeFrame *frame = &exec_ctx->call_stack[exec_ctx->call_stack_top - 1];
-                        if (frame->alloca_count > 0) {
-                            for (uint8_t i = 0; i < frame->alloca_count; i++) {
-                                if (frame->alloca_ptrs[i]) {
-                                    espb_heap_free(instance, frame->alloca_ptrs[i]);
-                                    frame->alloca_ptrs[i] = NULL;
-                                }
+                        for (uint8_t i = 0; i < frame->alloca_count; i++) {
+                            if (frame->alloca_ptrs && frame->alloca_ptrs[i]) {
+                                espb_heap_free(instance, frame->alloca_ptrs[i]);
                             }
-                            frame->alloca_count = 0;
-                            frame->has_custom_aligned = false;
                         }
+                        free(frame->alloca_ptrs);
+                        frame->alloca_ptrs = NULL;
+                        frame->alloca_count = 0;
+                        frame->alloca_capacity = 0;
+                        frame->has_custom_aligned = false;
                     }
 
                     // 3. Pop the call frame to get caller's info
