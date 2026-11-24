@@ -5067,14 +5067,16 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     // Load operands directly from a11 (v_regs base):
                     // rs1 -> a8(lo), a9(hi)
                     // rs2 -> a10(lo), a12(hi)
-                    emit_l32i(&ctx, 13, 6, (uint16_t)(rs1 * 8));
+                    emit_l32i(&ctx, 8,  6, (uint16_t)(rs1 * 8));
                     emit_l32i(&ctx, 9,  6, (uint16_t)(rs1 * 8 + 4));
                     emit_l32i(&ctx, 10, 6, (uint16_t)(rs2 * 8));
                     emit_l32i(&ctx, 12, 6, (uint16_t)(rs2 * 8 + 4));
 
-                    // Keep rs1.lo in a13 for the carry check and add directly from it,
-                    // avoiding a separate MOV.N into the accumulator.
-                    emit_add_n(&ctx, 8, 13, 10); // a8 = a13 + a10
+                    // Preserve rs1.lo for carry check
+                    emit_mov_n(&ctx, 13, 8); // a13 = rs1.lo
+
+                    // lo = rs1.lo + rs2.lo
+                    emit_add_n(&ctx, 8, 8, 10); // a8 = a8 + a10
 
                     // hi = rs1.hi + rs2.hi
                     emit_add_n(&ctx, 9, 9, 12); // a9 = a9 + a12
