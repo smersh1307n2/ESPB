@@ -19,9 +19,9 @@ struct espb_module_handle_t { EspbInstance *instance; EspbModule *module; uint32
 typedef void (*host_cb1_t)(void *);
 typedef void (*host_cb2_t)(int, void *);
 
-__attribute__((noinline, optimize("O0"))) static void host_invoke_cb(host_cb1_t cb, void *data) { if (cb) cb(data); }
-__attribute__((noinline, optimize("O0"))) static void host_invoke_cb2(host_cb2_t cb, int value, void *data) { if (cb) cb(value, data); }
-static void native_set_magic_number(int *out) { if (out) *out = 42; }
+__attribute__((noinline, optimize("O0"))) void host_invoke_cb(host_cb1_t cb, void *data) { if (cb) cb(data); }
+__attribute__((noinline, optimize("O0"))) void host_invoke_cb2(host_cb2_t cb, int value, void *data) { if (cb) cb(value, data); }
+void native_set_magic_number(int *out) { if (out) *out = 42; }
 static void my_custom_print(const char *message) { printf("ESPB module: %s\n", message ? message : "(null)"); }
 static portMUX_TYPE demo_atomic_mux = portMUX_INITIALIZER_UNLOCKED;
 static uint64_t demo_atomic_exchange_8(volatile void *address, uint64_t value, int memory_order) {
