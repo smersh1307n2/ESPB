@@ -3107,9 +3107,7 @@ op_0x3E: { // NOT.I64 (unary)
                     if (exec_ctx->call_stack_top > 0) {
                         // The frame to be cleaned is the one we are about to pop.
                         RuntimeFrame *frame = &exec_ctx->call_stack[exec_ctx->call_stack_top - 1];
-                        if (__builtin_expect(frame->alloca_ptrs != NULL ||
-                                             frame->alloca_count != 0 ||
-                                             frame->has_custom_aligned, 0)) {
+                        if (__builtin_expect(frame->alloca_ptrs != NULL, 0)) {
                             espb_cleanup_frame_allocas(instance, frame);
                         }
                     }
