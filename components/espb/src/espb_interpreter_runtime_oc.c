@@ -333,28 +333,13 @@ static bool espb_try_call_jit_for_call_indirect(
         DISPATCH(); \
     } while(0)
 
-// Fuse an immediately following BR_IF that consumes this comparison.
-// Keep the boolean in its virtual register: bytecode may read it after the branch.
-#define ESPB_TRY_FUSE_BR_IF(cond_reg, cond_value) \
-    do { \
-        if ((size_t)(instructions_end_ptr - pc) >= 4 && pc[0] == 0x03 && pc[1] == (cond_reg)) { \
-            const uint8_t *branch_start = pc; \
-            const int16_t branch_offset = *(const unaligned_i16_t *)(branch_start + 2); \
-            pc = branch_start + 4; \
-            if (cond_value) pc = branch_start + branch_offset; \
-            DISPATCH(); \
-        } \
-    } while (0)
-
 // CMP операции для I32
 #define ESPB_OP_CMP_I32(cond) \
     do { \
         uint8_t rd = *pc++; \
         uint8_t r1 = *pc++; \
         uint8_t r2 = *pc++; \
-        const int32_t cmp_value = (V_I32(locals[r1]) cond V_I32(locals[r2])) ? 1 : 0; \
-        V_I32(locals[rd]) = cmp_value; \
-        ESPB_TRY_FUSE_BR_IF(rd, cmp_value); \
+        V_I32(locals[rd]) = (V_I32(locals[r1]) cond V_I32(locals[r2])) ? 1 : 0; \
         DISPATCH(); \
     } while(0)
 
@@ -364,9 +349,7 @@ static bool espb_try_call_jit_for_call_indirect(
         uint8_t rd = *pc++; \
         uint8_t r1 = *pc++; \
         uint8_t r2 = *pc++; \
-        const int32_t cmp_value = ((uint32_t)V_I32(locals[r1]) cond (uint32_t)V_I32(locals[r2])) ? 1 : 0; \
-        V_I32(locals[rd]) = cmp_value; \
-        ESPB_TRY_FUSE_BR_IF(rd, cmp_value); \
+        V_I32(locals[rd]) = ((uint32_t)V_I32(locals[r1]) cond (uint32_t)V_I32(locals[r2])) ? 1 : 0; \
         DISPATCH(); \
     } while(0)
 
@@ -932,6 +915,21 @@ static inline EspbResult pop_call_frame(ExecutionContext *ctx, int* return_pc, s
     *saved_frame_ptr = frame->saved_frame;
     *num_regs_saved_ptr = frame->saved_num_virtual_regs;
     return ESPB_OK;
+}
+
+/* ALLOCA cleanup is cold for ordinary leaf calls; keep it out of the END hot path. */
+__attribute__((noinline, cold))
+static void espb_cleanup_frame_allocas(EspbInstance *instance, RuntimeFrame *frame) {
+    for (uint8_t i = 0; i < frame->alloca_count; ++i) {
+        if (frame->alloca_ptrs && frame->alloca_ptrs[i]) {
+            espb_heap_free(instance, frame->alloca_ptrs[i]);
+        }
+    }
+    free(frame->alloca_ptrs);
+    frame->alloca_ptrs = NULL;
+    frame->alloca_count = 0;
+    frame->alloca_capacity = 0;
+    frame->has_custom_aligned = false;
 }
 
 // --- ОПТИМИЗИРОВАННАЯ ФУНКЦИЯ УПРАВЛЕНИЯ ТЕНЕВЫМ СТЕКОМ (V3) ---
@@ -3109,16 +3107,11 @@ op_0x3E: { // NOT.I64 (unary)
                     if (exec_ctx->call_stack_top > 0) {
                         // The frame to be cleaned is the one we are about to pop.
                         RuntimeFrame *frame = &exec_ctx->call_stack[exec_ctx->call_stack_top - 1];
-                        for (uint8_t i = 0; i < frame->alloca_count; i++) {
-                            if (frame->alloca_ptrs && frame->alloca_ptrs[i]) {
-                                espb_heap_free(instance, frame->alloca_ptrs[i]);
-                            }
+                        if (__builtin_expect(frame->alloca_ptrs != NULL ||
+                                             frame->alloca_count != 0 ||
+                                             frame->has_custom_aligned, 0)) {
+                            espb_cleanup_frame_allocas(instance, frame);
                         }
-                        free(frame->alloca_ptrs);
-                        frame->alloca_ptrs = NULL;
-                        frame->alloca_count = 0;
-                        frame->alloca_capacity = 0;
-                        frame->has_custom_aligned = false;
                     }
 
                     // 3. Pop the call frame to get caller's info
@@ -4266,9 +4259,7 @@ op_0xD6: // SELECT.PTR
                     case 0xD3: cmp_res = ((uint64_t)val1 >= (uint64_t)val2); break;
                 }
                 SET_TYPE(locals[rd], ESPB_TYPE_BOOL);
-                const int32_t cmp_value = cmp_res ? 1 : 0;
-                V_I32(locals[rd]) = cmp_value;
-                ESPB_TRY_FUSE_BR_IF(rd, cmp_value);
+                V_I32(locals[rd]) = cmp_res ? 1 : 0;
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                 ESP_LOGD(TAG, "CMP.I64 Opcode 0x%02X -> %d", opcode, V_I32(locals[rd]));
 #endif
@@ -4301,9 +4292,7 @@ op_0xD6: // SELECT.PTR
                     case 0xE5: cmp_res = (val1 >= val2); break;
                 }
                 SET_TYPE(locals[rd], ESPB_TYPE_BOOL);
-                const int32_t cmp_value = cmp_res ? 1 : 0;
-                V_I32(locals[rd]) = cmp_value;
-                ESPB_TRY_FUSE_BR_IF(rd, cmp_value);
+                V_I32(locals[rd]) = cmp_res ? 1 : 0;
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                 ESP_LOGD(TAG, "CMP.F32 Opcode 0x%02X -> %d", opcode, V_I32(locals[rd]));
 #endif
@@ -4336,9 +4325,7 @@ op_0xD6: // SELECT.PTR
                     case 0xEB: cmp_res = (val1 >= val2); break;
                 }
                 SET_TYPE(locals[rd], ESPB_TYPE_BOOL);
-                const int32_t cmp_value = cmp_res ? 1 : 0;
-                V_I32(locals[rd]) = cmp_value;
-                ESPB_TRY_FUSE_BR_IF(rd, cmp_value);
+                V_I32(locals[rd]) = cmp_res ? 1 : 0;
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                 ESP_LOGD(TAG, "CMP.F64 Opcode 0x%02X -> %d", opcode, V_I32(locals[rd]));
 #endif
