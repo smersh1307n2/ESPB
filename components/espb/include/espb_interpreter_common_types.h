@@ -1,4 +1,4 @@
-﻿/*
+/*
  * espb component
  * Copyright (C) 2025 Smersh
  *
@@ -226,6 +226,16 @@ typedef struct {
     void *jit_code;             // Указатель на скомпилированный нативный код
     size_t jit_code_size;       // Размер JIT кода в байтах
     bool is_jit_compiled;       // Флаг JIT компиляции
+    bool jit_compact_call_frame; // RISC-V verified NO_SPILL leaf uses <=8 Values
+    uint8_t jit_call_zero_mask;  // vregs that must be zeroed before a compact CALL
+    uint8_t jit_i32_high_clear_mask; // vregs whose I32 writes need a zero high word
+    // Optional register-only ABI entry for verified stackless NO_SPILL leaf functions.
+    void *jit_code_internal;
+    uint8_t jit_internal_abi;
+    uint8_t jit_num_args;
+    uint8_t jit_max_reg_used;
+    uint8_t jit_vreg_phys_lo[8];
+    uint8_t jit_vreg_phys_hi[8];
     // --------------------------
 } EspbFunctionBody;
 

@@ -963,6 +963,9 @@ typedef struct {
     // CMP+BR_IF ОПТИМИЗАЦИЯ: отслеживание последнего CMP
     uint8_t last_cmp_result_reg;  // Регистр с результатом последнего CMP (0xFF = нет)
     bool last_cmp_in_t0;           // Результат CMP находится в t0 (не сохранён в память)
+    bool last_cmp_fused;
+    uint8_t last_cmp_lhs_phys;
+    uint8_t last_cmp_rhs_phys;
 } JitContext;
 
 // Forward decls for peephole helpers (emit_* defined later)
@@ -1455,11 +1458,11 @@ void jit_call_espb_function(EspbInstance* instance, uint32_t local_func_idx, Val
         if (needed_regs == 0 || needed_regs > 256) needed_regs = 256;
         if (max_used > needed_regs) needed_regs = max_used;
 
-        // The bytecode emitter reserves R16..R23 for lowering temporaries.
-        // Some translated functions still emit LDC instructions into that range
-        // while their header only counts allocator-owned vregs. Keep the complete
-        // reserved register window inside the CALL frame to avoid stack corruption.
-        if (needed_regs < 24u) needed_regs = 24u;
+        // Verified mixed-I64 NO_SPILL leaf functions use only v0..v7; their
+        // bytecode has no lowering temporaries or helper calls, so a 24-Value
+        // compatibility frame is unnecessary for these direct JIT callees.
+        const bool compact_no_spill_callee = callee_body->jit_compact_call_frame;
+        if (!compact_no_spill_callee && needed_regs < 24u) needed_regs = 24u;
 
         // Fast-path frame: stack allocation avoids heap work on recursive calls.
         Value *callee_regs = (Value*)alloca((size_t)needed_regs * sizeof(Value));
@@ -1475,7 +1478,14 @@ void jit_call_espb_function(EspbInstance* instance, uint32_t local_func_idx, Val
         for (uint8_t i = 0; i < num_args; i++) {
             callee_regs[i] = v_regs[i];
         }
-        if (zero_regs > num_args) {
+        if (compact_no_spill_callee) {
+            const uint8_t zero_mask = callee_body->jit_call_zero_mask;
+            for (uint16_t i = num_args; i < zero_regs && i < 8; i++) {
+                if (zero_mask & (uint8_t)(1u << i)) {
+                    memset(&callee_regs[i], 0, sizeof(Value));
+                }
+            }
+        } else if (zero_regs > num_args) {
             memset(callee_regs + num_args, 0,
                    (size_t)(zero_regs - num_args) * sizeof(Value));
         }
@@ -2433,9 +2443,10 @@ static void jit_context_patch_branches(JitContext* ctx, const uint8_t* bytecode,
                 memcpy(&old_instr, ctx->buffer + pp->patch_location, sizeof(old_instr));
                 uint8_t rs1 = (old_instr >> 15) & 0x1F;
                 uint8_t rs2 = (old_instr >> 20) & 0x1F;
+                uint8_t funct3 = (old_instr >> 12) & 0x07;
                 
                 uint32_t new_instr = (imm12 << 31) | (imm10_5 << 25) | (rs2 << 20) | 
-                                    (rs1 << 15) | (0b001 << 12) | (imm4_1 << 8) | 
+                                    (rs1 << 15) | ((uint32_t)funct3 << 12) | (imm4_1 << 8) |
                                     (imm11 << 7) | 0b1100011;
                 memcpy(ctx->buffer + pp->patch_location, &new_instr, sizeof(new_instr));
             } else {
@@ -2483,6 +2494,297 @@ static void jit_context_free(JitContext* ctx) {
     }
 }
 
+static bool jit_riscv_supports_mixed_i64_no_spill(const EspbFunctionBody *body,
+                                                   uint8_t max_reg_used,
+                                                   uint8_t num_args,
+                                                   uint8_t *out_zero_mask,
+                                                   uint8_t *out_high_clear_mask,
+                                                   uint16_t *out_cmp_fuse_offsets,
+                                                   uint16_t *out_cmp_fuse_count,
+                                                   uint8_t *out_i64_mask)
+{
+    enum { MAX_FASTPATH_INSNS = 128 };
+    typedef struct {
+        uint16_t offset;
+        uint16_t target_offset;
+        int16_t target_index;
+        uint8_t read_mask;
+        uint8_t write_mask;
+        uint8_t high_read_mask;
+        uint8_t i32_write_mask;
+        uint8_t opcode;
+        uint8_t dst_reg;
+        uint8_t i64_mask;
+        uint8_t branch_kind; // 0=fallthrough, 1=BR, 2=BR_IF, 3=END
+    } FastInsn;
+
+    if (out_zero_mask) *out_zero_mask = 0xFF;
+    if (out_high_clear_mask) *out_high_clear_mask = 0xFF;
+    if (out_cmp_fuse_count) *out_cmp_fuse_count = 0;
+    if (out_i64_mask) *out_i64_mask = 0xFF;
+    if (!body || !body->code || body->code_size == 0 || body->code_size > 1024 ||
+        max_reg_used > 7 || num_args > 8 || num_args > (uint8_t)(max_reg_used + 1)) {
+        return false;
+    }
+
+    FastInsn insns[MAX_FASTPATH_INSNS];
+    uint16_t count = 0;
+    const uint8_t *pc = body->code;
+    const uint8_t *end = body->code + body->code_size;
+    bool saw_i64 = false;
+
+    while (pc < end) {
+        if (count >= MAX_FASTPATH_INSNS) return false;
+        FastInsn *in = &insns[count++];
+        memset(in, 0, sizeof(*in));
+        in->offset = (uint16_t)(pc - body->code);
+        in->target_index = -1;
+        const uint8_t op = *pc++;
+        in->opcode = op;
+        uint8_t rd = 0, rs1 = 0, rs2 = 0;
+        int16_t rel = 0;
+
+        switch (op) {
+            case 0x00: // NOP
+            case 0x01: // NOP
+                break;
+            case 0x0F: // END (return reads v0 as a 64-bit Value)
+                in->high_read_mask |= 0x01;
+                in->i64_mask |= 0x01;
+                in->branch_kind = 3;
+                break;
+            case 0x02: // BR offset16
+                if ((size_t)(end - pc) < 2) return false;
+                memcpy(&rel, pc, sizeof(rel));
+                pc += 2;
+                in->branch_kind = 1;
+                break;
+            case 0x03: // BR_IF Rcond, offset16
+                if ((size_t)(end - pc) < 3 || pc[0] > max_reg_used) return false;
+                rs1 = *pc++;
+                in->read_mask |= (uint8_t)(1u << rs1);
+                memcpy(&rel, pc, sizeof(rel));
+                pc += 2;
+                in->branch_kind = 2;
+                break;
+            case 0x18: // LDC.I32.IMM Rd, imm32
+                if ((size_t)(end - pc) < 5 || pc[0] > max_reg_used) return false;
+                rd = *pc++;
+                in->write_mask |= (uint8_t)(1u << rd);
+                in->i32_write_mask |= (uint8_t)(1u << rd);
+                pc += 4;
+                break;
+            case 0x19: // LDC.I64.IMM Rd, imm64
+                if ((size_t)(end - pc) < 9 || pc[0] > max_reg_used) return false;
+                rd = *pc++;
+                in->write_mask |= (uint8_t)(1u << rd);
+                in->i64_mask |= (uint8_t)(1u << rd);
+                pc += 8;
+                saw_i64 = true;
+                break;
+            case 0x13: // MOV.64 Rd, Rs
+                if ((size_t)(end - pc) < 2 || pc[0] > max_reg_used || pc[1] > max_reg_used) return false;
+                rd = *pc++; rs1 = *pc++;
+                in->read_mask |= (uint8_t)(1u << rs1);
+                in->high_read_mask |= (uint8_t)(1u << rs1);
+                in->write_mask |= (uint8_t)(1u << rd);
+                in->i64_mask |= (uint8_t)((1u << rd) | (1u << rs1));
+                saw_i64 = true;
+                break;
+            case 0x21: // SUB.I32 Rd, Rs1, Rs2
+            case 0x30: // ADD.I64 Rd, Rs1, Rs2
+            case 0xC0: // CMP.EQ.I32 Rd, Rs1, Rs2
+            case 0xC2: // CMP.LTS.I32 Rd, Rs1, Rs2
+                if ((size_t)(end - pc) < 3 || pc[0] > max_reg_used || pc[1] > max_reg_used || pc[2] > max_reg_used) return false;
+                rd = *pc++; rs1 = *pc++; rs2 = *pc++;
+                in->read_mask |= (uint8_t)((1u << rs1) | (1u << rs2));
+                in->write_mask |= (uint8_t)(1u << rd);
+                if (op == 0x30) {
+                    in->high_read_mask |= (uint8_t)((1u << rs1) | (1u << rs2));
+                    in->i64_mask |= (uint8_t)((1u << rd) | (1u << rs1) | (1u << rs2));
+                    saw_i64 = true;
+                } else {
+                    in->i32_write_mask |= (uint8_t)(1u << rd);
+                }
+                break;
+            case 0x40: // ADD.I32.IMM8 Rd, Rs, imm8
+                if ((size_t)(end - pc) < 3 || pc[0] > max_reg_used || pc[1] > max_reg_used) return false;
+                rd = *pc++; rs1 = *pc++;
+                in->read_mask |= (uint8_t)(1u << rs1);
+                in->write_mask |= (uint8_t)(1u << rd);
+                in->i32_write_mask |= (uint8_t)(1u << rd);
+                pc++;
+                break;
+            case 0xA1: // SEXT.I32.I64 Rd, Rs
+                if ((size_t)(end - pc) < 2 || pc[0] > max_reg_used || pc[1] > max_reg_used) return false;
+                rd = *pc++; rs1 = *pc++;
+                in->read_mask |= (uint8_t)(1u << rs1);
+                in->write_mask |= (uint8_t)(1u << rd);
+                in->i64_mask |= (uint8_t)(1u << rd);
+                saw_i64 = true;
+                break;
+            default:
+                return false;
+        }
+
+        in->dst_reg = rd;
+        in->target_offset = (uint16_t)(pc - body->code);
+        if (in->branch_kind == 1 || in->branch_kind == 2) {
+            int32_t target = (int32_t)in->offset + (int32_t)rel;
+            if (target < 0 || target > (int32_t)body->code_size) return false;
+            in->target_offset = (uint16_t)target;
+            if (target == (int32_t)body->code_size) in->high_read_mask |= 0x01;
+        }
+    }
+
+    if (!saw_i64 || count == 0) return false;
+
+    // Resolve branch targets to instruction indices; branches to code end are exits.
+    for (uint16_t i = 0; i < count; i++) {
+        if (insns[i].branch_kind != 1 && insns[i].branch_kind != 2) continue;
+        if (insns[i].target_offset == body->code_size) continue;
+        bool found = false;
+        for (uint16_t j = 0; j < count; j++) {
+            if (insns[j].offset == insns[i].target_offset) {
+                insns[i].target_index = (int16_t)j;
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+    }
+
+    // Forward must-analysis: a bit is set only when the vreg is initialized on
+    // every path reaching the instruction. This permits safe selective zeroing.
+    uint8_t in_mask[MAX_FASTPATH_INSNS] = {0};
+    bool reachable[MAX_FASTPATH_INSNS] = {false};
+    reachable[0] = true;
+    in_mask[0] = num_args == 8 ? 0xFF : (uint8_t)((1u << num_args) - 1u);
+
+    bool changed = true;
+    uint16_t iterations = 0;
+    while (changed && iterations++ < (MAX_FASTPATH_INSNS * 9)) {
+        changed = false;
+        for (uint16_t i = 0; i < count; i++) {
+            if (!reachable[i]) continue;
+            const uint8_t out = (uint8_t)(in_mask[i] | insns[i].write_mask);
+            int16_t successors[2] = {-1, -1};
+            uint8_t succ_count = 0;
+            if (insns[i].branch_kind == 1 || insns[i].branch_kind == 2) {
+                successors[succ_count++] = insns[i].target_index;
+            }
+            if ((insns[i].branch_kind == 0 || insns[i].branch_kind == 2) && i + 1 < count) {
+                successors[succ_count++] = (int16_t)(i + 1);
+            }
+            for (uint8_t s = 0; s < succ_count; s++) {
+                int16_t dst = successors[s];
+                if (dst < 0 || dst >= (int16_t)count) continue;
+                if (!reachable[dst]) {
+                    reachable[dst] = true;
+                    in_mask[dst] = out;
+                    changed = true;
+                } else {
+                    uint8_t merged = (uint8_t)(in_mask[dst] & out);
+                    if (merged != in_mask[dst]) {
+                        in_mask[dst] = merged;
+                        changed = true;
+                    }
+                }
+            }
+        }
+    }
+    if (changed) return false;
+
+    uint8_t zero_mask = 0;
+    for (uint16_t i = 0; i < count; i++) {
+        if (reachable[i]) zero_mask |= (uint8_t)(insns[i].read_mask & (uint8_t)~in_mask[i]);
+    }
+    const uint8_t valid_mask = max_reg_used == 7 ? 0xFF : (uint8_t)((1u << (max_reg_used + 1)) - 1u);
+    if (out_zero_mask) *out_zero_mask = (uint8_t)(zero_mask & valid_mask);
+
+    // Backward liveness of the high 32-bit word. An I32 write only needs an
+    // explicit high-word clear when that high word is read before the next write.
+    uint8_t high_in[MAX_FASTPATH_INSNS] = {0};
+    uint8_t high_out[MAX_FASTPATH_INSNS] = {0};
+    changed = true;
+    iterations = 0;
+    while (changed && iterations++ < (MAX_FASTPATH_INSNS * 9)) {
+        changed = false;
+        for (int i = (int)count - 1; i >= 0; i--) {
+            if (!reachable[i]) continue;
+            uint8_t out = 0;
+            int16_t successors[2] = {-1, -1};
+            uint8_t succ_count = 0;
+            if (insns[i].branch_kind == 1 || insns[i].branch_kind == 2) {
+                successors[succ_count++] = insns[i].target_index;
+            }
+            if ((insns[i].branch_kind == 0 || insns[i].branch_kind == 2) && i + 1 < count) {
+                successors[succ_count++] = (int16_t)(i + 1);
+            }
+            for (uint8_t s = 0; s < succ_count; s++) {
+                int16_t dst = successors[s];
+                if (dst >= 0 && dst < (int16_t)count && reachable[dst]) out |= high_in[dst];
+            }
+            const uint8_t in = (uint8_t)(insns[i].high_read_mask | (out & (uint8_t)~insns[i].write_mask));
+            if (out != high_out[i] || in != high_in[i]) {
+                high_out[i] = out;
+                high_in[i] = in;
+                changed = true;
+            }
+        }
+    }
+    if (changed) return false;
+
+    uint8_t high_clear_mask = 0;
+    for (uint16_t i = 0; i < count; i++) {
+        if (reachable[i]) high_clear_mask |= (uint8_t)(insns[i].i32_write_mask & high_out[i]);
+    }
+    if (out_high_clear_mask) *out_high_clear_mask = (uint8_t)(high_clear_mask & valid_mask);
+
+    uint8_t live_in[MAX_FASTPATH_INSNS] = {0};
+    uint8_t live_out[MAX_FASTPATH_INSNS] = {0};
+    changed = true;
+    iterations = 0;
+    while (changed && iterations++ < (MAX_FASTPATH_INSNS * 9)) {
+        changed = false;
+        for (int i = (int)count - 1; i >= 0; i--) {
+            if (!reachable[i]) continue;
+            uint8_t out = 0;
+            int16_t successors[2] = {-1, -1};
+            uint8_t succ_count = 0;
+            if (insns[i].branch_kind == 1 || insns[i].branch_kind == 2) successors[succ_count++] = insns[i].target_index;
+            if ((insns[i].branch_kind == 0 || insns[i].branch_kind == 2) && i + 1 < count) successors[succ_count++] = (int16_t)(i + 1);
+            for (uint8_t k = 0; k < succ_count; k++) {
+                int16_t dst = successors[k];
+                if (dst >= 0 && dst < (int16_t)count && reachable[dst]) out |= live_in[dst];
+            }
+            const uint8_t in = (uint8_t)(insns[i].read_mask | (out & (uint8_t)~insns[i].write_mask));
+            if (out != live_out[i] || in != live_in[i]) {
+                live_out[i] = out;
+                live_in[i] = in;
+                changed = true;
+            }
+        }
+    }
+    if (changed) return false;
+
+    uint8_t i64_mask = 0;
+    for (uint16_t i = 0; i < count; i++) if (reachable[i]) i64_mask |= insns[i].i64_mask;
+    if (out_i64_mask) *out_i64_mask = (uint8_t)(i64_mask & valid_mask);
+
+    if (out_cmp_fuse_offsets && out_cmp_fuse_count) {
+        uint16_t fused = 0;
+        for (uint16_t i = 0; i + 1 < count; i++) {
+            if (!reachable[i] || !reachable[i + 1] || insns[i].opcode != 0xC0 || insns[i + 1].branch_kind != 2) continue;
+            const uint8_t result_bit = (uint8_t)(1u << insns[i].dst_reg);
+            if ((insns[i + 1].read_mask & result_bit) && !(live_out[i + 1] & result_bit)) {
+                if (fused < MAX_FASTPATH_INSNS) out_cmp_fuse_offsets[fused++] = insns[i].offset;
+            }
+        }
+        *out_cmp_fuse_count = fused;
+    }
+    return true;
+}
 EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, const EspbFunctionBody *body, void **out_code, size_t *out_size) {
     if (!instance || !body || !out_code || !out_size) {
         return ESPB_ERR_INVALID_OPERAND;
@@ -2494,11 +2796,16 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
         return ESPB_OK;
     }
 
+    ((EspbFunctionBody*)body)->jit_compact_call_frame = false;
+    ((EspbFunctionBody*)body)->jit_call_zero_mask = 0xFF;
+    ((EspbFunctionBody*)body)->jit_i32_high_clear_mask = 0xFF;
     const uint8_t* bytecode = body->code;
     const uint8_t* end = bytecode + body->code_size;
     
     // Reduce to 20x and cap at 32KB to avoid heap exhaustion on large functions
     size_t jit_buffer_size = body->code_size * 20;
+    // Tiny functions still need room for the fixed ABI prologue/epilogue and helper stubs.
+    if (jit_buffer_size < 256) jit_buffer_size = 256;
     const size_t MAX_JIT_BUFFER = 32 * 1024;
     if (jit_buffer_size > MAX_JIT_BUFFER) jit_buffer_size = MAX_JIT_BUFFER;
     if (jit_buffer_size == 0) {
@@ -2539,6 +2846,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
     
     // CMP+BR_IF: Инициализация трекера
     ctx.last_cmp_result_reg = 0xFF;  // Нет последнего CMP
+    ctx.last_cmp_fused = false;
     ctx.last_cmp_in_t0 = false;
 
     // ✅ Извлекаем JIT метаданные из заголовка
@@ -2615,46 +2923,77 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
         }
     }
 
-    // КРИТИЧНО: Проверяем max_reg_used, а не num_virtual_regs!
-    // После компакции max_reg_used показывает реально используемые регистры (например, R8-R11),
-    // а num_virtual_regs включает резерв для временных R16-R23
-    // 
-    // Fast Path для I64: работает с парами регистров (lo/hi)
-    // Ограничение: max_reg_used <= 7 для I64 (8 vregs × 2 = 16 физических регистров)
-    //              max_reg_used <= 15 для I32 (16 vregs = 16 физических регистров)
-    // ВРЕМЕННО ОТКЛЮЧЕНО: NO_SPILL fast-path вызывает crash на RISC-V
-    // TODO: исправить проблему с регистрами при vregs > физических регистров
-    bool no_spill_fastpath = false;  // DISABLED - causes Store access fault on RISC-V
-    (void)i32_only; // suppress unused warning when NO_SPILL disabled
-#if 0  // TEMPORARILY DISABLED
-    if (i32_only) {
-        no_spill_fastpath = (no_spill && is_leaf && max_reg_used <= 15);
-        if (no_spill_fastpath) {
-            printf("[JIT-OPT] NO_SPILL fast-path enabled (leaf+i32-only, max_reg=%u, vregs=%u)\n", max_reg_used, num_virtual_regs);
-        }
-    } else {
-        // Для I64/F64: ограничение в 2 раза строже (нужны пары регистров)
-        // Используем до 20 физических регистров (a0-a7, s2-s11) = 10 виртуальных I64 регистров
-        // ОГРАНИЧЕНИЕ: max_reg_used <= 9 (безопасный диапазон callee-saved регистров)
-        no_spill_fastpath = (no_spill && is_leaf && max_reg_used <= 9);
-        if (no_spill_fastpath) {
-            printf("[JIT-OPT] NO_SPILL fast-path enabled (leaf+mixed-types, max_reg=%u, vregs=%u) [I64 mode]\n", max_reg_used, num_virtual_regs);
+    // Mixed I64 NO_SPILL is deliberately narrow: only verified leaf bytecode with
+    // the exact opcode subset implemented by the paired-register fast path.
+    // The old general NO_SPILL path remains disabled for all other functions.
+    uint8_t no_spill_zero_mask = 0xFF;
+    uint8_t no_spill_i32_high_clear_mask = 0xFF;
+    uint16_t no_spill_cmp_fuse_offsets[128] = {0};
+    uint16_t no_spill_cmp_fuse_count = 0;
+    uint8_t no_spill_i64_mask = 0xFF;
+    // Use the actual function signature: arguments are live at entry; the verifier
+    // adds any non-argument vregs that are read before their first definition.
+    uint8_t no_spill_num_args = 0;
+    uint8_t no_spill_num_returns = 0;
+    if (instance && instance->module && instance->module->function_signature_indices &&
+        func_idx >= instance->module->num_imported_funcs) {
+        const uint32_t local_func_idx = func_idx - instance->module->num_imported_funcs;
+        if (local_func_idx < instance->module->num_functions) {
+            const uint16_t sig_idx = instance->module->function_signature_indices[local_func_idx];
+            if (sig_idx < instance->module->num_signatures) {
+                no_spill_num_args = instance->module->signatures[sig_idx].num_params;
+                no_spill_num_returns = instance->module->signatures[sig_idx].num_returns;
+            }
         }
     }
-#endif
+    bool no_spill_fastpath =
+        !i32_only &&
+        no_spill &&
+        is_leaf &&
+        max_reg_used <= 7 &&
+        num_virtual_regs > max_reg_used &&
+        num_virtual_regs <= 8 &&
+        jit_riscv_supports_mixed_i64_no_spill(body, max_reg_used, no_spill_num_args,
+                                               &no_spill_zero_mask, &no_spill_i32_high_clear_mask,
+                                               no_spill_cmp_fuse_offsets, &no_spill_cmp_fuse_count,
+                                               &no_spill_i64_mask);
+
+    const bool no_spill_stackless = no_spill_fastpath && max_reg_used <= 6 && frame_size == 0 &&
+        !(no_spill_i64_mask & 0x40) && !(no_spill_i32_high_clear_mask & 0x40);
+    const uint8_t no_spill_vregs_base_reg = no_spill_stackless ? 31 : 18;
+    const bool no_spill_internal_abi = no_spill_stackless && no_spill_num_args <= 4 && no_spill_num_returns <= 1;
+    uint8_t no_spill_saved_reg_count = no_spill_fastpath && !no_spill_stackless ?
+        (uint8_t)((max_reg_used >= 6 ? 2 : 0) + (max_reg_used >= 7 ? 2 : 0)) : 0;
+    const uint8_t no_spill_arg_mask = no_spill_num_args >= 8 ? 0xFF : (uint8_t)((1u << no_spill_num_args) - 1u);
+    const uint8_t no_spill_entry_load_mask = (uint8_t)(no_spill_arg_mask | no_spill_zero_mask);
+
+    if (no_spill_fastpath) {
+        printf("[JIT-OPT] mixed-I64 NO_SPILL enabled func=%u max_reg=%u vregs=%u zero_mask=0x%02x i32_hi_clear=0x%02x code_bytes=%u\n",
+               (unsigned)func_idx, (unsigned)max_reg_used,
+               (unsigned)num_virtual_regs, (unsigned)no_spill_zero_mask,
+               (unsigned)no_spill_i32_high_clear_mask, (unsigned)body->code_size);
+    }
 
     // Fast-path mapping helper:
     // v0..v7  -> a0..a7 (x10..x17)
     // v8..v15 -> s3..s10 (x19..x26)
     // returns 0 if out of range
     // (C file: must be a macro-style helper)
-    #define FP_MAP_VREG(vreg) (((vreg) <= 7) ? (uint8_t)(10 + (vreg)) : (((vreg) >= 8 && (vreg) <= 15) ? (uint8_t)(19 + ((vreg) - 8)) : (uint8_t)0))
-    
-    // Маппинг для I64 Fast Path: виртуальный регистр → пара физических (lo, hi)
-    // v0-v4 → {a0,a1}, {a2,a3}, {a4,a5}, {a6,a7}, {s2,s3}  (phys 10-19)
-    // v5-v9 → {s4,s5}, {s6,s7}, {s8,s9}, {s10,s11}, {t3,t4} (phys 20-29)
-    #define FP_I64_LO(v) ((v) < 5 ? (10 + (v) * 2) : (20 + ((v) - 5) * 2))
-    #define FP_I64_HI(v) ((v) < 5 ? (10 + (v) * 2 + 1) : (20 + ((v) - 5) * 2 + 1))
+    // I32 operations in mixed mode use the low half of the same I64 vreg pair.
+    // x18/s2 is reserved for the Value[] frame pointer and must never be allocated.
+    // v4/v5 use caller-saved t0/t1 and t2/t3; v6 uses t5/t6 only if its high half is dead.
+    #define FP_I64_LO(v) ((v) < 4 ? (10 + (v) * 2) : ((v) == 4 ? 5 : ((v) == 5 ? 7 : ((v) == 6 ? (no_spill_stackless ? 30 : 19) : 21))))
+    #define FP_I64_HI(v) ((v) < 4 ? (11 + (v) * 2) : ((v) == 4 ? 6 : ((v) == 5 ? 28 : ((v) == 6 ? (no_spill_stackless ? 31 : 20) : 22))))
+    #define FP_MAP_VREG(vreg) (i32_only ? (((vreg) <= 7) ? (uint8_t)(10 + (vreg)) : (((vreg) >= 8 && (vreg) <= 15) ? (uint8_t)(19 + ((vreg) - 8)) : (uint8_t)0)) : (((vreg) <= 7) ? (uint8_t)FP_I64_LO(vreg) : (uint8_t)0))
+    EspbFunctionBody *jit_body = (EspbFunctionBody*)body;
+    jit_body->jit_code_internal = NULL;
+    jit_body->jit_internal_abi = no_spill_internal_abi ? 1 : 0;
+    jit_body->jit_num_args = no_spill_num_args;
+    jit_body->jit_max_reg_used = max_reg_used;
+    for (uint8_t v = 0; v < 8; v++) {
+        jit_body->jit_vreg_phys_lo[v] = (uint8_t)FP_I64_LO(v);
+        jit_body->jit_vreg_phys_hi[v] = (uint8_t)FP_I64_HI(v);
+    }
     
     // КРИТИЧНО: нужно выделить достаточно места для:
     // 1. Сохраненных callee-saved регистров: s0, s1, s2 = 12 байт
@@ -2663,16 +3002,19 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
     // 4. Временное пространство для CALL_IMPORT (до 60 байт!)
     bool stable_cache_enabled = !no_spill_fastpath;
 
-    uint16_t saved_regs_size = 12; // s0, s1, s2
+    // The verified leaf NO_SPILL path only needs s2 (v_regs base); s0/s1 are helper/frame state.
+    uint16_t saved_regs_size = no_spill_stackless ? 0 : (no_spill_fastpath ? 4 : 12);
     if (stable_cache_enabled) {
         saved_regs_size += 16; // s4..s7 (stable cache regs, 2-entry cache)
     }
     (void)is_leaf;
-    saved_regs_size += 4; // Always save ra: emit_call_helper() clobbers ra even in leaf functions
+    if (!no_spill_fastpath) {
+        saved_regs_size += 4; // General JIT paths may call helpers and clobber ra
+    }
 
     // NO_SPILL fast-path: save s3..s10 (8 regs * 4)
     if (no_spill_fastpath) {
-        saved_regs_size += 32;
+        saved_regs_size += (uint16_t)no_spill_saved_reg_count * 4;
     }
     
     // Для функций с вызовами нужно больше места (для сохранения caller-saved регистров).
@@ -2680,7 +3022,7 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
     // Минимум 48 байт (с выравниванием до 16) резервируем всегда, чтобы ALLOCA
     // мог безопасно сохранять регистры в JIT-фрейм (s0+offset), а не ниже sp,
     // где располагается массив v_regs вызывающей функции.
-    uint16_t temp_space = (flags & ESPB_FUNC_FLAG_HAS_CALLS) ? 64 : 48;
+    uint16_t temp_space = no_spill_fastpath ? 0 : ((flags & ESPB_FUNC_FLAG_HAS_CALLS) ? 64 : 48);
     
     uint16_t total_frame_size = saved_regs_size + frame_size + temp_space;
     
@@ -2690,39 +3032,40 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
 
     // --- PROLOGUE ---
     // Сохраняем стек фрейм
-    emit_addi_phys(&ctx, 2, 2, -(int16_t)total_frame_size); // sp -= frame_size
+    if (total_frame_size != 0) emit_addi_phys(&ctx, 2, 2, -(int16_t)total_frame_size); // sp -= frame_size
 
     int offset = total_frame_size;
 
     // NO_SPILL fast-path: сохраняем s3..s10 (callee-saved)
     // Загрузка vregs в физические регистры будет ПОЗЖЕ, после того как s2 (v_regs ptr) установлен.
     if (no_spill_fastpath) {
-        for (uint8_t r = 19; r <= 26; r++) {
+        for (uint8_t i = 0; i < no_spill_saved_reg_count; i++) {
             offset -= 4;
-            emit_sw_phys(&ctx, r, offset, 2);
+            emit_sw_phys(&ctx, (uint8_t)(19 + i), offset, 2);
         }
     }
     
-    // Always save ra (emit_call_helper clobbers ra even in leaf functions)
-    offset -= 4;
-    emit_sw_phys(&ctx, 1, offset, 2); // sw ra, offset(sp)
+    // The verified mixed-I64 leaf subset has no helper/direct calls, so ra stays intact.
+    if (!no_spill_fastpath) {
+        offset -= 4;
+        emit_sw_phys(&ctx, 1, offset, 2); // sw ra, offset(sp)
+    }
     
-    // Сохраняем fp (s0)
-    offset -= 4;
-    emit_sw_phys(&ctx, 8, offset, 2); // sw s0, offset(sp)
-    
-    // Устанавливаем fp = sp
-    emit_addi_phys(&ctx, 8, 2, 0); // mv s0, sp
-    
-    // Сохраняем указатель на instance (a0)
-    // s1 = instance, s2 = v_regs
-    offset -= 4;
-    emit_sw_phys(&ctx, 9, offset, 2);  // sw s1, offset(sp)
-    
-    
-    // Сохраняем s2 (обязательно по ABI!)
-    offset -= 4;
-    emit_sw_phys(&ctx, 18, offset, 2); // sw s2, offset(sp)
+    // General path needs s0/s1 for frame and instance/helper state.
+    // The verified leaf NO_SPILL subset has no frame accesses or helpers.
+    if (!no_spill_fastpath) {
+        offset -= 4;
+        emit_sw_phys(&ctx, 8, offset, 2);
+        emit_addi_phys(&ctx, 8, 2, 0);
+        offset -= 4;
+        emit_sw_phys(&ctx, 9, offset, 2);
+    }
+
+    // Framed path preserves s2; stackless leaf uses caller-saved t6 as v_regs base.
+    if (!no_spill_stackless) {
+        offset -= 4;
+        emit_sw_phys(&ctx, 18, offset, 2);
+    }
 
     if (stable_cache_enabled) {
         // Save stable cache regs s4..s7 (x20..x23)
@@ -2736,8 +3079,8 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
         emit_sw_phys(&ctx, 23, offset, 2);
     }
     
-    emit_addi_phys(&ctx, 9, 10, 0);  // s1 = a0 (instance)
-    emit_addi_phys(&ctx, 18, 11, 0); // s2 = a1 (v_regs)
+    if (!no_spill_fastpath) emit_addi_phys(&ctx, 9, 10, 0); // s1 = a0 (instance)
+    emit_addi_phys(&ctx, no_spill_vregs_base_reg, 11, 0); // v_regs base
 
     // NO_SPILL fast-path: загружаем v0..max_reg_used из v_regs[] один раз в физические регистры
     // КРИТИЧНО: После компакции используемые регистры могут быть в диапазоне R8-R15,
@@ -2757,19 +3100,26 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
             for (uint8_t v = 0; v <= max_reg_used && v <= 7; v++) {
                 uint8_t phys_lo, phys_hi;
                 
-                if (v < 4) {
-                    phys_lo = 10 + v * 2;      // a0, a2, a4, a6
-                    phys_hi = 10 + v * 2 + 1;  // a1, a3, a5, a7
-                } else {
-                    phys_lo = 19 + (v - 4) * 2;      // s3, s5, s7, s9
-                    phys_hi = 19 + (v - 4) * 2 + 1;  // s4, s6, s8, s10
-                }
+                phys_lo = FP_I64_LO(v);
+                phys_hi = FP_I64_HI(v);
                 
-                // Загружаем пару регистров (lo из offset+0, hi из offset+4)
-                emit_lw_phys(&ctx, phys_lo, v * 8 + 0, 18);  // Младшие 32 бита
-                emit_lw_phys(&ctx, phys_hi, v * 8 + 4, 18);  // Старшие 32 бита
+                // Only arguments and verifier-proven read-before-write vregs are live at entry.
+                if (no_spill_entry_load_mask & (uint8_t)(1u << v)) {
+                    emit_lw_phys(&ctx, phys_lo, v * 8 + 0, no_spill_vregs_base_reg);
+                    if (!(no_spill_stackless && v == 6))
+                        emit_lw_phys(&ctx, phys_hi, v * 8 + 4, no_spill_vregs_base_reg);
+                }
             }
         }
+    }
+
+    size_t internal_entry_offset = SIZE_MAX;
+    if (no_spill_internal_abi) {
+        // Standard ABI entry has loaded vregs from a1's Value[]; skip the internal stub.
+        emit_instr(&ctx, 0x00C0006Fu); // jal x0, +12
+        internal_entry_offset = ctx.offset;
+        emit_instr(&ctx, 0x00000F93u); // addi x31, x0, 0 (internal ABI: no Value[] writeback)
+        emit_instr(&ctx, 0x0040006Fu); // jal x0, +4 to shared body
     }
 
     const uint8_t* pc = bytecode;
@@ -3133,6 +3483,15 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                     ph_flush_selective_for_branch(&ctx, &ph, bytecode_start, end, target_bytecode_offset, fallthrough_bytecode_offset);
                     ph_reset(&ph);
 
+                    if (ctx.last_cmp_fused && ctx.last_cmp_result_reg == rcond) {
+                        size_t patch_location = ctx.offset;
+                        emit_beq_phys(&ctx, ctx.last_cmp_lhs_phys, ctx.last_cmp_rhs_phys, 0);
+                        jit_context_add_patchpoint(&ctx, patch_location, source_bytecode_offset,
+                                                   target_bytecode_offset, true, ctx.last_cmp_lhs_phys);
+                        ctx.last_cmp_fused = false;
+                        ctx.last_cmp_result_reg = 0xFF;
+                        break;
+                    }
                     uint8_t pcnd = FP_MAP_VREG(rcond);
 
                     // If register is out of range (returns 0), fall back to slow path
@@ -3309,36 +3668,129 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 break;
             }
             
-            case 0x0A: { // CALL func_idx (вызов внутренней функции)
+            case 0x0A: { // CALL func_idx (internal function call)
                 ctx.last_cmp_result_reg = 0xFF;
 
-                // CALL использует локальный индекс функции (не включая импорты)
                 uint16_t local_func_idx;
                 memcpy(&local_func_idx, pc, sizeof(local_func_idx)); pc += sizeof(local_func_idx);
 
-                // ОПТИМИЗАЦИЯ: минимальный overhead вызова.
-                // jit_call_espb_function() — обычная C функция и по ABI НЕ должна портить s1/s2.
-                // Поэтому не сохраняем a0-a7/t0-t6/s2 на каждый CALL.
+                bool emitted_direct_compact_call = false;
+                const EspbModule *call_module = instance->module;
+                if (call_module && local_func_idx < call_module->num_functions) {
+                    EspbFunctionBody *callee = &((EspbModule*)call_module)->function_bodies[local_func_idx];
+                    const uint16_t callee_regs = callee->header.num_virtual_regs;
+                    const uint16_t sig_idx = call_module->function_signature_indices[local_func_idx];
+                    const EspbFuncSignature *sig = &call_module->signatures[sig_idx];
+                    const uint8_t num_args = sig->num_params;
 
-                // a0 = instance (s1)
-                emit_addi_phys(&ctx, 10, 9, 0);
+                    // Register-only internal ABI for verified stackless NO_SPILL leaves.
+                    // Arguments already occupy v_regs[0..n); load them straight into a0..a7.
+                    // The callee's internal entry skips Value[] loads/writeback and returns in a0/a1.
+                    if (callee->is_jit_compiled && callee->jit_internal_abi && callee->jit_code_internal &&
+                        num_args == callee->jit_num_args && num_args <= 4 && sig->num_returns <= 1) {
+                        ph_flush(&ctx, &ph);
+                        ph_reset(&ph);
 
-                // a1 = local_func_idx (helper сам преобразует в global)
-                if (local_func_idx < 2048) {
-                    emit_addi_phys(&ctx, 11, 0, (int16_t)local_func_idx);
-                } else {
-                    uint32_t hi = ((local_func_idx + 0x800) & 0xFFFFF000);
-                    int16_t lo = (int16_t)(local_func_idx - hi);
-                    emit_lui_phys(&ctx, 11, hi);
-                    if (lo != 0) emit_addi_phys(&ctx, 11, 11, lo);
+                        for (uint8_t i = 0; i < num_args; i++) {
+                            const uint8_t arg_lo = (uint8_t)(10 + i * 2);
+                            const uint8_t arg_hi = (uint8_t)(arg_lo + 1);
+                            const int16_t off = (int16_t)(i * sizeof(Value));
+                            emit_lw_phys(&ctx, arg_lo, off, 18);
+                            emit_lw_phys(&ctx, arg_hi, (int16_t)(off + 4), 18);
+                        }
+                        for (uint8_t i = num_args; i <= callee->jit_max_reg_used && i < 8; i++) {
+                            if (callee->jit_call_zero_mask & (uint8_t)(1u << i)) {
+                                emit_addi_phys(&ctx, callee->jit_vreg_phys_lo[i], 0, 0);
+                                if (callee->jit_vreg_phys_hi[i] != 31)
+                                    emit_addi_phys(&ctx, callee->jit_vreg_phys_hi[i], 0, 0);
+                            }
+                        }
+
+                        const uintptr_t call_pc = (uintptr_t)exec_buffer + ctx.offset;
+                        const int64_t call_delta = (int64_t)(uintptr_t)callee->jit_code_internal - (int64_t)call_pc;
+                        if ((call_delta & 1) == 0 && call_delta >= -1048576 && call_delta <= 1048574) {
+                            const uint32_t imm = (uint32_t)call_delta;
+                            const uint32_t jal_instr =
+                                (((imm >> 20) & 1u) << 31) |
+                                (((imm >> 1) & 0x3FFu) << 21) |
+                                (((imm >> 11) & 1u) << 20) |
+                                (((imm >> 12) & 0xFFu) << 12) |
+                                (1u << 7) | 0x6Fu;
+                            emit_instr(&ctx, jal_instr);
+                        } else {
+                            emit_call_helper(&ctx, (uintptr_t)callee->jit_code_internal);
+                        }
+                        if (sig->num_returns > 0) {
+                            emit_sw_phys(&ctx, 10, 0, 18);
+                            emit_sw_phys(&ctx, 11, 4, 18);
+                        }
+                        ph_reset(&ph);
+                        emitted_direct_compact_call = true;
+                    }
+
+                    // Fallback: compact Value[] ABI for verified NO_SPILL leaves that lack a register entry.
+                    if (!emitted_direct_compact_call && callee->is_jit_compiled && callee->jit_code && callee->jit_compact_call_frame &&
+                        callee_regs > 0 && callee_regs <= 8 && num_args <= callee_regs &&
+                        temp_space >= (uint16_t)(callee_regs * sizeof(Value))) {
+                        ph_flush(&ctx, &ph);
+                        ph_reset(&ph);
+
+                        // a0 = instance; a1 = compact callee Value[] at caller sp+0
+                        emit_addi_phys(&ctx, 10, 9, 0);
+                        emit_addi_phys(&ctx, 11, 2, 0);
+
+                        for (uint8_t i = 0; i < num_args; i++) {
+                            int16_t off = (int16_t)(i * sizeof(Value));
+                            emit_lw_phys(&ctx, 5, off, 18);
+                            emit_lw_phys(&ctx, 6, (int16_t)(off + 4), 18);
+                            emit_sw_phys(&ctx, 5, off, 2);
+                            emit_sw_phys(&ctx, 6, (int16_t)(off + 4), 2);
+                        }
+                        for (uint8_t i = num_args; i < callee_regs; i++) {
+                            if (callee->jit_call_zero_mask & (uint8_t)(1u << i)) {
+                                int16_t off = (int16_t)(i * sizeof(Value));
+                                emit_sw_phys(&ctx, 0, off, 2);
+                                emit_sw_phys(&ctx, 0, (int16_t)(off + 4), 2);
+                            }
+                        }
+
+                        // Prefer one-instruction JAL when the precompiled callee is in range.
+                        const uintptr_t call_pc = (uintptr_t)exec_buffer + ctx.offset;
+                        const int64_t call_delta = (int64_t)(uintptr_t)callee->jit_code - (int64_t)call_pc;
+                        if ((call_delta & 1) == 0 && call_delta >= -1048576 && call_delta <= 1048574) {
+                            const uint32_t imm = (uint32_t)call_delta;
+                            const uint32_t jal_instr =
+                                (((imm >> 20) & 1u) << 31) |
+                                (((imm >> 1) & 0x3FFu) << 21) |
+                                (((imm >> 11) & 1u) << 20) |
+                                (((imm >> 12) & 0xFFu) << 12) |
+                                (1u << 7) | 0x6Fu; // jal ra, callee
+                            emit_instr(&ctx, jal_instr);
+                        } else {
+                            emit_call_helper(&ctx, (uintptr_t)callee->jit_code);
+                        }
+                        if (sig->num_returns > 0) {
+                            emit_sw_phys(&ctx, 10, 0, 18);
+                            emit_sw_phys(&ctx, 11, 4, 18);
+                        }
+                        ph_reset(&ph);
+                        emitted_direct_compact_call = true;
+                    }
                 }
 
-                // a2 = v_regs (s2)
-                emit_addi_phys(&ctx, 12, 18, 0);
-
-                // Call helper directly (emit_call_helper uses t0=x5)
-                emit_call_helper(&ctx, (uintptr_t)&jit_call_espb_function);
-
+                if (!emitted_direct_compact_call) {
+                    emit_addi_phys(&ctx, 10, 9, 0);
+                    if (local_func_idx < 2048) {
+                        emit_addi_phys(&ctx, 11, 0, (int16_t)local_func_idx);
+                    } else {
+                        uint32_t hi = ((local_func_idx + 0x800) & 0xFFFFF000);
+                        int16_t lo = (int16_t)(local_func_idx - hi);
+                        emit_lui_phys(&ctx, 11, hi);
+                        if (lo != 0) emit_addi_phys(&ctx, 11, 11, lo);
+                    }
+                    emit_addi_phys(&ctx, 12, 18, 0);
+                    emit_call_helper(&ctx, (uintptr_t)&jit_call_espb_function);
+                }
                 break;
             }
             
@@ -3984,6 +4436,19 @@ EspbResult espb_jit_compile_function(EspbInstance* instance, uint32_t func_idx, 
                 break;
             }
             case 0xA1: { // SEXT.I32.I64 alias
+                if (no_spill_fastpath) {
+                    uint8_t rd = *pc++;
+                    uint8_t rs = *pc++;
+                    const uint8_t src = FP_MAP_VREG(rs);
+                    const uint8_t dst_lo = FP_I64_LO(rd);
+                    const uint8_t dst_hi = FP_I64_HI(rd);
+                    emit_addi_phys(&ctx, dst_lo, src, 0);
+                    const uint32_t srai_instr =
+                        (0b0100000u << 25) | (31u << 20) | ((uint32_t)src << 15) |
+                        (0b101u << 12) | ((uint32_t)dst_hi << 7) | 0b0010011u;
+                    emit_instr(&ctx, srai_instr);
+                    break;
+                }
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
 
@@ -6132,7 +6597,11 @@ divs_i64_general_case:
             case 0x13: { // MOV.64 Rd, Rs (64-bit move для I64, U64, F64)
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
-                
+                if (no_spill_fastpath) {
+                    emit_addi_phys(&ctx, FP_I64_LO(rd), FP_I64_LO(rs), 0);
+                    emit_addi_phys(&ctx, FP_I64_HI(rd), FP_I64_HI(rs), 0);
+                    break;
+                }
                 // Загружаем оба 32-bit слова (Value это 64-bit union)
                 // lw t0, rs*8(s2)     -- младшие 32 бита
                 emit_lw_phys(&ctx, 5, rs * 8, 18);
@@ -6179,6 +6648,8 @@ divs_i64_general_case:
                             emit_lui_phys(&ctx, phys, hi);
                             if (lo != 0) emit_addi_phys(&ctx, phys, phys, lo);
                         }
+                        if (!i32_only && (no_spill_i32_high_clear_mask & (uint8_t)(1u << rd)))
+                            emit_addi_phys(&ctx, FP_I64_HI(rd), 0, 0);
                         break;
                     }
                     // rd out of range - fall through to slow path (writes to memory)
@@ -6217,6 +6688,35 @@ divs_i64_general_case:
             }
             
             case 0x19: { // LDC.I64.IMM Rd, imm64
+                if (no_spill_fastpath) {
+                    uint8_t rd = *pc++;
+                    int64_t imm;
+                    memcpy(&imm, pc, sizeof(imm));
+                    pc += sizeof(imm);
+
+                    const uint64_t bits = (uint64_t)imm;
+                    const int32_t words[2] = {
+                        (int32_t)(uint32_t)bits,
+                        (int32_t)(uint32_t)(bits >> 32)
+                    };
+                    const uint8_t dests[2] = {
+                        FP_I64_LO(rd), FP_I64_HI(rd)
+                    };
+
+                    for (uint8_t part = 0; part < 2; ++part) {
+                        const int32_t value = words[part];
+                        const uint8_t dst = dests[part];
+                        if (value >= -2048 && value < 2048) {
+                            emit_addi_phys(&ctx, dst, 0, (int16_t)value);
+                        } else {
+                            const uint32_t hi = (((uint32_t)value + 0x800u) & 0xFFFFF000u);
+                            const int16_t lo = (int16_t)((int64_t)value - (int64_t)(int32_t)hi);
+                            emit_lui_phys(&ctx, dst, hi);
+                            if (lo != 0) emit_addi_phys(&ctx, dst, dst, lo);
+                        }
+                    }
+                    break;
+                }
                 uint8_t rd = *pc++;
                 int64_t imm;
                 memcpy(&imm, pc, sizeof(imm)); pc += sizeof(imm);
@@ -6523,6 +7023,8 @@ divs_i64_general_case:
                     // If any register is out of range (returns 0), fall back to slow path
                     if (pd != 0 && p1 != 0 && p2 != 0) {
                         emit_sub_phys(&ctx, pd, p1, p2);
+                        if (no_spill_i32_high_clear_mask & (uint8_t)(1u << rd))
+                            emit_addi_phys(&ctx, FP_I64_HI(rd), 0, 0); // clear paired high word when live
                         break;
                     }
                     // Fall through to slow path if registers out of range
@@ -7097,7 +7599,7 @@ divs_i64_general_case:
                 uint8_t rs2 = *pc++;
                 
                 // Fast Path для I64: работаем с парами регистров, используем FP_I64_LO/HI макросы
-                if (no_spill_fastpath && rd <= 9 && rs1 <= 9 && rs2 <= 9) {
+                if (no_spill_fastpath && rd <= 7 && rs1 <= 7 && rs2 <= 7) {
                     uint8_t pd_lo = FP_I64_LO(rd);
                     uint8_t pd_hi = FP_I64_HI(rd);
                     uint8_t p1_lo = FP_I64_LO(rs1);
@@ -7109,8 +7611,20 @@ divs_i64_general_case:
                     uint8_t tmp_carry = 29;
                     
                     // ADD.I64 с переносом
-                    emit_add_phys(&ctx, pd_lo, p1_lo, p2_lo);           // lo = p1_lo + p2_lo
-                    emit_sltu_phys(&ctx, tmp_carry, pd_lo, p1_lo);      // carry = (lo < p1_lo) ? 1 : 0
+                    uint8_t carry_ref = p1_lo;
+                    bool carry_precomputed = false;
+                    if (rd == rs1 && rd == rs2) {
+                        const uint32_t srli = (31u << 20) | ((uint32_t)p1_lo << 15) |
+                                              (0b101u << 12) | ((uint32_t)tmp_carry << 7) | 0b0010011u;
+                        emit_instr(&ctx, srli);
+                        carry_precomputed = true;
+                    } else if (rd == rs1) {
+                        carry_ref = p2_lo;
+                    } else if (rd == rs2) {
+                        carry_ref = p1_lo;
+                    }
+                    emit_add_phys(&ctx, pd_lo, p1_lo, p2_lo);
+                    if (!carry_precomputed) emit_sltu_phys(&ctx, tmp_carry, pd_lo, carry_ref);
                     emit_add_phys(&ctx, pd_hi, p1_hi, p2_hi);           // hi = p1_hi + p2_hi
                     emit_add_phys(&ctx, pd_hi, pd_hi, tmp_carry);       // hi = hi + carry
                     
@@ -7508,7 +8022,16 @@ divs_i64_general_case:
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
                 int8_t imm = (int8_t)*pc++;
-
+                if (no_spill_fastpath) {
+                    const uint8_t src = FP_MAP_VREG(rs);
+                    const uint8_t dst = FP_MAP_VREG(rd);
+                    emit_addi_phys(&ctx, dst, src, imm);
+                    if (no_spill_i32_high_clear_mask & (uint8_t)(1u << rd))
+                        emit_addi_phys(&ctx, FP_I64_HI(rd), 0, 0);
+                    ctx.last_cmp_result_reg = 0xFF;
+                    ctx.last_cmp_in_t0 = false;
+                    break;
+                }
                 ctx.last_cmp_result_reg = 0xFF;
 
                 int fr = ph_find(&ph, rs);
@@ -7764,6 +8287,39 @@ divs_i64_general_case:
             // 0x4A/0x4B now handled as I32 IMM8 (OR/XOR) earlier in this switch.
             
             case 0xC0: { // CMP.EQ.I32 Rd, R1, R2 (R1 == R2)
+                if (no_spill_fastpath) {
+                    uint8_t rd = *pc++;
+                    uint8_t r1 = *pc++;
+                    uint8_t r2 = *pc++;
+                    const uint8_t pd = FP_MAP_VREG(rd);
+                    const uint8_t p1 = FP_MAP_VREG(r1);
+                    const uint8_t p2 = FP_MAP_VREG(r2);
+
+                    const uint16_t cmp_offset = (uint16_t)((pc - bytecode_start) - 4);
+                    bool fuse_cmp_branch = false;
+                    for (uint16_t fi = 0; fi < no_spill_cmp_fuse_count; fi++) {
+                        if (no_spill_cmp_fuse_offsets[fi] == cmp_offset) { fuse_cmp_branch = true; break; }
+                    }
+                    if (fuse_cmp_branch) {
+                        ctx.last_cmp_result_reg = rd;
+                        ctx.last_cmp_lhs_phys = p1;
+                        ctx.last_cmp_rhs_phys = p2;
+                        ctx.last_cmp_fused = true;
+                    } else {
+                        // Materialize EQ without a dedicated scratch register.
+                        emit_sub_phys(&ctx, pd, p1, p2);
+                        const uint32_t sltiu_instr =
+                            (1u << 20) | ((uint32_t)pd << 15) | (0b011u << 12) |
+                            ((uint32_t)pd << 7) | 0b0010011u;
+                        emit_instr(&ctx, sltiu_instr);
+                        if (no_spill_i32_high_clear_mask & (uint8_t)(1u << rd))
+                            emit_addi_phys(&ctx, FP_I64_HI(rd), 0, 0);
+                        ctx.last_cmp_result_reg = 0xFF;
+                        ctx.last_cmp_in_t0 = false;
+                        ctx.last_cmp_fused = false;
+                    }
+                    break;
+                }
                 uint8_t rd = *pc++;
                 uint8_t r1 = *pc++;
                 uint8_t r2 = *pc++;
@@ -7824,8 +8380,9 @@ divs_i64_general_case:
                     uint32_t instr = (0b0000000 << 25) | (p2 << 20) | (p1 << 15) | (0b010 << 12) | (pd << 7) | 0b0110011;
                     emit_instr(&ctx, instr);
                     // BOOL: clear high word in memory (v_regs[rd]+4)
-                    emit_sw_phys(&ctx, 0, rd * 8 + 4, 18);
-                    // CMP+BR_IF tracking: result in pd, not t0; just clear
+                    if (no_spill_i32_high_clear_mask & (uint8_t)(1u << rd))
+                        emit_addi_phys(&ctx, FP_I64_HI(rd), 0, 0);
+                    // CMP+BR_IF tracking: result in pd, not t0; clear only when live
                     ctx.last_cmp_result_reg = 0xFF;
                     ctx.last_cmp_in_t0 = false;
                     break;
@@ -8096,63 +8653,44 @@ divs_i64_general_case:
                 // v_regs находится в s2 (x18), результат должен быть в a0 (x10), a1 (x11)
                 // Байткод уже записал результат в v_regs[0], теперь копируем в ABI регистры
                 
-                // NO_SPILL fast-path: сохраняем v0..max_reg_used обратно в v_regs[] перед возвратом
-                // КРИТИЧНО: Сохраняем только используемые регистры (0..max_reg_used)
+                // Only v0 is externally observable. It is already in a0/a1;
+                // persist its pair for interpreter/runtime callers without reloading it.
                 if (no_spill_fastpath) {
-                    if (i32_only) {
-                        // I32: один физический регистр на виртуальный
-                        for (uint8_t v = 0; v <= max_reg_used; v++) {
-                            uint8_t phys = FP_MAP_VREG(v);
-                            if (phys != 0) {
-                                emit_sw_phys(&ctx, phys, v * 8, 18);
-                            }
-                        }
-                    } else {
-                        // I64: пара физических регистров на виртуальный
-                        for (uint8_t v = 0; v <= max_reg_used && v <= 7; v++) {
-                            uint8_t phys_lo, phys_hi;
-                            
-                            if (v < 4) {
-                                phys_lo = 10 + v * 2;
-                                phys_hi = 10 + v * 2 + 1;
-                            } else {
-                                phys_lo = 19 + (v - 4) * 2;
-                                phys_hi = 19 + (v - 4) * 2 + 1;
-                            }
-                            
-                            // Сохраняем пару регистров (lo в offset+0, hi в offset+4)
-                            emit_sw_phys(&ctx, phys_lo, v * 8 + 0, 18);  // Младшие 32 бита
-                            emit_sw_phys(&ctx, phys_hi, v * 8 + 4, 18);  // Старшие 32 бита
-                        }
-                    }
+                    if (no_spill_internal_abi) emit_beq_phys(&ctx, 31, 0, 12); // internal entry skips Value[] writeback
+                    emit_sw_phys(&ctx, 10, 0, no_spill_vregs_base_reg);
+                    emit_sw_phys(&ctx, 11, 4, no_spill_vregs_base_reg);
+                } else {
+                    emit_lw_phys(&ctx, 10, 0, 18);
+                    emit_lw_phys(&ctx, 11, 4, 18);
                 }
 
-                // Загружаем возвращаемое значение (64-bit) из v_regs[0]
-                emit_lw_phys(&ctx, 10, 0, 18);      // a0 = v_regs[0] (младшие 32 бита)
-                emit_lw_phys(&ctx, 11, 4, 18);      // a1 = v_regs[0]+4 (старшие 32 бита)
                 
                 // Restore saved regs using the SAME layout/order as prologue (offset walks down)
                 int restore_offset = total_frame_size;
 
                 // NO_SPILL fast-path: restore s3..s10 (callee-saved)
                 if (no_spill_fastpath) {
-                    for (uint8_t r = 19; r <= 26; r++) {
+                    for (uint8_t i = 0; i < no_spill_saved_reg_count; i++) {
                         restore_offset -= 4;
-                        emit_lw_phys(&ctx, r, restore_offset, 2);
+                        emit_lw_phys(&ctx, (uint8_t)(19 + i), restore_offset, 2);
                     }
                 }
 
-                // Always restore ra
-                restore_offset -= 4;
-                emit_lw_phys(&ctx, 1, restore_offset, 2);
+                if (!no_spill_fastpath) {
+                    restore_offset -= 4;
+                    emit_lw_phys(&ctx, 1, restore_offset, 2);
+                }
 
-                // s0, s1, s2
-                restore_offset -= 4;
-                emit_lw_phys(&ctx, 8, restore_offset, 2);
-                restore_offset -= 4;
-                emit_lw_phys(&ctx, 9, restore_offset, 2);
-                restore_offset -= 4;
-                emit_lw_phys(&ctx, 18, restore_offset, 2);
+                if (!no_spill_fastpath) {
+                    restore_offset -= 4;
+                    emit_lw_phys(&ctx, 8, restore_offset, 2);
+                    restore_offset -= 4;
+                    emit_lw_phys(&ctx, 9, restore_offset, 2);
+                }
+                if (!no_spill_stackless) {
+                    restore_offset -= 4;
+                    emit_lw_phys(&ctx, 18, restore_offset, 2);
+                }
 
                 if (stable_cache_enabled) {
                     // s4/s5 (stable cache regs)
@@ -8167,7 +8705,7 @@ divs_i64_general_case:
                 }
                 
                 // Освобождаем стек фрейм
-                emit_addi_phys(&ctx, 2, 2, (int16_t)total_frame_size); // sp += frame_size
+                if (total_frame_size != 0) emit_addi_phys(&ctx, 2, 2, (int16_t)total_frame_size);
                 
                 // Возврат
                 emit_jalr_phys(&ctx, 0, 1, 0); // ret (jalr x0, ra, 0)
@@ -8279,21 +8817,27 @@ divs_i64_general_case:
 
         // NO_SPILL fast-path: restore s3..s10 (callee-saved)
         if (no_spill_fastpath) {
-            for (uint8_t r = 19; r <= 26; r++) {
+            for (uint8_t i = 0; i < no_spill_saved_reg_count; i++) {
                 restore_offset -= 4;
-                emit_lw_phys(&ctx, r, restore_offset, 2);
+                emit_lw_phys(&ctx, (uint8_t)(19 + i), restore_offset, 2);
             }
         }
 
-        restore_offset -= 4;
-        emit_lw_phys(&ctx, 1, restore_offset, 2);
+        if (!no_spill_fastpath) {
+            restore_offset -= 4;
+            emit_lw_phys(&ctx, 1, restore_offset, 2);
+        }
 
-        restore_offset -= 4;
-        emit_lw_phys(&ctx, 8, restore_offset, 2);
-        restore_offset -= 4;
-        emit_lw_phys(&ctx, 9, restore_offset, 2);
-        restore_offset -= 4;
-        emit_lw_phys(&ctx, 18, restore_offset, 2);
+        if (!no_spill_fastpath) {
+            restore_offset -= 4;
+            emit_lw_phys(&ctx, 8, restore_offset, 2);
+            restore_offset -= 4;
+            emit_lw_phys(&ctx, 9, restore_offset, 2);
+        }
+        if (!no_spill_stackless) {
+            restore_offset -= 4;
+            emit_lw_phys(&ctx, 18, restore_offset, 2);
+        }
 
         if (stable_cache_enabled) {
             restore_offset -= 4;
@@ -8306,7 +8850,7 @@ divs_i64_general_case:
             emit_lw_phys(&ctx, 23, restore_offset, 2);
         }
         
-        emit_addi_phys(&ctx, 2, 2, (int16_t)total_frame_size);
+        if (total_frame_size != 0) emit_addi_phys(&ctx, 2, 2, (int16_t)total_frame_size);
         emit_jalr_phys(&ctx, 0, 1, 0);
     } 
     
@@ -8404,8 +8948,20 @@ divs_i64_general_case:
     }
 #endif
 
+    if (no_spill_fastpath) {
+        printf("[JIT_MACHINE_CODE] func=%u bytes=%u stackless=%u i64_mask=0x%02x saved=%u frame=%u internal=%u args=%u returns=%u internal_off=%u\n",
+               (unsigned)func_idx, (unsigned)ctx.offset, (unsigned)no_spill_stackless,
+               (unsigned)no_spill_i64_mask, (unsigned)no_spill_saved_reg_count, (unsigned)total_frame_size,
+               (unsigned)no_spill_internal_abi, (unsigned)no_spill_num_args,
+               (unsigned)no_spill_num_returns, (unsigned)internal_entry_offset);
+    }
+    jit_body->jit_code_internal = (no_spill_internal_abi && internal_entry_offset != SIZE_MAX) ?
+        (void*)(exec_buffer + internal_entry_offset) : NULL;
     *out_code = exec_buffer;
     *out_size = ctx.offset;
+    ((EspbFunctionBody*)body)->jit_compact_call_frame = no_spill_fastpath;
+    ((EspbFunctionBody*)body)->jit_call_zero_mask = no_spill_fastpath ? no_spill_zero_mask : 0xFF;
+    ((EspbFunctionBody*)body)->jit_i32_high_clear_mask = no_spill_fastpath ? no_spill_i32_high_clear_mask : 0xFF;
     
     // JIT compilation successful (silent mode)
 

@@ -1,4 +1,4 @@
-﻿/*
+/*
  * espb component
  * Copyright (C) 2025 Smersh
  *
@@ -681,6 +681,15 @@ EspbResult espb_parse_code_section(EspbModule *module) {
         body->jit_code = NULL;
         body->jit_code_size = 0;
         body->is_jit_compiled = false;
+        body->jit_compact_call_frame = false;
+        body->jit_call_zero_mask = 0xFF;
+        body->jit_i32_high_clear_mask = 0xFF;
+        body->jit_code_internal = NULL;
+        body->jit_internal_abi = 0;
+        body->jit_num_args = 0;
+        body->jit_max_reg_used = 0;
+        memset(body->jit_vreg_phys_lo, 0, sizeof(body->jit_vreg_phys_lo));
+        memset(body->jit_vreg_phys_hi, 0, sizeof(body->jit_vreg_phys_hi));
         
         // ВАЛИДАЦИЯ: Проверяем согласованность метаданных
         // Это единственная валидация при загрузке - runtime проверки отключены в релизе
