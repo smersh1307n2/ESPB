@@ -1779,10 +1779,18 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                 }
           op_0x03: { // BR_IF reg(u8), offset(i16)
               uint8_t cond_reg = *pc++;
-              int16_t offset = *(int16_t*)pc;
-              pc += 2;
+              int16_t offset = 0;
               if (__builtin_expect(V_I32(locals[cond_reg]) != 0, 0)) {
+                  offset = (int16_t)(
+                      (uint16_t)*(volatile const uint8_t *)pc |
+                      ((uint16_t)*(volatile const uint8_t *)(pc + 1) << 8));
+                  pc += 2;
                   pc = (pc - 4) + offset;
+              } else {
+#if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
+                  offset = *(int16_t*)pc;
+#endif
+                  pc += 2;
               }
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
               ESP_LOGD(TAG, "BR_IF R%u (%s), offset %d", 
