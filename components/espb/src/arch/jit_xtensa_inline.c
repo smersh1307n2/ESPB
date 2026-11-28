@@ -1,4 +1,4 @@
-﻿/*
+/*
  * espb component
  * Copyright (C) 2025 Smersh
  *
@@ -789,10 +789,8 @@ static void jit_call_espb_function_xtensa(EspbInstance* instance, uint32_t local
         if (needed_regs == 0 || needed_regs > 256) needed_regs = 256;
         if (max_used > needed_regs) needed_regs = max_used;
 
-        // Match the bytecode emitter's reserved temporary register window R16..R23.
-        // A few translated functions emit into these slots without including them
-        // in num_virtual_regs, so the CALL frame must cover the full window.
-        if (needed_regs < 24u) needed_regs = 24u;
+        // Size the callee frame from declared and actually referenced virtual registers.
+        // max_reg_used covers translator temporaries even when num_virtual_regs is smaller.
 
         Value *callee_regs = (Value*)alloca((size_t)needed_regs * sizeof(Value));
         if (!callee_regs) goto slow_path;
@@ -2182,6 +2180,28 @@ static void patch_bgeu_at(uint8_t* buf, uint32_t br_pos, int32_t target) {
 //   byte0 = 0x97
 //   byte1 = (cond_nibble << 4) | 0x8
 //   byte2 = imm8, delta_bytes = (imm8 + 1)
+
+static uint32_t emit_bcc_reg_placeholder(XtensaJitContext* ctx, uint8_t cond_nibble,
+                                         uint8_t rs, uint8_t rt) {
+    if (rs > 15u || rt > 15u || cond_nibble > 15u) { ctx->error = true; return (uint32_t)ctx->offset; }
+    const uint32_t pos = (uint32_t)ctx->offset;
+    emit_u8(ctx, (uint8_t)((rt << 4) | 0x07u));
+    emit_u8(ctx, (uint8_t)((cond_nibble << 4) | rs));
+    emit_u8(ctx, 0);
+    return pos;
+}
+
+static void patch_bcc_reg_at(uint8_t* buf, uint32_t br_pos, int32_t target) {
+    const int32_t delta = target - (int32_t)(br_pos + 3u);
+    const int32_t imm = delta - 1;
+    if (imm < 0 || imm > 0xFF) {
+        ESP_LOGE(TAG, "patch_bcc_reg_at: out of range br_pos=%u target=%d imm=%d",
+                 (unsigned)br_pos, (int)target, (int)imm);
+        return;
+    }
+    store_u8_exec(buf, br_pos + 2u, (uint8_t)imm);
+}
+
 static uint32_t emit_bcc_a8_a9_placeholder(XtensaJitContext* ctx, uint8_t cond_nibble) {
     // BNE/BEQ a8, a9 - verified by objdump:
     //   bne a8, a9, +6 => bytes 97 98 02 in memory
@@ -2276,6 +2296,26 @@ static void patch_beqz_n_a8_at(uint8_t* buf, uint32_t br_pos, int32_t delta_byte
     store_u16_exec(buf, br_pos, ins);
 }
 
+// BEQZ.N with a selectable register (a8..a15), including vcache GPRs a12..a15.
+static uint32_t emit_beqz_n_reg_placeholder(XtensaJitContext* ctx, uint8_t reg) {
+    if (reg < 8u || reg > 15u) { ctx->error = true; return (uint32_t)ctx->offset; }
+    const uint32_t pos = (uint32_t)ctx->offset;
+    emit_u16(ctx, (uint16_t)(0x008Cu | ((uint16_t)reg << 8)));
+    return pos;
+}
+
+static void patch_beqz_n_reg_at(uint8_t* buf, uint32_t br_pos, uint8_t reg, int32_t delta_bytes) {
+    const int32_t imm = delta_bytes - 2;
+    if (reg < 8u || reg > 15u || imm < 0 || imm > 31) {
+        ESP_LOGE(TAG, "patch_beqz_n_reg_at: reg=%u delta=%d imm=%d OUT OF RANGE!",
+                 (unsigned)reg, (int)delta_bytes, (int)imm);
+        return;
+    }
+    const uint16_t ins = (uint16_t)(0x008Cu | ((uint16_t)reg << 8) |
+                                    ((imm & 0x0F) << 12) | (imm & 0x10));
+    store_u16_exec(buf, br_pos, ins);
+}
+
 // BEQZ a8, target (3-byte, wider range) -- patchable
 // Derived from objdump for far branches:
 //   beqz a8, L => word 0x195816 => bytes 16 58 19
@@ -2332,12 +2372,12 @@ static void emit_addi(XtensaJitContext* ctx, uint8_t ar, uint8_t as, int8_t imm)
 // ENTRY aS, framesize (windowed call entry)
 // framesize is in units of 8 bytes (0-4095, representing 0-32760 bytes)
 static void emit_entry(XtensaJitContext* ctx, uint8_t as, uint16_t framesize_bytes) {
-    // Verified by objdump: entry a1,64 => bytes 36 81 00
-    // For ESP32: entry a1, N encodes N directly (not N/8) in a compact form.
-    // We implement only entry a1,64 for now (enough to bootstrap).
-    if (as == 1 && framesize_bytes == 64) {
+    // Xtensa ENTRY encodes the stack decrement in 16-byte units:
+    // entry a1,16 => 36 21 00; entry a1,64 => 36 81 00.
+    if (as == 1 && framesize_bytes >= 16 && framesize_bytes <= 2048 &&
+        (framesize_bytes & 0x0Fu) == 0) {
         emit_u8(ctx, 0x36);
-        emit_u8(ctx, 0x81);
+        emit_u8(ctx, (uint8_t)(0x01u | ((framesize_bytes / 16u) << 5)));
         emit_u8(ctx, 0x00);
         return;
     }
@@ -3107,14 +3147,17 @@ static bool xtensa_vcache_scan_blocks(const uint8_t *code, size_t code_size,
             pc += sizeof(count);
             const size_t target_count = (size_t)count + 1u;
             if (target_count > (code_size - pc) / 2u) goto undecodable;
+            // BR_TABLE offsets are relative to the PC after the complete table,
+            // including its default target entry.
+            const size_t table_end = pc + target_count * sizeof(int16_t);
             for (size_t i = 0; i < target_count; ++i) {
                 int16_t rel;
-                memcpy(&rel, code + pc, sizeof(rel));
-                pc += sizeof(rel);
-                const int32_t target = (int32_t)source + (int32_t)rel;
+                memcpy(&rel, code + pc + i * sizeof(int16_t), sizeof(rel));
+                const int32_t target = (int32_t)table_end + (int32_t)rel;
                 if (target < 0 || target > (int32_t)code_size) goto undecodable;
                 block_map[(size_t)target] |= 0x01u;
             }
+            pc = table_end;
             continue;
         }
         if (op == 0x09) { /* CALL_IMPORT with optional typed variadic tail */
@@ -3135,6 +3178,7 @@ static bool xtensa_vcache_scan_blocks(const uint8_t *code, size_t code_size,
             switch (subop) {
                 case 0x00: operand_bytes = 7; break;
                 case 0x01: operand_bytes = 4; break;
+                case 0x05: operand_bytes = 4; break;
                 case 0x02: case 0x03: case 0x06: operand_bytes = 3; break;
                 case 0x04: operand_bytes = 8; break;
                 case 0x07: operand_bytes = 1; break;
@@ -3167,6 +3211,1137 @@ undecodable:
     if (blocked_at) *blocked_at = fail_offset;
     if (blocked_opcode) *blocked_opcode = fail_opcode;
     return false;
+}
+
+
+
+typedef struct {
+    uint16_t offset;
+    uint16_t target_offset;
+    int16_t target_index;
+    uint8_t read_lo, write_lo;
+    uint8_t read_hi, write_hi;
+    uint8_t i32_write;
+    uint8_t branch_kind; /* 0=fallthrough, 1=BR, 2=BR_IF, 3=END */
+    uint8_t call_index;  /* 0xFF when this instruction is not a call */
+    uint8_t barrier;     /* generic emitter uses Value[] and may clobber a8-a15 */
+} XtensaNoSpillInsn;
+
+typedef struct {
+    uint16_t offset;
+    uint8_t save_lo, save_hi;
+    uint8_t reload_lo, reload_hi;
+    uint8_t arg_count;
+    uint8_t has_result;
+} XtensaNoSpillCallSite;
+
+typedef struct {
+    uint8_t phys_lo[8];
+    uint8_t phys_hi[8];
+    uint8_t livein_lo;
+    uint8_t livein_hi;
+    uint8_t high_clear_mask;
+    uint16_t used_phys_mask;
+    uint8_t phys_count;
+    uint8_t max_pressure;
+    uint8_t call_count;
+    uint8_t reserve_a8;
+    XtensaNoSpillCallSite calls[32];
+    uint16_t barrier_count;
+    uint16_t barrier_offsets[192];
+    uint8_t barrier_save_lo[192];
+    uint8_t barrier_save_hi[192];
+    uint8_t barrier_reload_lo[192];
+    uint8_t barrier_reload_hi[192];
+} XtensaNoSpillMap;
+
+/* Large bytecode/liveness scratch is heap-backed to keep the ESP32 task stack bounded. */
+typedef struct {
+    XtensaNoSpillInsn insns[256];
+    bool boundary[2049];
+    uint8_t in_lo[256], in_hi[256];
+    bool reachable[256];
+    uint8_t high_in[256], high_out[256];
+    uint8_t low_live_in[256], low_live_out[256];
+    uint8_t call_hi_live_out[256];
+} XtensaNoSpillScratch;
+
+typedef struct {
+    uint16_t start;
+    uint16_t end;
+    uint8_t vreg;
+    uint8_t high;
+    uint8_t crosses_call;
+} XtensaNoSpillInterval;
+
+/*
+ * Conservative automatic Xtensa register allocation (NO_SPILL).
+ * No leaf/NO_SPILL annotation is required: decoding the entire function below
+ * proves that every instruction is inline-lowerable and helper-free; calls,
+ * memory operations and unknown opcodes reject the path. Each Value half gets
+ * its own interval; the allocator may reuse a GPR once the previous interval
+ * has ended. This allows mixed I32/I64 functions to fit the eight local GPRs
+ * a8-a15 without assuming that every virtual register is simultaneously live.
+ */
+static bool xtensa_try_build_nospill_map(const EspbInstance* instance,
+                                         const EspbFunctionBody* body,
+                                         XtensaNoSpillMap* out)
+{
+    if (!instance || !instance->module || !body || !body->code || !out) return false;
+    memset(out, 0, sizeof(*out));
+    memset(out->phys_lo, 0xFF, sizeof(out->phys_lo));
+    memset(out->phys_hi, 0xFF, sizeof(out->phys_hi));
+
+    const uint8_t max_reg = body->header.max_reg_used;
+    out->reserve_a8 = (max_reg > 7u) ? 1u : 0u;
+    const uint16_t num_regs = body->header.num_virtual_regs;
+    const uint16_t code_size = body->code_size;
+    if (num_regs == 0 || max_reg >= num_regs ||
+        code_size == 0 || code_size > 2048) {
+        if (code_size > 300) ESP_LOGI(TAG, "[NO_SPILL-REJECT] header max=%u regs=%u bytes=%u",
+                                      (unsigned)max_reg, (unsigned)num_regs, (unsigned)code_size);
+        return false;
+    }
+
+    enum { MAX_INSNS = 256 };
+    XtensaNoSpillScratch* scratch = heap_caps_calloc(1, sizeof(*scratch), MALLOC_CAP_8BIT);
+    if (!scratch) return false;
+#define XNS_RETURN_FALSE() do { heap_caps_free(scratch); return false; } while (0)
+    XtensaNoSpillInsn* insns = scratch->insns;
+    bool* boundary = scratch->boundary;
+    uint8_t* in_lo = scratch->in_lo;
+    uint8_t* in_hi = scratch->in_hi;
+    bool* reachable = scratch->reachable;
+    uint8_t* high_in = scratch->high_in;
+    uint8_t* high_out = scratch->high_out;
+    uint8_t* low_live_in = scratch->low_live_in;
+    uint8_t* low_live_out = scratch->low_live_out;
+    uint8_t* call_hi_live_out = scratch->call_hi_live_out;
+    uint16_t count = 0;
+    const uint8_t* pc = body->code;
+    const uint8_t* end = pc + code_size;
+    uint16_t first[16], last[16];
+    for (unsigned i = 0; i < 16; ++i) { first[i] = UINT16_MAX; last[i] = 0; }
+
+#define XNS_TOUCH(v, h, pos) do { \
+        unsigned _k = (unsigned)(v) * 2u + (unsigned)(h); \
+        if ((pos) < first[_k]) first[_k] = (uint16_t)(pos); \
+        if ((pos) > last[_k]) last[_k] = (uint16_t)(pos); \
+    } while (0)
+#define XNS_VALID_REG(r) ((r) <= max_reg && (r) < num_regs)
+
+    bool saw_end = false;
+    while (pc < end) {
+        if (count >= MAX_INSNS) {
+            if (code_size > 300) ESP_LOGI(TAG, "[NO_SPILL-REJECT] instruction count exceeds %u", (unsigned)MAX_INSNS);
+            XNS_RETURN_FALSE();
+        }
+        XtensaNoSpillInsn* in = &insns[count++];
+        memset(in, 0, sizeof(*in));
+        in->offset = (uint16_t)(pc - body->code);
+        in->target_index = -1;
+        in->call_index = 0xFFu;
+        in->barrier = 0;
+        boundary[in->offset] = true;
+        const uint8_t op = *pc++;
+        uint8_t rd = 0, r1 = 0, r2 = 0;
+        int16_t rel = 0;
+
+        switch (op) {
+            case 0x00: case 0x01: /* NOP */
+                break;
+            case 0x0F: /* END returns v0 as a full Value */
+                in->read_lo |= 0x01;
+                in->read_hi |= 0x01;
+                in->branch_kind = 3;
+                saw_end = true;
+                break;
+            case 0x02: /* BR rel16 */
+                if ((size_t)(end - pc) < 2) XNS_RETURN_FALSE();
+                memcpy(&rel, pc, sizeof(rel)); pc += 2;
+                in->branch_kind = 1;
+                break;
+            case 0x03: /* BR_IF cond, rel16 */
+                if ((size_t)(end - pc) < 3 || !XNS_VALID_REG(pc[0])) XNS_RETURN_FALSE();
+                r1 = *pc++;
+                if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                /* Unmapped BR_IF operands use a2 as scratch; a8 remains allocatable. */
+                memcpy(&rel, pc, sizeof(rel)); pc += 2;
+                in->branch_kind = 2;
+                break;
+            case 0x18: { /* LDC.I32 */
+                if ((size_t)(end - pc) < 5 || !XNS_VALID_REG(pc[0])) XNS_RETURN_FALSE();
+                rd = *pc++;
+                int32_t imm; memcpy(&imm, pc, sizeof(imm)); pc += 4;
+                if (rd < 8 && imm >= -2048 && imm <= 2047) {
+                    in->write_lo |= (uint8_t)(1u << rd);
+                    in->i32_write |= (uint8_t)(1u << rd);
+                } else {
+                    in->barrier = 1;
+                    if (rd < 8) {
+                        in->write_lo |= (uint8_t)(1u << rd);
+                        in->write_hi |= (uint8_t)(1u << rd);
+                    }
+                }
+                break;
+            }
+            case 0x19: { /* LDC.I64 */
+                if ((size_t)(end - pc) < 9 || !XNS_VALID_REG(pc[0])) XNS_RETURN_FALSE();
+                rd = *pc++;
+                int64_t imm; memcpy(&imm, pc, sizeof(imm)); pc += 8;
+                const int32_t lo = (int32_t)(uint32_t)(uint64_t)imm;
+                const int32_t hi = (int32_t)(uint32_t)((uint64_t)imm >> 32);
+                if (rd >= 8 || lo < -2048 || lo > 2047 || hi < -2048 || hi > 2047)
+                    in->barrier = 1;
+                if (rd < 8) {
+                    in->write_lo |= (uint8_t)(1u << rd);
+                    in->write_hi |= (uint8_t)(1u << rd);
+                }
+                break;
+            }
+            case 0x12: /* MOV.I32 / full Value copy */
+            case 0x13: /* MOV.64 */
+                if ((size_t)(end - pc) < 2 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++;
+                if (r1 < 8) { in->read_lo |= (uint8_t)(1u << r1); in->read_hi |= (uint8_t)(1u << r1); }
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                if (rd >= 8 || r1 >= 8) in->barrier = 1;
+                break;
+            case 0x20: /* ADD.I32 */
+            case 0x21: /* SUB.I32 */
+            case 0x22: /* MUL.I32 */
+            case 0x2B: /* SHL.I32 */
+            case 0x2C: /* SHRS.I32 */
+            case 0x2D: /* SHRU.I32 */
+            case 0x28: /* AND.I32 */
+            case 0x29: /* OR.I32 */
+            case 0x2A: /* XOR.I32 */
+            case 0xC0: /* CMP.EQ.I32 */
+            case 0xC1: /* CMP.NE.I32 */
+            case 0xC2: /* CMP.LTS.I32 */
+            case 0xC5: /* CMP.GE.I32S */
+                if ((size_t)(end - pc) < 3 || !XNS_VALID_REG(pc[0]) ||
+                    !XNS_VALID_REG(pc[1]) || !XNS_VALID_REG(pc[2])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++; r2 = *pc++;
+                if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                if (r2 < 8) in->read_lo |= (uint8_t)(1u << r2);
+                if (rd < 8) in->write_lo |= (uint8_t)(1u << rd);
+                if (rd >= 8 || r1 >= 8 || r2 >= 8) in->barrier = 1;
+                if (rd < 8 && op >= 0x2B && op <= 0x2D) { in->write_hi |= (uint8_t)(1u << rd); in->barrier = 1; }
+                if ((op == 0xC0 || op == 0xC2) && (rd == r1 || rd == r2)) XNS_RETURN_FALSE();
+                if (rd < 8 && (op == 0x20 || op == 0x21 || op == 0x22 ||
+                    op == 0x28 || op == 0x29 || op == 0x2A ||
+                    op == 0xC0 || op == 0xC2 || (op >= 0x2B && op <= 0x2D)))
+                    in->i32_write |= (uint8_t)(1u << rd);
+                if (rd < 8 && op >= 0xC0 && op <= 0xC9)
+                    in->write_hi |= (uint8_t)(1u << rd); /* boolean high word = 0 */
+                /* C1/C3-C9 use the Value[] emitter; C2 has a direct mapped-register lowering. */
+                if (op == 0xC1 || op == 0xC5) in->barrier = 1;
+                break;
+            case 0x23: /* DIVS.I32 */
+            case 0x24: /* REMS.I32 */
+            case 0x26: /* DIVU.I32 */
+            case 0x27: /* REMU.I32 */
+                if ((size_t)(end - pc) < 3 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1]) || !XNS_VALID_REG(pc[2])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++; r2 = *pc++;
+                if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                if (r2 < 8) in->read_lo |= (uint8_t)(1u << r2);
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                in->barrier = 1; /* helper call: round-trip live mapped values */
+                break;
+            case 0x30: /* ADD.I64 */
+            case 0x31: /* SUB.I64 */
+                if ((size_t)(end - pc) < 3 || !XNS_VALID_REG(pc[0]) ||
+                    !XNS_VALID_REG(pc[1]) || !XNS_VALID_REG(pc[2])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++; r2 = *pc++;
+                if (r1 < 8) { in->read_lo |= (uint8_t)(1u << r1); in->read_hi |= (uint8_t)(1u << r1); }
+                if (r2 < 8) { in->read_lo |= (uint8_t)(1u << r2); in->read_hi |= (uint8_t)(1u << r2); }
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                if (rd >= 8 || r1 >= 8 || r2 >= 8) in->barrier = 1;
+                break;
+            case 0x32: /* MUL.I64 */
+            case 0x33: /* DIVS.I64 */
+            case 0x34: /* REMS.I64 */
+            case 0x35: /* DIVS.I64 legacy */
+            case 0x37: /* REMU.I64 */
+            case 0x3B: /* SHL.I64 helper */
+            case 0x3C: /* SHR.I64 helper */
+            case 0x3D: /* USHR.I64 helper */
+                if ((size_t)(end - pc) < 3 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1]) || !XNS_VALID_REG(pc[2]) || out->call_count >= 32) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++; r2 = *pc++;
+                if (r1 < 8) { in->read_lo |= (uint8_t)(1u << r1); in->read_hi |= (uint8_t)(1u << r1); }
+                if (r2 < 8) { in->read_lo |= (uint8_t)(1u << r2); in->read_hi |= (uint8_t)(1u << r2); }
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                in->call_index = out->call_count;
+                out->calls[out->call_count++] = (XtensaNoSpillCallSite){ .offset = in->offset, .arg_count = 2, .has_result = 1 };
+                in->barrier = 1;
+                break;
+            case 0x38: /* AND.I64 */
+            case 0x39: /* OR.I64 */
+            case 0x3A: /* XOR.I64 */
+                if ((size_t)(end - pc) < 3 || !XNS_VALID_REG(pc[0]) ||
+                    !XNS_VALID_REG(pc[1]) || !XNS_VALID_REG(pc[2])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++; r2 = *pc++;
+                if (r1 < 8) { in->read_lo |= (uint8_t)(1u << r1); in->read_hi |= (uint8_t)(1u << r1); }
+                if (r2 < 8) { in->read_lo |= (uint8_t)(1u << r2); in->read_hi |= (uint8_t)(1u << r2); }
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                if (rd >= 8 || r1 >= 8 || r2 >= 8) in->barrier = 1;
+                break;
+            case 0x50: /* ADD.I64.IMM8 */
+            case 0x51: /* SUB.I64.IMM8 */
+                if ((size_t)(end - pc) < 3 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++; pc++;
+                if (r1 < 8) { in->read_lo |= (uint8_t)(1u << r1); in->read_hi |= (uint8_t)(1u << r1); }
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                if (rd >= 8 || r1 >= 8) in->barrier = 1;
+                break;
+            case 0x52: /* MUL.I64.IMM8 helper */
+            case 0x53: /* DIVS.I64.IMM8 helper */
+            case 0x54: /* DIVU.I64.IMM8 helper */
+            case 0x55: /* REMS.I64.IMM8 helper */
+            case 0x56: /* REMU.I64.IMM8 helper */
+                if ((size_t)(end - pc) < 3 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1]) || out->call_count >= 32) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++; pc++;
+                if (r1 < 8) { in->read_lo |= (uint8_t)(1u << r1); in->read_hi |= (uint8_t)(1u << r1); }
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                in->call_index = out->call_count;
+                out->calls[out->call_count++] = (XtensaNoSpillCallSite){ .offset = in->offset, .arg_count = 1, .has_result = 1 };
+                in->barrier = 1; /* keep I64 IMM8 helpers on proven general path */
+                break;
+            case 0x58: /* SHRU.I64.IMM8 */
+                if ((size_t)(end - pc) < 3 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++; pc++;
+                if (r1 < 8) { in->read_lo |= (uint8_t)(1u << r1); in->read_hi |= (uint8_t)(1u << r1); }
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                if (rd >= 8 || r1 >= 8) in->barrier = 1;
+                break;
+            case 0x09: { /* CALL_IMPORT */
+                if ((size_t)(end - pc) < 2) XNS_RETURN_FALSE();
+                const uint16_t import_idx = (uint16_t)pc[0] | ((uint16_t)pc[1] << 8);
+                pc += 2;
+                const EspbModule* module = instance->module;
+                if (import_idx >= module->num_imports || !module->imports ||
+                    !module->signatures || out->call_count >= 32 ||
+                    module->imports[import_idx].kind != ESPB_IMPORT_KIND_FUNC) XNS_RETURN_FALSE();
+                const uint16_t sig_idx = module->imports[import_idx].desc.func.type_idx;
+                if (sig_idx >= module->num_signatures) XNS_RETURN_FALSE();
+                const EspbFuncSignature* sig = &module->signatures[sig_idx];
+                uint8_t args = sig->num_params;
+                if (pc < end && *pc == 0xAA) {
+                    ++pc;
+                    if (pc >= end) XNS_RETURN_FALSE();
+                    args = *pc++;
+                    if (args > 16 || (size_t)(end - pc) < args) XNS_RETURN_FALSE();
+                    pc += args;
+                }
+                if (args > 16 || args > num_regs || sig->num_returns > 1) XNS_RETURN_FALSE();
+                for (uint8_t a = 0; a < args && a < 8; ++a) {
+                    in->read_lo |= (uint8_t)(1u << a);
+                    in->read_hi |= (uint8_t)(1u << a);
+                }
+                if (sig->num_returns > 0) {
+                    in->write_lo |= 0x01u;
+                    in->write_hi |= 0x01u;
+                }
+                in->call_index = out->call_count;
+                out->calls[out->call_count++] = (XtensaNoSpillCallSite){
+                    .offset = in->offset, .arg_count = args,
+                    .has_result = (uint8_t)(sig->num_returns > 0)
+                };
+                break;
+            }
+            case 0x0A: { /* CALL local_func_idx(u16) */
+                if ((size_t)(end - pc) < 2) XNS_RETURN_FALSE();
+                const uint16_t local_func_idx = (uint16_t)pc[0] | ((uint16_t)pc[1] << 8);
+                pc += 2;
+                const EspbModule* module = instance->module;
+                if (local_func_idx >= module->num_functions ||
+                    !module->function_signature_indices || !module->signatures ||
+                    out->call_count >= 32) XNS_RETURN_FALSE();
+                const uint16_t sig_idx = module->function_signature_indices[local_func_idx];
+                const EspbFuncSignature* sig = &module->signatures[sig_idx];
+                const uint8_t args = sig->num_params;
+                if (args > 16 || args > num_regs || sig->num_returns > 1) XNS_RETURN_FALSE();
+                for (uint8_t a = 0; a < args && a < 8; ++a) {
+                    in->read_lo |= (uint8_t)(1u << a);
+                    in->read_hi |= (uint8_t)(1u << a);
+                }
+                if (sig->num_returns > 0) {
+                    in->write_lo |= 0x01u;
+                    in->write_hi |= 0x01u;
+                }
+                in->call_index = out->call_count;
+                out->calls[out->call_count++] = (XtensaNoSpillCallSite){
+                    .offset = in->offset,
+                    .arg_count = args,
+                    .has_result = (uint8_t)(sig->num_returns > 0)
+                };
+                break;
+            }
+            case 0x40: /* ADD.I32.IMM8 */
+            case 0x41: /* SUB.I32.IMM8 */
+                if ((size_t)(end - pc) < 3 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++; pc++;
+                if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                if (rd < 8) in->write_lo |= (uint8_t)(1u << rd);
+                if (rd >= 8 || r1 >= 8) in->barrier = 1;
+                if (rd < 8) in->i32_write |= (uint8_t)(1u << rd);
+                break;
+            case 0x42: /* MUL.I32.IMM8 */
+            case 0x43: /* DIVS.I32.IMM8 */
+            case 0x44: /* DIVU.I32.IMM8 */
+            case 0x45: /* REMS.I32.IMM8 */
+            case 0x46: /* REMU.I32.IMM8 */
+            case 0x47: /* SHRS.I32.IMM8 */
+            case 0x48: /* SHRU.I32.IMM8 */
+            case 0x49: /* AND.I32.IMM8 */
+            case 0x4A: /* OR.I32.IMM8 */
+            case 0x4B: /* XOR.I32.IMM8 */
+                if ((size_t)(end - pc) < 3 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++; pc++;
+                if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); in->i32_write |= (uint8_t)(1u << rd); }
+                in->barrier = 1;
+                break;
+            case 0xBD: /* INTTOPTR */
+                if ((size_t)(end - pc) < 2 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++;
+                if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                in->barrier = 1; /* PTR type tag is stored in Value[] high word */
+                break;
+            case 0x9D: /* SEXT.I8.I32 */
+                if ((size_t)(end - pc) < 2 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++;
+                if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                in->barrier = 1; /* I32 type tag and sign-extended result live in Value[] */
+                break;
+            case 0x9F: /* SEXT.I16.I32 */
+                if ((size_t)(end - pc) < 2 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++;
+                if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                in->barrier = 1; /* I32 type tag and sign-extended result live in Value[] */
+                break;
+            case 0x99: /* ZEXT.I16.I32 */
+                if ((size_t)(end - pc) < 2 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++;
+                if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                in->barrier = 1; /* I32 type tag and zero-extended result live in Value[] */
+                break;
+            case 0xA1: /* SEXT.I32.I64 */
+                if ((size_t)(end - pc) < 2 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++;
+                if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                if (rd >= 8 || r1 >= 8) in->barrier = 1;
+                break;
+            case 0x1F: /* ST_GLOBAL global_idx(u16), Rs */
+                if ((size_t)(end - pc) < 3 || !XNS_VALID_REG(pc[2])) XNS_RETURN_FALSE();
+                pc += 2; r1 = *pc++;
+                if (r1 < 8) { in->read_lo |= (uint8_t)(1u << r1); in->read_hi |= (uint8_t)(1u << r1); }
+                in->barrier = 1;
+                break;
+            case 0x1A: /* LDC.F32 */
+                if ((size_t)(end - pc) < 5 || !XNS_VALID_REG(pc[0])) XNS_RETURN_FALSE();
+                rd = *pc++; pc += 4;
+                if (rd < 8) in->write_lo |= (uint8_t)(1u << rd);
+                in->barrier = 1; /* low-word store; preserve a live high word across Value[] */
+                break;
+            case 0x1B: /* LDC.F64 */
+                if ((size_t)(end - pc) < 9 || !XNS_VALID_REG(pc[0])) XNS_RETURN_FALSE();
+                rd = *pc++; pc += 8;
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                in->barrier = 1;
+                break;
+            case 0x1E: /* LD_GLOBAL */
+                if ((size_t)(end - pc) < 3 || !XNS_VALID_REG(pc[0])) XNS_RETURN_FALSE();
+                rd = *pc++; pc += 2;
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                in->barrier = 1;
+                break;
+            case 0x1D: /* LD_GLOBAL_ADDR */
+                if ((size_t)(end - pc) < 3 || !XNS_VALID_REG(pc[0])) XNS_RETURN_FALSE();
+                rd = *pc++; pc += 2;
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                in->barrier = 1;
+                break;
+            case 0x36: /* DIV.I64.U */
+            case 0x6B: /* DIV.F64 */
+                if (out->call_count >= 32) XNS_RETURN_FALSE();
+                if ((size_t)(end - pc) < 3 || !XNS_VALID_REG(pc[0]) ||
+                    !XNS_VALID_REG(pc[1]) || !XNS_VALID_REG(pc[2])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++; r2 = *pc++;
+                if (r1 < 8) { in->read_lo |= (uint8_t)(1u << r1); in->read_hi |= (uint8_t)(1u << r1); }
+                if (r2 < 8) { in->read_lo |= (uint8_t)(1u << r2); in->read_hi |= (uint8_t)(1u << r2); }
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                in->call_index = out->call_count;
+                out->calls[out->call_count++] = (XtensaNoSpillCallSite){ .offset = in->offset, .arg_count = 2, .has_result = 1 };
+                in->barrier = 1;
+                break;
+            case 0x78: /* STORE.F32 */
+            case 0x70: /* STORE.I8 */
+            case 0x71: /* STORE.U8 */
+            case 0x72: /* STORE.I16 */
+            case 0x73: /* STORE.U16 */
+            case 0x74: /* STORE.I32 */
+            case 0x76: /* STORE.I64 */
+            case 0x79: /* STORE.F64 */
+            case 0x7A: /* STORE.PTR */
+                if ((size_t)(end - pc) < 4 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1])) XNS_RETURN_FALSE();
+                r1 = *pc++; r2 = *pc++; pc += 2;
+                if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                if (r2 < 8) in->read_lo |= (uint8_t)(1u << r2);
+                if ((op == 0x76 || op == 0x79) && r1 < 8) in->read_hi |= (uint8_t)(1u << r1);
+                in->barrier = 1;
+                break;
+            case 0x80: /* LOAD.I8S */
+            case 0x81: /* LOAD.I8U */
+            case 0x82: /* LOAD.I16S */
+            case 0x83: /* LOAD.I16U */
+            case 0x84: /* LOAD.I32 */
+            case 0x85: /* LOAD.I64 */
+            case 0x86: /* LOAD.F32 */
+            case 0x87: /* LOAD.F64 */
+            case 0x88: /* LOAD.PTR */
+                if ((size_t)(end - pc) < 4 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++; pc += 2;
+                if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                in->barrier = 1;
+                break;
+            case 0x8F: /* ALLOCA */
+                if ((size_t)(end - pc) < 3 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++; pc++;
+                if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                in->barrier = 1;
+                break;
+            case 0x9B: /* ZEXT.I32.I64 */
+                if ((size_t)(end - pc) < 2 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++;
+                if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                in->barrier = 1;
+                break;
+            case 0xB1: /* CVT.U64.F64 */
+                if ((size_t)(end - pc) < 2 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++;
+                if (r1 < 8) { in->read_lo |= (uint8_t)(1u << r1); in->read_hi |= (uint8_t)(1u << r1); }
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                in->barrier = 1;
+                break;
+            case 0x93: /* TRUNC.I32.I16: machine result remains I32 */
+                if ((size_t)(end - pc) < 2 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++;
+                if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->i32_write |= (uint8_t)(1u << rd); }
+                if (rd >= 8 || r1 >= 8) in->barrier = 1;
+                break;
+            case 0x96: /* ZEXT.I8.I16 */
+                if ((size_t)(end - pc) < 2 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++;
+                if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                in->barrier = 1; /* I16 type tag is stored in Value[] high word */
+                break;
+            case 0x97: /* ZEXT.I8.I32 */
+                if ((size_t)(end - pc) < 2 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++;
+                if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); in->i32_write |= (uint8_t)(1u << rd); }
+                break;
+            case 0xCA: /* CMP.EQ.I64 */
+            case 0xCB: /* CMP.NE.I64 */
+                if ((size_t)(end - pc) < 3 || !XNS_VALID_REG(pc[0]) ||
+                    !XNS_VALID_REG(pc[1]) || !XNS_VALID_REG(pc[2])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++; r2 = *pc++;
+                if (r1 < 8) { in->read_lo |= (uint8_t)(1u << r1); in->read_hi |= (uint8_t)(1u << r1); }
+                if (r2 < 8) { in->read_lo |= (uint8_t)(1u << r2); in->read_hi |= (uint8_t)(1u << r2); }
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                break;
+            case 0xBE: /* SELECT.I32 */
+            case 0xBF: /* SELECT.I64 */
+                if ((size_t)(end - pc) < 4 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1]) ||
+                    !XNS_VALID_REG(pc[2]) || !XNS_VALID_REG(pc[3])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++; r2 = *pc++; {
+                    const uint8_t rf = *pc++;
+                    if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                    if (r2 < 8) { in->read_lo |= (uint8_t)(1u << r2); in->read_hi |= (uint8_t)(1u << r2); }
+                    if (rf < 8) { in->read_lo |= (uint8_t)(1u << rf); in->read_hi |= (uint8_t)(1u << rf); }
+                    if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                }
+                break;
+            case 0xD6: /* SELECT.PTR */
+                if ((size_t)(end - pc) < 4 || !XNS_VALID_REG(pc[0]) ||
+                    !XNS_VALID_REG(pc[1]) || !XNS_VALID_REG(pc[2]) || !XNS_VALID_REG(pc[3])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++; r2 = *pc++; {
+                    const uint8_t rf = *pc++;
+                    if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                    if (r2 < 8) { in->read_lo |= (uint8_t)(1u << r2); in->read_hi |= (uint8_t)(1u << r2); }
+                    if (rf < 8) { in->read_lo |= (uint8_t)(1u << rf); in->read_hi |= (uint8_t)(1u << rf); }
+                    if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                }
+                in->barrier = 1;
+                break;
+            case 0xFC: { /* Extended helper operations: Value[] barrier with exact vreg effects. */
+                if (pc >= end) XNS_RETURN_FALSE();
+                const uint8_t subop = *pc++;
+                switch (subop) {
+                    case 0x00: { /* MEMORY.INIT data_idx, Rd, Rs, Rn */
+                        if ((size_t)(end - pc) < 7) XNS_RETURN_FALSE();
+                        pc += 4;
+                        rd = *pc++; r1 = *pc++; r2 = *pc++;
+                        if (!XNS_VALID_REG(rd) || !XNS_VALID_REG(r1) || !XNS_VALID_REG(r2)) XNS_RETURN_FALSE();
+                        if (rd < 8) in->read_lo |= (uint8_t)(1u << rd);
+                        if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                        if (r2 < 8) in->read_lo |= (uint8_t)(1u << r2);
+                        in->barrier = 1;
+                        break;
+                    }
+                    case 0x01: /* DATA.DROP data_idx */
+                        if ((size_t)(end - pc) < 4) XNS_RETURN_FALSE();
+                        pc += 4; in->barrier = 1;
+                        break;
+                    case 0x02: case 0x03: { /* MEMORY.COPY / MEMORY.FILL: three input vregs */
+                        if ((size_t)(end - pc) < 3 || !XNS_VALID_REG(pc[0]) ||
+                            !XNS_VALID_REG(pc[1]) || !XNS_VALID_REG(pc[2])) XNS_RETURN_FALSE();
+                        r1 = *pc++; r2 = *pc++; rd = *pc++;
+                        if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                        if (r2 < 8) in->read_lo |= (uint8_t)(1u << r2);
+                        if (rd < 8) in->read_lo |= (uint8_t)(1u << rd);
+                        in->barrier = 1;
+                        break;
+                    }
+                    case 0x04: { /* TABLE.INIT table, elem_idx, Rd, Rs, Rn */
+                        if ((size_t)(end - pc) < 8) XNS_RETURN_FALSE();
+                        pc += 5;
+                        rd = *pc++; r1 = *pc++; r2 = *pc++;
+                        if (!XNS_VALID_REG(rd) || !XNS_VALID_REG(r1) || !XNS_VALID_REG(r2)) XNS_RETURN_FALSE();
+                        if (rd < 8) in->read_lo |= (uint8_t)(1u << rd);
+                        if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                        if (r2 < 8) in->read_lo |= (uint8_t)(1u << r2);
+                        in->barrier = 1;
+                        break;
+                    }
+                    case 0x05: /* ELEM.DROP: no-op in this runtime */
+                        if ((size_t)(end - pc) < 4) XNS_RETURN_FALSE();
+                        pc += 4;
+                        break;
+                    case 0x06: { /* HEAP_REALLOC Rd, Rptr, Rsize */
+                        if ((size_t)(end - pc) < 3 || !XNS_VALID_REG(pc[0]) ||
+                            !XNS_VALID_REG(pc[1]) || !XNS_VALID_REG(pc[2])) XNS_RETURN_FALSE();
+                        rd = *pc++; r1 = *pc++; r2 = *pc++;
+                        if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                        if (r2 < 8) in->read_lo |= (uint8_t)(1u << r2);
+                        if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                        in->barrier = 1;
+                        break;
+                    }
+                    case 0x07: { /* HEAP_FREE Rp */
+                        if ((size_t)(end - pc) < 1 || !XNS_VALID_REG(*pc)) XNS_RETURN_FALSE();
+                        r1 = *pc++; if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                        in->barrier = 1;
+                        break;
+                    }
+                    case 0x08: { /* TABLE.SIZE Rd, table */
+                        if ((size_t)(end - pc) < 2 || !XNS_VALID_REG(pc[0])) XNS_RETURN_FALSE();
+                        rd = *pc++; pc++;
+                        if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                        in->barrier = 1;
+                        break;
+                    }
+                    case 0x09: { /* HEAP_CALLOC Rd, Rcount, Rsize */
+                        if ((size_t)(end - pc) < 3 || !XNS_VALID_REG(pc[0]) ||
+                            !XNS_VALID_REG(pc[1]) || !XNS_VALID_REG(pc[2])) XNS_RETURN_FALSE();
+                        rd = *pc++; r1 = *pc++; r2 = *pc++;
+                        if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                        if (r2 < 8) in->read_lo |= (uint8_t)(1u << r2);
+                        if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                        in->barrier = 1;
+                        break;
+                    }
+                    case 0x0B: { /* HEAP_MALLOC Rd, Rsize */
+                        if ((size_t)(end - pc) < 2 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1])) XNS_RETURN_FALSE();
+                        rd = *pc++; r1 = *pc++;
+                        if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                        if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                        in->barrier = 1;
+                        break;
+                    }
+                    case 0x16: { /* TABLE.COPY tableD, tableS, Rd, Rs, Rn */
+                        if ((size_t)(end - pc) < 5) XNS_RETURN_FALSE();
+                        pc += 2;
+                        rd = *pc++; r1 = *pc++; r2 = *pc++;
+                        if (!XNS_VALID_REG(rd) || !XNS_VALID_REG(r1) || !XNS_VALID_REG(r2)) XNS_RETURN_FALSE();
+                        if (rd < 8) in->read_lo |= (uint8_t)(1u << rd);
+                        if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                        if (r2 < 8) in->read_lo |= (uint8_t)(1u << r2);
+                        in->barrier = 1;
+                        break;
+                    }
+                    case 0x17: { /* TABLE.FILL table, Rd, Rval, Rn */
+                        if ((size_t)(end - pc) < 4) XNS_RETURN_FALSE();
+                        pc++;
+                        rd = *pc++; r1 = *pc++; r2 = *pc++;
+                        if (!XNS_VALID_REG(rd) || !XNS_VALID_REG(r1) || !XNS_VALID_REG(r2)) XNS_RETURN_FALSE();
+                        if (rd < 8) in->read_lo |= (uint8_t)(1u << rd);
+                        if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                        if (r2 < 8) in->read_lo |= (uint8_t)(1u << r2);
+                        in->barrier = 1;
+                        break;
+                    }
+                    case 0x18: { /* TABLE.GET Rd, table, Rs */
+                        if ((size_t)(end - pc) < 3 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[2])) XNS_RETURN_FALSE();
+                        rd = *pc++; pc++; r1 = *pc++;
+                        if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                        if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                        in->barrier = 1;
+                        break;
+                    }
+                    case 0x19: { /* TABLE.SET table, Rd, Rval */
+                        if ((size_t)(end - pc) < 3 || !XNS_VALID_REG(pc[1]) || !XNS_VALID_REG(pc[2])) XNS_RETURN_FALSE();
+                        pc++; r1 = *pc++; r2 = *pc++;
+                        if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                        if (r2 < 8) in->read_lo |= (uint8_t)(1u << r2);
+                        in->barrier = 1;
+                        break;
+                    }
+                    default:
+                        XNS_RETURN_FALSE();
+                }
+                break;
+            }
+            case 0xD7: case 0xD8: case 0xD9: case 0xDA: case 0xDB: case 0xDC: { /* ATOMIC.RMW.I32 */
+                if ((size_t)(end - pc) < 3 || !XNS_VALID_REG(pc[0]) ||
+                    !XNS_VALID_REG(pc[1]) || !XNS_VALID_REG(pc[2])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++; r2 = *pc++;
+                if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                if (r2 < 8) in->read_lo |= (uint8_t)(1u << r2);
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                in->barrier = 1;
+                break;
+            }
+            case 0xDD: { /* ATOMIC.CMPXCHG.I32 Rd, Ra, Rexp, Rdes */
+                if ((size_t)(end - pc) < 4 || !XNS_VALID_REG(pc[0]) ||
+                    !XNS_VALID_REG(pc[1]) || !XNS_VALID_REG(pc[2]) || !XNS_VALID_REG(pc[3])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++; r2 = *pc++; {
+                    const uint8_t rdes = *pc++;
+                    if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                    if (r2 < 8) in->read_lo |= (uint8_t)(1u << r2);
+                    if (rdes < 8) in->read_lo |= (uint8_t)(1u << rdes);
+                    if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                    if (r2 < 8) { in->write_lo |= (uint8_t)(1u << r2); in->write_hi |= (uint8_t)(1u << r2); }
+                }
+                in->barrier = 1;
+                break;
+            }
+            case 0xDE: { /* ATOMIC.LOAD.I32 Rd, Ra */
+                if ((size_t)(end - pc) < 2 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++;
+                if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                in->barrier = 1;
+                break;
+            }
+            case 0xDF: { /* ATOMIC.STORE.I32 Rs, Ra */
+                if ((size_t)(end - pc) < 2 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1])) XNS_RETURN_FALSE();
+                r1 = *pc++; r2 = *pc++;
+                if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                if (r2 < 8) in->read_lo |= (uint8_t)(1u << r2);
+                in->barrier = 1;
+                break;
+            }
+            case 0xEC: { /* ATOMIC.LOAD.I64 Rd, Ra */
+                if ((size_t)(end - pc) < 2 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++;
+                if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                in->barrier = 1;
+                break;
+            }
+            case 0xED: { /* ATOMIC.STORE.I64 Rs, Ra */
+                if ((size_t)(end - pc) < 2 || !XNS_VALID_REG(pc[0]) || !XNS_VALID_REG(pc[1])) XNS_RETURN_FALSE();
+                r1 = *pc++; r2 = *pc++;
+                if (r1 < 8) { in->read_lo |= (uint8_t)(1u << r1); in->read_hi |= (uint8_t)(1u << r1); }
+                if (r2 < 8) in->read_lo |= (uint8_t)(1u << r2);
+                in->barrier = 1;
+                break;
+            }
+            case 0xEE: /* ATOMIC.FENCE */
+                in->barrier = 1;
+                break;
+            case 0xF0: case 0xF1: case 0xF2: case 0xF3: case 0xF4: case 0xF5: { /* ATOMIC.RMW.I64 */
+                if ((size_t)(end - pc) < 3 || !XNS_VALID_REG(pc[0]) ||
+                    !XNS_VALID_REG(pc[1]) || !XNS_VALID_REG(pc[2])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++; r2 = *pc++;
+                if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                if (r2 < 8) { in->read_lo |= (uint8_t)(1u << r2); in->read_hi |= (uint8_t)(1u << r2); }
+                if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                in->barrier = 1;
+                break;
+            }
+            case 0xF6: { /* ATOMIC.CMPXCHG.I64 Rd, Ra, Rexp, Rdes */
+                if ((size_t)(end - pc) < 4 || !XNS_VALID_REG(pc[0]) ||
+                    !XNS_VALID_REG(pc[1]) || !XNS_VALID_REG(pc[2]) || !XNS_VALID_REG(pc[3])) XNS_RETURN_FALSE();
+                rd = *pc++; r1 = *pc++; r2 = *pc++; {
+                    const uint8_t rdes = *pc++;
+                    if (r1 < 8) in->read_lo |= (uint8_t)(1u << r1);
+                    if (r2 < 8) { in->read_lo |= (uint8_t)(1u << r2); in->read_hi |= (uint8_t)(1u << r2); }
+                    if (rdes < 8) { in->read_lo |= (uint8_t)(1u << rdes); in->read_hi |= (uint8_t)(1u << rdes); }
+                    if (rd < 8) { in->write_lo |= (uint8_t)(1u << rd); in->write_hi |= (uint8_t)(1u << rd); }
+                    if (r2 < 8) { in->write_lo |= (uint8_t)(1u << r2); in->write_hi |= (uint8_t)(1u << r2); }
+                }
+                in->barrier = 1;
+                break;
+            }
+            default:
+                if (code_size > 300) ESP_LOGI(TAG, "[NO_SPILL-REJECT] opcode=0x%02x offset=%u",
+                                              (unsigned)op, (unsigned)in->offset);
+                XNS_RETURN_FALSE();
+        }
+
+        const uint16_t next = (uint16_t)(pc - body->code);
+        in->target_offset = next;
+        if (in->branch_kind == 1 || in->branch_kind == 2) {
+            const int32_t target = (int32_t)in->offset + (int32_t)rel;
+            if (target < 0 || target > (int32_t)code_size) XNS_RETURN_FALSE();
+            in->target_offset = (uint16_t)target;
+        }
+        if (in->barrier) {
+            if (out->barrier_count >= 192) XNS_RETURN_FALSE();
+            out->barrier_offsets[out->barrier_count++] = in->offset;
+        }
+        const uint8_t low_touched = (uint8_t)(in->read_lo | in->write_lo);
+        const uint8_t high_touched = (uint8_t)(in->read_hi | in->write_hi);
+        for (uint8_t r = 0; r < 8; ++r) {
+            const uint8_t bit = (uint8_t)(1u << r);
+            if (low_touched & bit) XNS_TOUCH(r, 0, in->offset);
+            if (high_touched & bit) XNS_TOUCH(r, 1, in->offset);
+        }
+    }
+    boundary[code_size] = true;
+    if (!saw_end || count == 0) XNS_RETURN_FALSE();
+
+    /* Resolve all control-flow targets to instruction boundaries. */
+    for (uint16_t i = 0; i < count; ++i) {
+        if (insns[i].branch_kind != 1 && insns[i].branch_kind != 2) continue;
+        const uint16_t target = insns[i].target_offset;
+        if (!boundary[target]) XNS_RETURN_FALSE();
+        if (target == code_size) continue;
+        bool found = false;
+        for (uint16_t j = 0; j < count; ++j) {
+            if (insns[j].offset == target) {
+                insns[i].target_index = (int16_t)j;
+                found = true;
+                break;
+            }
+        }
+        if (!found) XNS_RETURN_FALSE();
+    }
+
+    /* Forward must-analysis: identify low/high halves read before a definite write. */
+    reachable[0] = true;
+    bool changed = true;
+    unsigned iterations = 0;
+    while (changed && iterations++ < MAX_INSNS * 9u) {
+        changed = false;
+        for (uint16_t i = 0; i < count; ++i) {
+            if (!reachable[i]) continue;
+            const uint8_t out_lo = (uint8_t)(in_lo[i] | insns[i].write_lo);
+            const uint8_t out_hi = (uint8_t)(in_hi[i] | insns[i].write_hi);
+            int16_t succ[2] = {-1, -1};
+            uint8_t n = 0;
+            if (insns[i].branch_kind == 1 || insns[i].branch_kind == 2)
+                succ[n++] = insns[i].target_index;
+            if ((insns[i].branch_kind == 0 || insns[i].branch_kind == 2) && i + 1 < count)
+                succ[n++] = (int16_t)(i + 1);
+            for (uint8_t k = 0; k < n; ++k) {
+                const int16_t d = succ[k];
+                if (d < 0 || d >= (int16_t)count) continue;
+                if (!reachable[d]) {
+                    reachable[d] = true; in_lo[d] = out_lo; in_hi[d] = out_hi; changed = true;
+                } else {
+                    const uint8_t ml = (uint8_t)(in_lo[d] & out_lo);
+                    const uint8_t mh = (uint8_t)(in_hi[d] & out_hi);
+                    if (ml != in_lo[d] || mh != in_hi[d]) {
+                        in_lo[d] = ml; in_hi[d] = mh; changed = true;
+                    }
+                }
+            }
+        }
+    }
+    if (changed) {
+        if (code_size > 300) ESP_LOGI(TAG, "[NO_SPILL-REJECT] forward liveness did not converge");
+        XNS_RETURN_FALSE();
+    }
+    for (uint16_t i = 0; i < count; ++i) if (reachable[i]) {
+        out->livein_lo |= (uint8_t)(insns[i].read_lo & (uint8_t)~in_lo[i]);
+        out->livein_hi |= (uint8_t)(insns[i].read_hi & (uint8_t)~in_hi[i]);
+    }
+
+    /* Backward high-word liveness determines where I32 writes must clear high. */
+    changed = true; iterations = 0;
+    while (changed && iterations++ < MAX_INSNS * 9u) {
+        changed = false;
+        for (int i = (int)count - 1; i >= 0; --i) {
+            if (!reachable[i]) continue;
+            uint8_t out_hi = 0;
+            int16_t succ[2] = {-1, -1};
+            uint8_t n = 0;
+            if (insns[i].branch_kind == 1 || insns[i].branch_kind == 2)
+                succ[n++] = insns[i].target_index;
+            if ((insns[i].branch_kind == 0 || insns[i].branch_kind == 2) && i + 1 < count)
+                succ[n++] = (int16_t)(i + 1);
+            for (uint8_t k = 0; k < n; ++k) {
+                const int16_t d = succ[k];
+                if (d >= 0 && d < (int16_t)count && reachable[d]) out_hi |= high_in[d];
+            }
+            const uint8_t writes = (uint8_t)(insns[i].write_lo | insns[i].write_hi);
+            const uint8_t in = (uint8_t)(insns[i].read_hi | (out_hi & (uint8_t)~writes));
+            if (out_hi != high_out[i] || in != high_in[i]) {
+                high_out[i] = out_hi; high_in[i] = in; changed = true;
+            }
+        }
+    }
+    if (changed) XNS_RETURN_FALSE();
+    for (uint16_t i = 0; i < count; ++i) if (reachable[i])
+        out->high_clear_mask |= (uint8_t)(insns[i].i32_write & high_out[i]);
+
+    /* Full backward liveness is used to preserve only values crossing local CALLs. */
+    changed = true; iterations = 0;
+    while (changed && iterations++ < MAX_INSNS * 9u) {
+        changed = false;
+        for (int i = (int)count - 1; i >= 0; --i) {
+            if (!reachable[i]) continue;
+            uint8_t out_lo = 0, out_hi = 0;
+            int16_t succ[2] = {-1, -1};
+            uint8_t n = 0;
+            if (insns[i].branch_kind == 1 || insns[i].branch_kind == 2)
+                succ[n++] = insns[i].target_index;
+            if ((insns[i].branch_kind == 0 || insns[i].branch_kind == 2) && i + 1 < count)
+                succ[n++] = (int16_t)(i + 1);
+            for (uint8_t k = 0; k < n; ++k) {
+                const int16_t d = succ[k];
+                if (d >= 0 && d < (int16_t)count && reachable[d]) {
+                    out_lo |= low_live_in[d];
+                    out_hi |= high_in[d];
+                }
+            }
+            const uint8_t in_lo_live = (uint8_t)(insns[i].read_lo |
+                (out_lo & (uint8_t)~insns[i].write_lo));
+            if (out_lo != low_live_out[i] || in_lo_live != low_live_in[i] ||
+                out_hi != call_hi_live_out[i]) {
+                low_live_out[i] = out_lo;
+                low_live_in[i] = in_lo_live;
+                call_hi_live_out[i] = out_hi;
+                changed = true;
+            }
+        }
+    }
+    if (changed) XNS_RETURN_FALSE();
+
+    /* Barriers round-trip only values read by the operation or live across it. */
+    for (uint16_t bi = 0; bi < out->barrier_count; ++bi) {
+        bool found = false;
+        for (uint16_t i = 0; i < count; ++i) {
+            if (insns[i].offset != out->barrier_offsets[bi]) continue;
+            found = true;
+            if (reachable[i]) {
+                out->barrier_save_lo[bi] = (uint8_t)(insns[i].read_lo |
+                    (low_live_out[i] & (uint8_t)~insns[i].write_lo));
+                out->barrier_save_hi[bi] = (uint8_t)(insns[i].read_hi |
+                    (call_hi_live_out[i] & (uint8_t)~insns[i].write_hi));
+                out->barrier_reload_lo[bi] = low_live_out[i];
+                out->barrier_reload_hi[bi] = call_hi_live_out[i];
+            }
+            break;
+        }
+        if (!found) XNS_RETURN_FALSE();
+    }
+
+    for (uint16_t i = 0; i < count; ++i) {
+        if (!reachable[i] || insns[i].call_index == 0xFFu) continue;
+        XtensaNoSpillCallSite* call = &out->calls[insns[i].call_index];
+        uint8_t preserved_lo = 0, preserved_hi = 0;
+        for (uint8_t r = 0; r < 8; ++r) {
+            const uint8_t bit = (uint8_t)(1u << r);
+            if (out->phys_lo[r] >= 3u && out->phys_lo[r] <= 7u &&
+                (low_live_out[i] & bit) && !(insns[i].write_lo & bit)) preserved_lo |= bit;
+            if (out->phys_hi[r] >= 3u && out->phys_hi[r] <= 7u &&
+                (call_hi_live_out[i] & bit) && !(insns[i].write_hi & bit)) preserved_hi |= bit;
+        }
+        /* Arguments still need materializing in Value[]. Only live-through
+           values in the call-preserved window can skip both save and reload. */
+        call->save_lo = (uint8_t)(insns[i].read_lo |
+            ((low_live_out[i] & (uint8_t)~insns[i].write_lo) & (uint8_t)~preserved_lo));
+        call->save_hi = (uint8_t)(insns[i].read_hi |
+            ((call_hi_live_out[i] & (uint8_t)~insns[i].write_hi) & (uint8_t)~preserved_hi));
+        call->reload_lo = (uint8_t)(low_live_out[i] & (uint8_t)~preserved_lo);
+        call->reload_hi = (uint8_t)(call_hi_live_out[i] & (uint8_t)~preserved_hi);
+    }
+
+    /* END returns v0 as a full Value. Keep functions whose high return half
+       is not an entry live-in on the general path until all implicit ABI
+       definitions of that half are represented by the bytecode liveness map. */
+    if (saw_end && max_reg <= 2u && (out->livein_hi & 0x01u) == 0) XNS_RETURN_FALSE();
+
+    /* Rebuild interval bounds from reachable instructions only. The parser
+       records all syntactic uses, but dead CFG regions must not extend live
+       ranges or create artificial register pressure in the allocator. */
+    for (unsigned k = 0; k < 16; ++k) {
+        first[k] = UINT16_MAX;
+        last[k] = 0;
+    }
+    for (uint16_t i = 0; i < count; ++i) {
+        if (!reachable[i]) continue;
+        const uint8_t low_touched = (uint8_t)(insns[i].read_lo | insns[i].write_lo);
+        const uint8_t high_touched = (uint8_t)(insns[i].read_hi | insns[i].write_hi);
+        for (uint8_t r = 0; r < 8; ++r) {
+            const uint8_t bit = (uint8_t)(1u << r);
+            if (low_touched & bit) XNS_TOUCH(r, 0, insns[i].offset);
+            if (high_touched & bit) XNS_TOUCH(r, 1, insns[i].offset);
+        }
+    }
+
+    /* Build one conservative interval per virtual-register half. */
+    XtensaNoSpillInterval intervals[16];
+    uint8_t interval_count = 0;
+    /* The NO_SPILL allocator maps only vregs 0..7. Keep all fixed-size
+       per-half arrays and the interval vector within their 8*2 capacity. */
+    for (uint8_t r = 0; r <= max_reg && r < 8u; ++r) {
+        for (uint8_t h = 0; h < 2; ++h) {
+            const unsigned k = (unsigned)r * 2u + h;
+            if (first[k] == UINT16_MAX) continue;
+            bool crosses_call = false;
+            if (out->call_count != 0) {
+                const uint8_t bit = (uint8_t)(1u << r);
+                for (uint16_t ci = 0; ci < count; ++ci) {
+                    if (!reachable[ci] || insns[ci].call_index == 0xFFu) continue;
+                    const uint8_t live_out = h ? call_hi_live_out[ci] : low_live_out[ci];
+                    const uint8_t write_mask = h ? insns[ci].write_hi : insns[ci].write_lo;
+                    if ((live_out & bit) && !(write_mask & bit)) { crosses_call = true; break; }
+                }
+            }
+            intervals[interval_count++] = (XtensaNoSpillInterval){
+                .start = first[k], .end = last[k], .vreg = r, .high = h,
+                .crosses_call = crosses_call ? 1u : 0u
+            };
+        }
+    }
+    if (interval_count == 0) XNS_RETURN_FALSE();
+
+    /* Sort by start, then by end (stable deterministic allocation). */
+    for (uint8_t i = 1; i < interval_count; ++i) {
+        XtensaNoSpillInterval x = intervals[i];
+        int j = (int)i - 1;
+        while (j >= 0 && (intervals[j].start > x.start ||
+               (intervals[j].start == x.start && intervals[j].end < x.end))) {
+            intervals[j + 1] = intervals[j]; --j;
+        }
+        intervals[j + 1] = x;
+    }
+
+    /* Windowed callx8 preserves caller a3-a7 in the callee's hidden register
+       window. Keep those registers for values live across calls; reserve a8/a9
+       as branch/call/constant scratch and use a10-a15 for short-lived values. */
+    uint8_t phys_pool[13];
+    uint8_t alloc_count = 0;
+    uint8_t callee_saved_count = 0;
+    if (out->call_count != 0) {
+        out->reserve_a8 = 1u;
+        for (uint8_t p = 3; p <= 7; ++p) phys_pool[alloc_count++] = p;
+        callee_saved_count = alloc_count;
+        for (uint8_t p = 10; p <= 15; ++p) phys_pool[alloc_count++] = p;
+    } else if (out->reserve_a8) {
+        for (uint8_t p = 9; p <= 15; ++p) phys_pool[alloc_count++] = p;
+    } else {
+        for (uint8_t p = 8; p <= 15; ++p) phys_pool[alloc_count++] = p;
+    }
+
+    bool active[13] = {false};
+    uint16_t active_end[13] = {0};
+    for (uint8_t i = 0; i < interval_count; ++i) {
+        XtensaNoSpillInterval* x = &intervals[i];
+        for (uint8_t r = 0; r < alloc_count; ++r)
+            if (active[r] && active_end[r] < x->start) active[r] = false;
+        int chosen = -1;
+        const uint8_t preferred_begin = (out->call_count && x->crosses_call) ? 0u : callee_saved_count;
+        const uint8_t preferred_end = (out->call_count && x->crosses_call) ? callee_saved_count : alloc_count;
+        for (uint8_t r = preferred_begin; r < preferred_end; ++r)
+            if (!active[r]) { chosen = r; break; }
+        if (chosen < 0 && out->call_count && x->crosses_call) {
+            for (uint8_t r = callee_saved_count; r < alloc_count; ++r)
+                if (!active[r]) { chosen = r; break; }
+        }
+        if (chosen < 0) {
+            if (code_size > 300) ESP_LOGI(TAG, "[NO_SPILL-REJECT] pressure intervals=%u reserve_a8=%u",
+                                          (unsigned)interval_count, (unsigned)out->reserve_a8);
+            XNS_RETURN_FALSE();
+        }
+        active[chosen] = true;
+        active_end[chosen] = x->end;
+        const uint8_t phys = phys_pool[chosen];
+        if (x->high) out->phys_hi[x->vreg] = phys;
+        else out->phys_lo[x->vreg] = phys;
+        out->used_phys_mask |= (uint16_t)(1u << phys);
+    }
+
+    /* Entry loads share physical registers only when their live-in intervals do not overlap.
+       Reject ambiguous multiple live-ins assigned to the same register. */
+    /* Now that physical assignments are final, elide round-trips for
+       live-through values resident in call-preserved a3-a7. */
+    for (uint16_t i = 0; i < count; ++i) {
+        if (!reachable[i] || insns[i].call_index == 0xFFu) continue;
+        XtensaNoSpillCallSite* call = &out->calls[insns[i].call_index];
+        uint8_t preserved_lo = 0, preserved_hi = 0;
+        for (uint8_t r = 0; r < 8; ++r) {
+            const uint8_t bit = (uint8_t)(1u << r);
+            if (out->phys_lo[r] >= 3u && out->phys_lo[r] <= 7u &&
+                (low_live_out[i] & bit) && !(insns[i].write_lo & bit)) preserved_lo |= bit;
+            if (out->phys_hi[r] >= 3u && out->phys_hi[r] <= 7u &&
+                (call_hi_live_out[i] & bit) && !(insns[i].write_hi & bit)) preserved_hi |= bit;
+        }
+        call->save_lo = (uint8_t)(insns[i].read_lo |
+            ((low_live_out[i] & (uint8_t)~insns[i].write_lo) & (uint8_t)~preserved_lo));
+        call->save_hi = (uint8_t)(insns[i].read_hi |
+            ((call_hi_live_out[i] & (uint8_t)~insns[i].write_hi) & (uint8_t)~preserved_hi));
+        call->reload_lo = (uint8_t)(low_live_out[i] & (uint8_t)~preserved_lo);
+        call->reload_hi = (uint8_t)(call_hi_live_out[i] & (uint8_t)~preserved_hi);
+    }
+
+    bool livein_phys[16] = {false};
+    /* Validate all physical registers used by live-ins, including the
+       call-preserved a3-a7 window. */
+    for (uint8_t r = 0; r < 8u && r <= max_reg; ++r) {
+        if (out->livein_lo & (uint8_t)(1u << r)) {
+            const uint8_t p = out->phys_lo[r];
+            if (p < 3 || p > 15 || livein_phys[p]) XNS_RETURN_FALSE();
+            livein_phys[p] = true;
+        }
+        if (out->livein_hi & (uint8_t)(1u << r)) {
+            const uint8_t p = out->phys_hi[r];
+            if (p < 3 || p > 15 || livein_phys[p]) XNS_RETURN_FALSE();
+            livein_phys[p] = true;
+        }
+        if ((out->high_clear_mask & (uint8_t)(1u << r)) && out->phys_hi[r] == 0xFF)
+            XNS_RETURN_FALSE();
+    }
+    for (uint8_t i = 0; i < interval_count; ++i) {
+        uint8_t pressure = 0;
+        const uint16_t at = intervals[i].start;
+        for (uint8_t j = 0; j < interval_count; ++j)
+            if (intervals[j].start <= at && intervals[j].end >= at) ++pressure;
+        if (pressure > out->max_pressure) out->max_pressure = pressure;
+    }
+    for (uint8_t p = 3; p <= 15; ++p) if (out->used_phys_mask & (uint16_t)(1u << p)) ++out->phys_count;
+
+#undef XNS_VALID_REG
+#undef XNS_TOUCH
+    heap_caps_free(scratch); return true;
+#undef XNS_RETURN_FALSE
 }
 
 EspbResult espb_jit_compile_function_xtensa_inline(
@@ -3320,8 +4495,32 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
     XtensaLiteralPool litpool = {0};
 
+    XtensaNoSpillMap xtensa_nospill_map;
+    const bool xtensa_nospill_candidate = xtensa_try_build_nospill_map(instance, body, &xtensa_nospill_map);
+    const bool xtensa_nospill_has_calls = xtensa_nospill_candidate &&
+        (xtensa_nospill_map.call_count != 0);
+    const bool xtensa_nospill_needs_frame = xtensa_nospill_candidate &&
+        (xtensa_nospill_has_calls || xtensa_nospill_map.barrier_count != 0);
+    /* Enable call-aware NO_SPILL only for explicitly analyzed CALL/CALL_IMPORT
+       sites. Generic Value[] barriers still require post-operation reload
+       semantics and remain on the general path. */
+    const bool xtensa_nospill_has_barriers = xtensa_nospill_candidate &&
+        (xtensa_nospill_map.barrier_count != 0);
+    /* Keep call/helper barriers on the proven general path; leaf barriers use precise masks. */
+    const bool xtensa_nospill_fastpath = xtensa_nospill_candidate &&
+        !(xtensa_nospill_has_barriers && xtensa_nospill_has_calls);
+    if (xtensa_nospill_fastpath) {
+        ESP_LOGI(TAG, "[JIT-OPT] Xtensa NO_SPILL enabled func=%u max_reg=%u phys=%u pressure=%u livein_lo=0x%02x livein_hi=0x%02x",
+                 (unsigned)func_idx, (unsigned)body->header.max_reg_used,
+                 (unsigned)xtensa_nospill_map.phys_count, (unsigned)xtensa_nospill_map.max_pressure,
+                 (unsigned)xtensa_nospill_map.livein_lo, (unsigned)xtensa_nospill_map.livein_hi);
+        if (xtensa_nospill_has_calls)
+            ESP_LOGI(TAG, "[JIT-OPT] Xtensa NO_SPILL call-aware sites=%u barriers=%u",
+                     (unsigned)xtensa_nospill_map.call_count, (unsigned)xtensa_nospill_map.barrier_count);
+    }
+
     // Prologue: Windowed ABI
-    emit_entry(&ctx, 1, 64);
+    emit_entry(&ctx, 1, (xtensa_nospill_fastpath && !xtensa_nospill_needs_frame) ? 16 : 64);
 
     // Pre-seed literal pool with common helper addresses to avoid frequent flushes
     // (dedup will keep them unique). This typically reduces pool flushes to 1 per function.
@@ -3341,32 +4540,47 @@ EspbResult espb_jit_compile_function_xtensa_inline(
     lit_add(&litpool, (uint32_t)(uintptr_t)&espb_jit_xtensa_load_bool);
     lit_add(&litpool, (uint32_t)(uintptr_t)&espb_jit_xtensa_sext_i8_i32);
 
-    // Save incoming args (caller passes in a2/a3 under windowed ABI)
-    // After CALL8 + entry, caller's outgoing a10/a11 appear as our a2/a3.
-    // a2 = instance, a3 = v_regs
-    // Windowed ABI uses a1+0 for outgoing stack args (7th+).
-    // Reserve a1+0 for outgoing args; save locals at a1+4 and a1+8.
-    emit_mov_n(&ctx, 8, 2);      // a8 = instance
-    emit_s32i(&ctx, 8, 1, 4);    // [a1+4] = instance
-    emit_mov_n(&ctx, 8, 3);      // a8 = v_regs
-    emit_s32i(&ctx, 8, 1, 8);    // [a1+8] = v_regs
+    if (xtensa_nospill_fastpath) {
+        // a6 is the stable Value[] base and is callee-saved across callx8.
+        // Call-aware functions also preserve the incoming instance and Value[]
+        // pointers in their outgoing frame for the existing local-call helper.
+        if (xtensa_nospill_needs_frame) {
+            emit_mov_n(&ctx, 8, 2);
+            emit_s32i(&ctx, 8, 1, 4);
+            emit_mov_n(&ctx, 8, 3);
+            emit_s32i(&ctx, 8, 1, 8);
+        }
+        emit_mov_n(&ctx, 6, 3);
+    } else {
+        // Save incoming args (caller passes in a2/a3 under windowed ABI).
+        emit_mov_n(&ctx, 8, 2);
+        emit_s32i(&ctx, 8, 1, 4);
+        emit_mov_n(&ctx, 8, 3);
+        emit_s32i(&ctx, 8, 1, 8);
+        emit_mov_n(&ctx, 11, 3);
+        emit_mov_n(&ctx, 6, 3);
+    }
 
-    // CRITICAL: the rest of the JIT assumes a11 == v_regs base for vreg load/store.
-    // If we don't initialize it, vreg stores may go to a garbage address and crash (PIF addr error).
-    emit_mov_n(&ctx, 11, 3);     // a11 = v_regs
-    emit_mov_n(&ctx, 6, 3);      // a6 = pinned v_regs (preserved across CALLX8)
-
-    // Preserve callee-saved registers expected by the C caller (windowed ABI).
-    // Our JIT freely uses a12-a15 (and may alias a14 via window rotation), so restore them before retw.
-    // IMPORTANT: a1+16.. is used by CALL_IMPORT to build variadic arg types.
-    // Keep our callee-saved spill above that region.
-    emit_s32i(&ctx, 12, 1, 32);  // save a12
-    emit_s32i(&ctx, 13, 1, 36);  // save a13
-    emit_s32i(&ctx, 14, 1, 40);  // save a14
-    emit_s32i(&ctx, 15, 1, 44);  // save a15
+    if (!xtensa_nospill_fastpath) {
+        // General JIT path uses these registers as scratch across helper calls.
+        emit_s32i(&ctx, 12, 1, 32);
+        emit_s32i(&ctx, 13, 1, 36);
+        emit_s32i(&ctx, 14, 1, 40);
+        emit_s32i(&ctx, 15, 1, 44);
+    }
 
     // Emit initial pool now (jump+pool) so subsequent helper calls can use backward l32r without extra flushes.
     flush_literal_pool(&ctx, &litpool);
+
+    if (xtensa_nospill_fastpath) {
+        for (uint8_t r = 0; r < 8; ++r) {
+            const uint8_t bit = (uint8_t)(1u << r);
+            if (xtensa_nospill_map.livein_lo & bit)
+                emit_l32i(&ctx, xtensa_nospill_map.phys_lo[r], 6, (uint16_t)(r * 8u));
+            if (xtensa_nospill_map.livein_hi & bit)
+                emit_l32i(&ctx, xtensa_nospill_map.phys_hi[r], 6, (uint16_t)(r * 8u + 4u));
+        }
+    }
 
     (void)num_vregs;  // Will use later for bounds checks
 
@@ -3494,23 +4708,71 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
         // Flush before recording native-address mapping: every branch target enters
         // with coherent v_regs. Helper/division opcodes never see a dirty cache.
-        const bool vcacheable = vcache_function_safe && !(vcache_block_map[last_off] & 0x01u) &&
-            ((op >= 0x20 && op <= 0x22) || (op >= 0x28 && op <= 0x2E) || (op >= 0x40 && op <= 0x42) || (op >= 0x47 && op <= 0x4B));
+        const bool vcache_block_entry = (vcache_block_map[last_off] & 0x01u) != 0;
+        bool vcacheable = vcache_function_safe && !vcache_block_entry &&
+            ((op >= 0x20 && op <= 0x22) || (op >= 0x28 && op <= 0x2E) || (op >= 0x40 && op <= 0x42) || (op >= 0x47 && op <= 0x4B) || (op >= 0xC0 && op <= 0xC9));
+        // BR_IF may consume a cached condition, but the cache is always written
+        // back immediately after reading it and before control can leave the block.
+        bool vcache_branch_consumer = vcache_function_safe && op == 0x03 && !vcache_block_entry;
         // NOT.I32 has two operands; the other cached ALU ops have three.
-        // Locate the following opcode at the correct instruction boundary.
         const size_t vcache_operand_bytes = (op == 0x2E) ? 2u : 3u;
         bool vcache_next = false;
         if (vcacheable && (size_t)(end - pc) >= vcache_operand_bytes + 1u) {
             const uint8_t next_op = pc[vcache_operand_bytes];
+            const size_t next_off = last_off + 1u + vcache_operand_bytes;
+            const bool next_block_entry = (vcache_block_map[next_off] & 0x01u) != 0;
             const bool next_vcacheable =
                 (next_op >= 0x20 && next_op <= 0x22) ||
                 (next_op >= 0x28 && next_op <= 0x2E) ||
                 (next_op >= 0x40 && next_op <= 0x42) ||
-                (next_op >= 0x47 && next_op <= 0x4B);
-            vcache_next = next_vcacheable &&
-                !(vcache_block_map[last_off + 1u + vcache_operand_bytes] & 0x01u);
+                (next_op >= 0x47 && next_op <= 0x4B) ||
+                (next_op >= 0xC0 && next_op <= 0xC9);
+            bool next_branch_consumer = false;
+            if (next_op == 0x03 && !next_block_entry &&
+                (size_t)(end - pc) >= vcache_operand_bytes + 4u) {
+                const uint8_t next_cond = pc[vcache_operand_bytes + 1u];
+                int next_slot;
+                XTENSA_VCACHE_FIND(next_cond, next_slot);
+                if (next_slot >= 0) {
+                    vcache[next_slot].stamp = ++vcache_clock;
+                    next_branch_consumer = true;
+                } else if (next_cond == pc[0]) {
+                    next_branch_consumer = true;
+                }
+            }
+            vcache_next = (next_vcacheable || next_branch_consumer) && !next_block_entry;
         }
-        if (!vcacheable) XTENSA_VCACHE_FLUSH();
+        if (xtensa_nospill_fastpath) {
+            /* NO_SPILL owns a8-a15; disable the overlapping local vcache. */
+            vcacheable = false;
+            vcache_branch_consumer = false;
+            vcache_next = false;
+        }
+        if (!vcacheable && !vcache_branch_consumer) XTENSA_VCACHE_FLUSH();
+        bool xtensa_nospill_barrier = false;
+        uint16_t xtensa_nospill_barrier_index = 0xFFFFu;
+        if (xtensa_nospill_fastpath) {
+            for (uint16_t bi = 0; bi < xtensa_nospill_map.barrier_count; ++bi) {
+                if (xtensa_nospill_map.barrier_offsets[bi] == (uint16_t)last_off) {
+                    xtensa_nospill_barrier = true;
+                    xtensa_nospill_barrier_index = bi;
+                    break;
+                }
+            }
+        }
+        if (xtensa_nospill_barrier) {
+            if (xtensa_nospill_barrier_index == 0xFFFFu) { ctx.error = true; }
+            else {
+                const uint8_t save_lo = xtensa_nospill_map.barrier_save_lo[xtensa_nospill_barrier_index];
+                const uint8_t save_hi = xtensa_nospill_map.barrier_save_hi[xtensa_nospill_barrier_index];
+                for (uint8_t r = 0; r < 8; ++r) {
+                    const uint8_t bit = (uint8_t)(1u << r);
+                    if (save_lo & bit) emit_s32i(&ctx, xtensa_nospill_map.phys_lo[r], 6, (uint16_t)(r * 8u));
+                    if (save_hi & bit) emit_s32i(&ctx, xtensa_nospill_map.phys_hi[r], 6, (uint16_t)(r * 8u + 4u));
+                }
+                emit_l32i(&ctx, 11, 1, 8);
+            }
+        }
         const uint32_t op_loads_before = ctx.emitted_loads;
         const uint32_t op_stores_before = ctx.emitted_stores;
 
@@ -3657,6 +4919,14 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
             case 0x93: { // TRUNC.I32.I16 Rd(u8), Rs(u8) - truncate to signed 16-bit
                 if (pc + 2 > end) { ctx.error = true; break; }
+                if (xtensa_nospill_fastpath && pc[0] < 8 && pc[1] < 8) {
+                    const uint8_t pd = xtensa_nospill_map.phys_lo[pc[0]];
+                    const uint8_t ps = xtensa_nospill_map.phys_lo[pc[1]];
+                    pc += 2;
+                    emit_slli(&ctx, pd, ps, 16);
+                    emit_srai(&ctx, pd, pd, 16);
+                    break;
+                }
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
 
@@ -3681,6 +4951,12 @@ EspbResult espb_jit_compile_function_xtensa_inline(
             }
 
             case 0x0F: { // END
+                if (xtensa_nospill_fastpath) {
+                    // The leaf NO_SPILL path keeps v0 in physical registers.
+                    // Materialize only the externally visible return Value.
+                    emit_s32i(&ctx, xtensa_nospill_map.phys_lo[0], 6, 0);
+                    emit_s32i(&ctx, xtensa_nospill_map.phys_hi[0], 6, 4);
+                }
                 // END is a terminator for the *executed* path. We emit a jump to epilogue.
                 // We must keep decoding subsequent bytes to resolve forward branch targets,
                 // but execution must not fall through to the next opcode!
@@ -3715,15 +4991,40 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     break;
                 }
                 uint32_t target_bc = (uint32_t)target_bc_signed;
-                // Load condition low32 into a8
-                emit_l32i(&ctx, 8, 6, (uint16_t)(cond_reg * 8));
+                // Prefer a whole-function NO_SPILL mapping; otherwise use the
+                // existing block-local vreg cache and memory-backed fallback.
+                uint8_t branch_reg = 8u;
+                if (xtensa_nospill_fastpath) {
+                    if (cond_reg < 8) {
+                        branch_reg = xtensa_nospill_map.phys_lo[cond_reg];
+                    } else {
+                        emit_l32i(&ctx, 8, 6, (uint16_t)(cond_reg * 8u));
+                        branch_reg = 8u;
+                    }
+                    if (branch_reg < 8u) {
+                        /* BEQZ.N only encodes a8-a15; a8 is reserved for call-aware maps. */
+                        emit_mov_n(&ctx, 8, branch_reg);
+                        branch_reg = 8u;
+                    }
+                    if (branch_reg > 15u) { ctx.error = true; break; }
+                } else {
+                    int cond_slot;
+                    XTENSA_VCACHE_FIND(cond_reg, cond_slot);
+                    if (cond_slot >= 0) {
+                        branch_reg = vcache[cond_slot].phys;
+                        vcache_hits++;
+                    } else {
+                        emit_l32i(&ctx, 8, 6, (uint16_t)(cond_reg * 8));
+                    }
+                    XTENSA_VCACHE_FLUSH();
+                }
 
                 // Lower BR_IF using BEQZ.N (2-byte) + J:
-                //   beqz.n a8, L_after   ; if cond==0 skip
-                //   j <bytecode target>  ; taken when cond!=0
+                //   beqz.n branch_reg, L_after ; if cond==0 skip
+                //   j <bytecode target>         ; taken when cond!=0
                 // L_after:
 
-                uint32_t beqz_pos = emit_beqz_n_a8_placeholder(&ctx);
+                uint32_t beqz_pos = emit_beqz_n_reg_placeholder(&ctx, branch_reg);
 
                 // The BEQZ skips this block when the branch is not taken.
                 // Therefore the diagnostic helper observes only executed backward edges.
@@ -3765,7 +5066,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                         break;
                     }
                     
-                    patch_beqz_n_a8_at(ctx.buffer, beqz_pos, delta);
+                    patch_beqz_n_reg_at(ctx.buffer, beqz_pos, branch_reg, delta);
                 }
 
                 break;
@@ -3974,6 +5275,13 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 JIT_LOGD(TAG, "LDC.I32 rd=%u imm32=%u", rd, imm32);
 
+                if (xtensa_nospill_fastpath && rd < 8 && (int32_t)imm32 >= -2048 && (int32_t)imm32 <= 2047) {
+                    emit_movi(&ctx, xtensa_nospill_map.phys_lo[rd], (int16_t)(int32_t)imm32);
+                    if (xtensa_nospill_map.high_clear_mask & (uint8_t)(1u << rd))
+                        emit_movi_n(&ctx, xtensa_nospill_map.phys_hi[rd], 0);
+                    break;
+                }
+
                 // Load imm32 into a8, then store to v_regs[rd]
                 emit_load_imm32(&ctx, &litpool, 8, imm32);
                 emit_store_vreg(&ctx, 8, rd);
@@ -4018,6 +5326,12 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint32_t lo = (uint32_t)(imm64 & 0xFFFFFFFFu);
                 uint32_t hi = (uint32_t)((imm64 >> 32) & 0xFFFFFFFFu);
 
+                if (xtensa_nospill_fastpath && rd < 8 && (int32_t)lo >= -2048 && (int32_t)lo <= 2047 && (int32_t)hi >= -2048 && (int32_t)hi <= 2047) {
+                    emit_movi(&ctx, xtensa_nospill_map.phys_lo[rd], (int16_t)(int32_t)lo);
+                    emit_movi(&ctx, xtensa_nospill_map.phys_hi[rd], (int16_t)(int32_t)hi);
+                    break;
+                }
+
                 uint16_t off = (uint16_t)(rd * 8);
 
                 // store low 32
@@ -4040,6 +5354,14 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 if (pc + 2 > end) { ctx.error = true; break; }
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
+
+                if (xtensa_nospill_fastpath && rd < 8 && rs < 8) {
+                    if (rd != rs) {
+                        emit_mov_n(&ctx, xtensa_nospill_map.phys_lo[rd], xtensa_nospill_map.phys_lo[rs]);
+                        emit_mov_n(&ctx, xtensa_nospill_map.phys_hi[rd], xtensa_nospill_map.phys_hi[rs]);
+                    }
+                    break;
+                }
 
                 if (rd == 0) {
                     JIT_LOGW(TAG, "[wr0] bc_off=%u op=0x12 MOV rs=%u", (unsigned)last_off, (unsigned)rs);
@@ -4076,7 +5398,29 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rd = *pc++;
                 uint8_t rs1 = *pc++;
                 uint8_t rs2 = *pc++;
-                
+
+                if (xtensa_nospill_fastpath && rd < 8 && rs1 < 8 && rs2 < 8 &&
+                    (op == 0x20 || op == 0x21 || op == 0x22)) {
+                    const uint8_t pd = xtensa_nospill_map.phys_lo[rd];
+                    const uint8_t p1 = xtensa_nospill_map.phys_lo[rs1];
+                    const uint8_t p2 = xtensa_nospill_map.phys_lo[rs2];
+                    if (op == 0x20) {
+                        // ADD.N supports a8-a15 and is the shortest direct form:
+                        // byte0=(src2<<4)|0xA, byte1=(dst<<4)|src1.
+                        emit_u8(&ctx, (uint8_t)((p2 << 4) | 0x0Au));
+                        emit_u8(&ctx, (uint8_t)((pd << 4) | p1));
+                    } else {
+                        const uint8_t op2 = op == 0x21 ? 0xC0 : 0x82;
+                        // SUB/MULL RRR: byte1 is (destination<<4)|source1.
+                        emit_u8(&ctx, (uint8_t)(p2 << 4));
+                        emit_u8(&ctx, (uint8_t)((pd << 4) | p1));
+                        emit_u8(&ctx, op2);
+                    }
+                    if (xtensa_nospill_map.high_clear_mask & (uint8_t)(1u << rd))
+                        emit_movi_n(&ctx, xtensa_nospill_map.phys_hi[rd], 0);
+                    break;
+                }
+
                 // Resolve operands from the block-local vreg cache when possible.
                 XTENSA_VCACHE_LOAD(rs1, 8);
                 if (rs1 == rs2) emit_mov_n(&ctx, 9, 8);
@@ -4173,7 +5517,21 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rd = *pc++;
                 uint8_t rs1 = *pc++;
                 uint8_t rs2 = *pc++;
-                
+
+                if (xtensa_nospill_fastpath && rd < 8 && rs1 < 8 && rs2 < 8) {
+                    const uint8_t pd = xtensa_nospill_map.phys_lo[rd];
+                    const uint8_t p1 = xtensa_nospill_map.phys_lo[rs1];
+                    const uint8_t p2 = xtensa_nospill_map.phys_lo[rs2];
+                    const uint8_t op2 = op == 0x28 ? 0x10 : (op == 0x29 ? 0x20 : 0x30);
+                    // AND/OR/XOR use the same Xtensa RRR register layout.
+                    emit_u8(&ctx, (uint8_t)(p2 << 4));
+                    emit_u8(&ctx, (uint8_t)((pd << 4) | p1));
+                    emit_u8(&ctx, op2);
+                    if (xtensa_nospill_map.high_clear_mask & (uint8_t)(1u << rd))
+                        emit_movi_n(&ctx, xtensa_nospill_map.phys_hi[rd], 0);
+                    break;
+                }
+
                 // Resolve operands from the block-local vreg cache when possible.
                 XTENSA_VCACHE_LOAD(rs1, 8);
                 if (rs1 == rs2) emit_mov_n(&ctx, 9, 8);
@@ -4470,7 +5828,13 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 if (pc + 2 > end) { ctx.error = true; break; }
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
-                
+
+                if (xtensa_nospill_fastpath && op == 0xA1) {
+                    emit_mov_n(&ctx, xtensa_nospill_map.phys_lo[rd], xtensa_nospill_map.phys_lo[rs]);
+                    emit_srai(&ctx, xtensa_nospill_map.phys_lo[rs], xtensa_nospill_map.phys_hi[rd], 31);
+                    break;
+                }
+
                 // Load low 32 bits from v_regs[rs]
                 emit_l32i(&ctx, 8, 6, (uint16_t)(rs * 8));
                 
@@ -4489,7 +5853,13 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 if (pc + 2 > end) { ctx.error = true; break; }
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
-                
+
+                if (xtensa_nospill_fastpath && op == 0xA1 && rd < 8 && rs < 8) {
+                    emit_mov_n(&ctx, xtensa_nospill_map.phys_lo[rd], xtensa_nospill_map.phys_lo[rs]);
+                    emit_srai(&ctx, xtensa_nospill_map.phys_lo[rs], xtensa_nospill_map.phys_hi[rd], 31);
+                    break;
+                }
+
                 // Load low 32 bits from v_regs[rs]
                 emit_l32i(&ctx, 8, 6, (uint16_t)(rs * 8));
                 
@@ -5033,6 +6403,53 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 uint8_t rs2 = *pc++;
 
+                if (xtensa_nospill_fastpath && (op == 0x38 || op == 0x39 || op == 0x3A) &&
+                    rd < 8 && rs1 < 8 && rs2 < 8) {
+                    const uint8_t pd_lo = xtensa_nospill_map.phys_lo[rd];
+                    const uint8_t pd_hi = xtensa_nospill_map.phys_hi[rd];
+                    const uint8_t p1_lo = xtensa_nospill_map.phys_lo[rs1];
+                    const uint8_t p1_hi = xtensa_nospill_map.phys_hi[rs1];
+                    const uint8_t p2_lo = xtensa_nospill_map.phys_lo[rs2];
+                    const uint8_t p2_hi = xtensa_nospill_map.phys_hi[rs2];
+                    if (op == 0x39) {
+                        emit_or(&ctx, pd_lo, p1_lo, p2_lo);
+                        emit_or(&ctx, pd_hi, p1_hi, p2_hi);
+                    } else {
+                        const uint8_t op2 = (op == 0x38) ? 0x10u : 0x30u;
+                        emit_u8(&ctx, (uint8_t)((p2_lo << 4) | 0x00u));
+                        emit_u8(&ctx, (uint8_t)((p1_lo << 4) | pd_lo));
+                        emit_u8(&ctx, op2);
+                        emit_u8(&ctx, (uint8_t)((p2_hi << 4) | 0x00u));
+                        emit_u8(&ctx, (uint8_t)((p1_hi << 4) | pd_hi));
+                        emit_u8(&ctx, op2);
+                    }
+                    break;
+                }
+
+                if (xtensa_nospill_fastpath && op == 0x30 && rd < 8 && rs1 < 8 && rs2 < 8) {
+                    const uint8_t pd_lo = xtensa_nospill_map.phys_lo[rd];
+                    const uint8_t pd_hi = xtensa_nospill_map.phys_hi[rd];
+                    const uint8_t p1_lo = xtensa_nospill_map.phys_lo[rs1];
+                    const uint8_t p1_hi = xtensa_nospill_map.phys_hi[rs1];
+                    const uint8_t p2_lo = xtensa_nospill_map.phys_lo[rs2];
+                    const uint8_t p2_hi = xtensa_nospill_map.phys_hi[rs2];
+                    // Keep the original first low word for carry detection.
+                    // A scratch copy is needed only when the destination aliases it.
+                    uint8_t carry_src = p1_lo;
+                    if (pd_lo == p1_lo) {
+                        emit_or(&ctx, p1_lo, 2, p1_lo); /* or a2,p1_lo,p1_lo */
+                        carry_src = 2;
+                    }
+                    emit_add_n(&ctx, p1_lo, pd_lo, p2_lo);
+                    emit_add_n(&ctx, p1_hi, pd_hi, p2_hi);
+                    const uint32_t no_carry = emit_bgeu_placeholder(&ctx, pd_lo, carry_src);
+                    emit_addi(&ctx, pd_hi, pd_hi, 1);
+                    const uint32_t after_carry = (uint32_t)ctx.offset;
+                    emit_flush_words(&ctx);
+                    patch_bgeu_at(ctx.buffer, no_carry, (int32_t)after_carry);
+                    break;
+                }
+
                 // Fast path: inline NOT.I64
                 if (op == 0x3E) {
                     // Use a6 as base for v_regs
@@ -5059,6 +6476,33 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     emit_s32i(&ctx, 9, 6, (uint16_t)(rd * 8 + 4));
 
                     // Restore v_regs pointer
+                    break;
+                }
+
+                if (xtensa_nospill_fastpath && op == 0x31 && rd < 8 && rs1 < 8 && rs2 < 8) {
+                    const uint8_t pd_lo = xtensa_nospill_map.phys_lo[rd];
+                    const uint8_t pd_hi = xtensa_nospill_map.phys_hi[rd];
+                    const uint8_t p1_lo = xtensa_nospill_map.phys_lo[rs1];
+                    const uint8_t p1_hi = xtensa_nospill_map.phys_hi[rs1];
+                    const uint8_t p2_lo = xtensa_nospill_map.phys_lo[rs2];
+                    const uint8_t p2_hi = xtensa_nospill_map.phys_hi[rs2];
+                    // Preserve both low operands in scratch registers so
+                    // in-place destinations cannot destroy the borrow inputs.
+                    const uint8_t scratch_a = xtensa_nospill_has_calls ? 8u : 2u;
+                    const uint8_t scratch_b = xtensa_nospill_has_calls ? 9u : 3u;
+                    emit_mov_n(&ctx, scratch_a, p1_lo);
+                    emit_mov_n(&ctx, scratch_b, p2_lo);
+                    emit_u8(&ctx, (uint8_t)((p2_lo << 4) | 0x00u));
+                    emit_u8(&ctx, (uint8_t)((pd_lo << 4) | p1_lo));
+                    emit_u8(&ctx, 0xC0);
+                    emit_u8(&ctx, (uint8_t)((p2_hi << 4) | 0x00u));
+                    emit_u8(&ctx, (uint8_t)((pd_hi << 4) | p1_hi));
+                    emit_u8(&ctx, 0xC0);
+                    const uint32_t no_borrow = emit_bgeu_placeholder(&ctx, scratch_a, scratch_b);
+                    emit_addi(&ctx, pd_hi, pd_hi, -1);
+                    const uint32_t done = (uint32_t)ctx.offset;
+                    emit_flush_words(&ctx);
+                    patch_bgeu_at(ctx.buffer, no_borrow, (int32_t)done);
                     break;
                 }
 
@@ -5194,6 +6638,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // NOTE: Duplicate ADD.I64 block removed - it was dead code (XOR instead of ADD) 
                 // The real ADD.I64 fast path is above (lines 3088-3125)
 
+
                 // For other I64 operations on 32-bit Xtensa, we call helper functions.
                 // Windowed ABI with callx8: window rotates by 8.
                 // Caller's a10:a11 -> Callee's a2:a3 (first u64 arg)
@@ -5242,6 +6687,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 emit_s32i(&ctx, 10, 6, (uint16_t)(rd * 8));       // v_regs[rd].lo = a10
                 emit_s32i(&ctx, 11, 6, (uint16_t)(rd * 8 + 4));   // v_regs[rd].hi = a11
                 emit_l32i(&ctx, 11, 1, 8); // restore v_regs after CALLX8
+
                 
                 break;
             }
@@ -5261,6 +6707,31 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t r1 = *pc++;
                 uint8_t imm_u8 = *pc++;
 
+                if (op == 0x51 && xtensa_nospill_fastpath && rd < 8 && r1 < 8) {
+                    const int8_t imm = (int8_t)imm_u8;
+                    const uint8_t pd_lo = xtensa_nospill_map.phys_lo[rd];
+                    const uint8_t pd_hi = xtensa_nospill_map.phys_hi[rd];
+                    const uint8_t ps_lo = xtensa_nospill_map.phys_lo[r1];
+                    const uint8_t ps_hi = xtensa_nospill_map.phys_hi[r1];
+                    const uint8_t imm_reg = xtensa_nospill_has_calls ? 8u : 3u;
+                    const uint8_t sign_reg = xtensa_nospill_has_calls ? 9u : 4u;
+                    emit_mov_n(&ctx, 2, ps_lo);                 // preserve old low word
+                    emit_movi(&ctx, imm_reg, (int16_t)imm);     // sign-extended immediate
+                    emit_movi_n(&ctx, sign_reg, (imm < 0) ? -1 : 0); // high-word sign extension
+                    emit_u8(&ctx, (uint8_t)((imm_reg << 4) | 0x00u));
+                    emit_u8(&ctx, (uint8_t)((pd_lo << 4) | ps_lo));
+                    emit_u8(&ctx, 0xC0);                         // low = source - immediate
+                    emit_u8(&ctx, (uint8_t)((sign_reg << 4) | 0x00u));
+                    emit_u8(&ctx, (uint8_t)((pd_hi << 4) | ps_hi));
+                    emit_u8(&ctx, 0xC0);                         // high -= sign extension
+                    const uint32_t no_borrow = emit_bgeu_placeholder(&ctx, 2, imm_reg);
+                    emit_addi(&ctx, pd_hi, pd_hi, -1);
+                    const uint32_t done = (uint32_t)ctx.offset;
+                    emit_flush_words(&ctx);
+                    patch_bgeu_at(ctx.buffer, no_borrow, (int32_t)done);
+                    break;
+                }
+
                 void* helper = NULL;
                 switch (op) {
                     case 0x51: helper = (void*)&espb_jit_xtensa_sub_i64_imm8; break;
@@ -5272,6 +6743,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     default: ctx.error = true; break;
                 }
                 if (ctx.error) break;
+
 
                 // a10 = v_regs
                 emit_l32i(&ctx, 10, 1, 8);
@@ -5320,6 +6792,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 // Restore a11 back to v_regs pointer (ABI for rest of JIT assumes a11=v_regs)
                 emit_l32i(&ctx, 11, 1, 8);
+
                 break;
             }
 
@@ -5328,9 +6801,49 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rd = *pc++;
                 uint8_t r1 = *pc++;
                 uint8_t imm = *pc++;
-                
+
                 uint8_t sh = imm & 63;
-                
+
+                if (xtensa_nospill_fastpath && rd < 8 && r1 < 8) {
+                    const uint8_t pd_lo = xtensa_nospill_map.phys_lo[rd];
+                    const uint8_t pd_hi = xtensa_nospill_map.phys_hi[rd];
+                    const uint8_t ps_lo = xtensa_nospill_map.phys_lo[r1];
+                    const uint8_t ps_hi = xtensa_nospill_map.phys_hi[r1];
+                    if (sh == 0) {
+                        emit_mov_n(&ctx, pd_lo, ps_lo);
+                        emit_mov_n(&ctx, pd_hi, ps_hi);
+                    } else if (sh < 32) {
+                        const uint8_t left = (uint8_t)(32u - sh);
+                        // Form (hi << (32-sh)) in a2 before overwriting either source.
+                        if (left >= 16) {
+                            emit_u8(&ctx, (uint8_t)((32u - left) << 4));
+                            emit_u8(&ctx, (uint8_t)((2u << 4) | ps_hi));
+                            emit_u8(&ctx, 0x01);
+                        } else {
+                            emit_u8(&ctx, (uint8_t)((16u - left) << 4));
+                            emit_u8(&ctx, (uint8_t)((2u << 4) | ps_hi));
+                            emit_u8(&ctx, 0x11);
+                        }
+                        emit_u8(&ctx, (uint8_t)(ps_lo << 4));
+                        emit_u8(&ctx, (uint8_t)((pd_lo << 4) | sh));
+                        emit_u8(&ctx, 0x41);
+                        emit_or(&ctx, pd_lo, pd_lo, 2);
+                        emit_u8(&ctx, (uint8_t)(ps_hi << 4));
+                        emit_u8(&ctx, (uint8_t)((pd_hi << 4) | sh));
+                        emit_u8(&ctx, 0x41);
+                    } else if (sh == 32) {
+                        emit_mov_n(&ctx, pd_lo, ps_hi);
+                        emit_movi_n(&ctx, pd_hi, 0);
+                    } else {
+                        const uint8_t s = (uint8_t)(sh - 32u);
+                        emit_u8(&ctx, (uint8_t)(ps_hi << 4));
+                        emit_u8(&ctx, (uint8_t)((pd_lo << 4) | s));
+                        emit_u8(&ctx, 0x41);
+                        emit_movi_n(&ctx, pd_hi, 0);
+                    }
+                    break;
+                }
+
                 // Load source 64-bit value: a8 = lo, a9 = hi
                 emit_l32i(&ctx, 8, 6, (uint16_t)(r1 * 8));      // a8 = v_regs[r1].lo
                 emit_l32i(&ctx, 9, 6, (uint16_t)(r1 * 8 + 4));  // a9 = v_regs[r1].hi
@@ -5417,6 +6930,14 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 if (rd == 0) {
                     JIT_LOGW(TAG, "[wr0] bc_off=%u op=0x40 ADD.I32.IMM8 r1=%u imm=%d", (unsigned)last_off, (unsigned)r1, (int)imm8);
+                }
+
+                if (xtensa_nospill_fastpath && rd < 8 && r1 < 8) {
+                    emit_addi(&ctx, xtensa_nospill_map.phys_lo[rd],
+                              xtensa_nospill_map.phys_lo[r1], imm8);
+                    if (xtensa_nospill_map.high_clear_mask & (uint8_t)(1u << rd))
+                        emit_movi_n(&ctx, xtensa_nospill_map.phys_hi[rd], 0);
+                    break;
                 }
 
                 XTENSA_VCACHE_LOAD(r1, 8);
@@ -5723,6 +7244,26 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     JIT_LOGW(TAG, "[wr0] bc_off=%u op=0x50 ADD.I64.IMM8 r1=%u imm=%d", (unsigned)last_off, (unsigned)r1, (int)imm8);
                 }
 
+                if (xtensa_nospill_fastpath && rd < 8 && r1 < 8) {
+                    const uint8_t pd_lo = xtensa_nospill_map.phys_lo[rd];
+                    const uint8_t pd_hi = xtensa_nospill_map.phys_hi[rd];
+                    const uint8_t ps_lo = xtensa_nospill_map.phys_lo[r1];
+                    const uint8_t ps_hi = xtensa_nospill_map.phys_hi[r1];
+                    const uint8_t imm_reg = xtensa_nospill_has_calls ? 8u : 3u;
+                    const uint8_t sign_reg = xtensa_nospill_has_calls ? 9u : 4u;
+                    emit_mov_n(&ctx, 2, ps_lo);                  // preserve old low word
+                    emit_movi(&ctx, imm_reg, (int16_t)imm8);     // signed 8-bit immediate
+                    emit_movi_n(&ctx, sign_reg, (imm8 < 0) ? -1 : 0); // sign extension
+                    emit_add_n(&ctx, pd_lo, ps_lo, imm_reg);
+                    emit_add_n(&ctx, pd_hi, ps_hi, sign_reg);
+                    const uint32_t no_carry = emit_bgeu_placeholder(&ctx, pd_lo, 2);
+                    emit_addi(&ctx, pd_hi, pd_hi, 1);
+                    const uint32_t done = (uint32_t)ctx.offset;
+                    emit_flush_words(&ctx);
+                    patch_bgeu_at(ctx.buffer, no_carry, (int32_t)done);
+                    break;
+                }
+
                 uint16_t r1_off = (uint16_t)(r1 * 8);
                 uint16_t rd_off = (uint16_t)(rd * 8);
 
@@ -5760,6 +7301,31 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t r1 = *pc++;
                 uint8_t r2 = *pc++;
 
+                if (xtensa_nospill_fastpath && rd < 8 && r1 < 8 && r2 < 8 && rd != r1 && rd != r2) {
+                    const uint8_t pd = xtensa_nospill_map.phys_lo[rd];
+                    const uint8_t p1 = xtensa_nospill_map.phys_lo[r1];
+                    const uint8_t p2 = xtensa_nospill_map.phys_lo[r2];
+                    emit_movi_n(&ctx, pd, 0);
+                    const uint32_t br = emit_bcc_reg_placeholder(&ctx, 0x9, p1, p2); /* bne -> false */
+                    emit_movi_n(&ctx, pd, 1);
+                    const uint32_t done = (uint32_t)ctx.offset;
+                    if (xtensa_nospill_map.high_clear_mask & (uint8_t)(1u << rd))
+                        emit_movi_n(&ctx, xtensa_nospill_map.phys_hi[rd], 0);
+                    if (rd == 0) {
+                        emit_s32i(&ctx, pd, 6, (uint16_t)(rd * 8u));
+                        uint8_t zero_reg = 3;
+                        while (zero_reg <= 15 &&
+                               (zero_reg == 6 || (xtensa_nospill_map.used_phys_mask & (uint16_t)(1u << zero_reg))))
+                            ++zero_reg;
+                        if (zero_reg > 15) { ctx.error = true; break; }
+                        emit_movi_n(&ctx, zero_reg, 0);
+                        emit_s32i(&ctx, zero_reg, 6, (uint16_t)(rd * 8u + 4u));
+                    }
+                    emit_flush_words(&ctx);
+                    patch_bcc_reg_at(ctx.buffer, br, (int32_t)done);
+                    break;
+                }
+
                 if (rd == 0) {
                     JIT_LOGW(TAG, "[wr0] bc_off=%u op=0xC0 CMP.EQ.I32 r1=%u r2=%u", (unsigned)last_off, (unsigned)r1, (unsigned)r2);
                 }
@@ -5768,8 +7334,8 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 // Inline compare using a8/a9 branch forms (same style as 0xC1..0xC9)
 
-                emit_l32i(&ctx, 8, 6, (uint16_t)(r1 * 8));
-                emit_l32i(&ctx, 9, 6, (uint16_t)(r2 * 8));
+                XTENSA_VCACHE_LOAD(r1, 8);
+                XTENSA_VCACHE_LOAD(r2, 9);
 
                 // Default result = 0
                 emit_movi_n(&ctx, 10, 0);
@@ -5783,8 +7349,9 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 uint32_t end_pos = (uint32_t)ctx.offset;
 
-                // Store result
-                emit_s32i(&ctx, 10, 6, rd_off);
+                // Keep the comparison result in the vreg cache when the next
+                // instruction can consume it (including a BR_IF condition).
+                XTENSA_VCACHE_FINISH(rd, 10, vcache_next);
                 emit_movi_n(&ctx, 8, 0);
                 emit_s32i(&ctx, 8, 6, (uint16_t)(rd_off + 4));
 
@@ -5808,13 +7375,28 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t r1 = *pc++;
                 uint8_t r2 = *pc++;
 
+                if (xtensa_nospill_fastpath && op == 0xC2 && rd < 8 && r1 < 8 && r2 < 8 && rd != r1 && rd != r2) {
+                    const uint8_t pd = xtensa_nospill_map.phys_lo[rd];
+                    const uint8_t p1 = xtensa_nospill_map.phys_lo[r1];
+                    const uint8_t p2 = xtensa_nospill_map.phys_lo[r2];
+                    emit_movi_n(&ctx, pd, 0);
+                    const uint32_t br = emit_bcc_reg_placeholder(&ctx, 0xA, p1, p2); /* bge -> false */
+                    emit_movi_n(&ctx, pd, 1);
+                    const uint32_t done = (uint32_t)ctx.offset;
+                    if (xtensa_nospill_map.high_clear_mask & (uint8_t)(1u << rd))
+                        emit_movi_n(&ctx, xtensa_nospill_map.phys_hi[rd], 0);
+                    emit_flush_words(&ctx);
+                    patch_bcc_reg_at(ctx.buffer, br, (int32_t)done);
+                    break;
+                }
+
                 uint16_t rd_off = (uint16_t)(rd * 8);
 
                 // Inline compare using a8/a9 branch forms. Result is stored as Value:
                 // low32 = 0/1, high32 = 0
 
-                emit_l32i(&ctx, 8, 6, (uint16_t)(r1 * 8));
-                emit_l32i(&ctx, 9, 6, (uint16_t)(r2 * 8));
+                XTENSA_VCACHE_LOAD(r1, 8);
+                XTENSA_VCACHE_LOAD(r2, 9);
 
                 // Default result = 0
                 emit_movi_n(&ctx, 10, 0);
@@ -5851,8 +7433,9 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 uint32_t end_pos = (uint32_t)ctx.offset;
 
-                // Store result
-                emit_s32i(&ctx, 10, 6, rd_off);
+                // Keep the comparison result in the vreg cache when the next
+                // instruction can consume it (including a BR_IF condition).
+                XTENSA_VCACHE_FINISH(rd, 10, vcache_next);
                 emit_movi_n(&ctx, 8, 0);
                 emit_s32i(&ctx, 8, 6, (uint16_t)(rd_off + 4));
 
@@ -6608,6 +8191,34 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 // Fast path: inline EQ/NE for I64 (very common in control flow)
                 if (op == 0xCA || op == 0xCB) {
+                    if (xtensa_nospill_fastpath && rd < 8 && r1 < 8 && r2 < 8) {
+                        const uint8_t pd = xtensa_nospill_map.phys_lo[rd];
+                        const uint8_t pd_hi = xtensa_nospill_map.phys_hi[rd];
+                        const uint8_t p1_lo = xtensa_nospill_map.phys_lo[r1];
+                        const uint8_t p1_hi = xtensa_nospill_map.phys_hi[r1];
+                        const uint8_t p2_lo = xtensa_nospill_map.phys_lo[r2];
+                        const uint8_t p2_hi = xtensa_nospill_map.phys_hi[r2];
+                        // XOR both halves into scratch registers, then reduce with OR.
+                        const uint8_t scratch_lo = xtensa_nospill_has_calls ? 8u : 2u;
+                        const uint8_t scratch_hi = xtensa_nospill_has_calls ? 9u : 3u;
+                        emit_u8(&ctx, (uint8_t)((p2_lo << 4) | 0x00u));
+                        emit_u8(&ctx, (uint8_t)((scratch_lo << 4) | p1_lo));
+                        emit_u8(&ctx, 0x30);
+                        emit_u8(&ctx, (uint8_t)((p2_hi << 4) | 0x00u));
+                        emit_u8(&ctx, (uint8_t)((scratch_hi << 4) | p1_hi));
+                        emit_u8(&ctx, 0x30);
+                        emit_or(&ctx, scratch_lo, scratch_lo, scratch_hi);
+                        emit_movi_n(&ctx, scratch_hi, 0);
+                        emit_movi_n(&ctx, pd, 1);
+                        const uint32_t is_result_true = emit_bcc_reg_placeholder(
+                            &ctx, (op == 0xCA) ? 0x8u : 0x9u, scratch_lo, scratch_hi);
+                        emit_movi_n(&ctx, pd, 0);
+                        const uint32_t done = (uint32_t)ctx.offset;
+                        emit_movi_n(&ctx, pd_hi, 0);
+                        emit_flush_words(&ctx);
+                        patch_bcc_reg_at(ctx.buffer, is_result_true, (int32_t)done);
+                        break;
+                    }
                     uint16_t rd_off = (uint16_t)(rd * 8);
 
                     // Compare low32
@@ -6692,7 +8303,7 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 emit_call_helper(&ctx, &litpool, (void*)&espb_jit_xtensa_cmp_i64);
 
-                // Restore a11 back to v_regs pointer
+                // Restore the generated-code convention used by helper paths.
                 emit_l32i(&ctx, 11, 1, 8);
                 break;
             }
@@ -6823,6 +8434,30 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     break;
                 }
 
+                if (xtensa_nospill_fastpath && (op == 0xBE || op == 0xBF) &&
+                    rd < 8 && r_cond < 8 && r_true < 8 && r_false < 8) {
+                    const uint8_t pd_lo = xtensa_nospill_map.phys_lo[rd];
+                    const uint8_t pd_hi = xtensa_nospill_map.phys_hi[rd];
+                    const uint8_t pc_lo = xtensa_nospill_map.phys_lo[r_cond];
+                    const uint8_t pt_lo = xtensa_nospill_map.phys_lo[r_true];
+                    const uint8_t pt_hi = xtensa_nospill_map.phys_hi[r_true];
+                    const uint8_t pf_lo = xtensa_nospill_map.phys_lo[r_false];
+                    const uint8_t pf_hi = xtensa_nospill_map.phys_hi[r_false];
+                    emit_movi_n(&ctx, 2, 0);
+                    const uint32_t br_false = emit_bcc_reg_placeholder(&ctx, 0x8u, pc_lo, 2);
+                    emit_mov_n(&ctx, pd_lo, pt_lo);
+                    emit_mov_n(&ctx, pd_hi, pt_hi);
+                    const uint32_t j_end = emit_j_placeholder(&ctx);
+                    const uint32_t false_pos = (uint32_t)ctx.offset;
+                    emit_mov_n(&ctx, pd_lo, pf_lo);
+                    emit_mov_n(&ctx, pd_hi, pf_hi);
+                    const uint32_t end_pos = (uint32_t)ctx.offset;
+                    emit_flush_words(&ctx);
+                    patch_bcc_reg_at(ctx.buffer, br_false, (int32_t)false_pos);
+                    patch_j_at(ctx.buffer, j_end, (int32_t)(end_pos - (j_end + 3u)));
+                    break;
+                }
+
                 uint16_t rd_off = (uint16_t)(rd * 8);
                 uint16_t cond_off = (uint16_t)(r_cond * 8);
                 uint16_t true_off = (uint16_t)(r_true * 8);
@@ -6873,8 +8508,28 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                          (unsigned)local_func_idx, (size_t)(pc - start - 3));
 
                 // Call helper: jit_call_espb_function_xtensa(instance, local_func_idx, v_regs)
-                // Windowed ABI: callee a2..a7 <= caller a10..a15
-                
+                // In the NO_SPILL path, materialize only arguments and values live
+                // across this call. The helper copies args into a separate callee
+                // frame and writes at most the return Value to caller v_regs[0].
+                const XtensaNoSpillCallSite* no_spill_call = NULL;
+                if (xtensa_nospill_fastpath) {
+                    for (uint8_t ci = 0; ci < xtensa_nospill_map.call_count; ++ci) {
+                        if (xtensa_nospill_map.calls[ci].offset == (uint16_t)last_off) {
+                            no_spill_call = &xtensa_nospill_map.calls[ci];
+                            break;
+                        }
+                    }
+                    if (!no_spill_call) { ctx.error = true; break; }
+                    for (uint8_t r = 0; r < 8; ++r) {
+                        const uint8_t bit = (uint8_t)(1u << r);
+                        if (no_spill_call->save_lo & bit)
+                            emit_s32i(&ctx, xtensa_nospill_map.phys_lo[r], 6, (uint16_t)(r * 8u));
+                        if (no_spill_call->save_hi & bit)
+                            emit_s32i(&ctx, xtensa_nospill_map.phys_hi[r], 6, (uint16_t)(r * 8u + 4u));
+                    }
+                }
+
+                // Windowed ABI: callee a2..a7 <= caller a10..a15.
                 // a10 = instance (from stack slot 4, see prologue)
                 emit_l32i(&ctx, 10, 1, 4);
 
@@ -6887,8 +8542,18 @@ EspbResult espb_jit_compile_function_xtensa_inline(
 
                 emit_call_helper(&ctx, &litpool, (void*)&jit_call_espb_function_xtensa);
 
-                // Restore a11 back to v_regs pointer
+                // Restore the helper convention, then reload only values live
+                // after this call. v0 contains the returned Value when present.
                 emit_l32i(&ctx, 11, 1, 8);
+                if (xtensa_nospill_fastpath && no_spill_call) {
+                    for (uint8_t r = 0; r < 8; ++r) {
+                        const uint8_t bit = (uint8_t)(1u << r);
+                        if (no_spill_call->reload_lo & bit)
+                            emit_l32i(&ctx, xtensa_nospill_map.phys_lo[r], 6, (uint16_t)(r * 8u));
+                        if (no_spill_call->reload_hi & bit)
+                            emit_l32i(&ctx, xtensa_nospill_map.phys_hi[r], 6, (uint16_t)(r * 8u + 4u));
+                    }
+                }
                 break;
             }
 
@@ -7237,6 +8902,14 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 uint8_t rd = *pc++;
                 uint8_t rs = *pc++;
 
+                if (xtensa_nospill_fastpath && rd < 8 && rs < 8) {
+                    emit_extui(&ctx, xtensa_nospill_map.phys_lo[rd],
+                               xtensa_nospill_map.phys_lo[rs], 0, 8);
+                    if (xtensa_nospill_map.high_clear_mask & (uint8_t)(1u << rd))
+                        emit_movi_n(&ctx, xtensa_nospill_map.phys_hi[rd], 0);
+                    break;
+                }
+
                 // Inline zero-extend: v_regs[rd].i32 = (uint8_t)v_regs[rs].i32
                 // a6 = v_regs
                 
@@ -7358,6 +9031,24 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                     }
                 }
 
+                const XtensaNoSpillCallSite* no_spill_call = NULL;
+                if (xtensa_nospill_fastpath) {
+                    for (uint8_t ci = 0; ci < xtensa_nospill_map.call_count; ++ci) {
+                        if (xtensa_nospill_map.calls[ci].offset == (uint16_t)last_off) {
+                            no_spill_call = &xtensa_nospill_map.calls[ci];
+                            break;
+                        }
+                    }
+                    if (!no_spill_call) { ctx.error = true; break; }
+                    for (uint8_t r = 0; r < 8; ++r) {
+                        const uint8_t bit = (uint8_t)(1u << r);
+                        if (no_spill_call->save_lo & bit)
+                            emit_s32i(&ctx, xtensa_nospill_map.phys_lo[r], 6, (uint16_t)(r * 8u));
+                        if (no_spill_call->save_hi & bit)
+                            emit_s32i(&ctx, xtensa_nospill_map.phys_hi[r], 6, (uint16_t)(r * 8u + 4u));
+                    }
+                }
+
                 // Prepare args for callx8 mapping (callee a2..a7 <= caller a10..a15)
                 // espb_jit_call_import(instance, import_idx, v_regs, num_vregs, has_var, num_args, arg_types_ptr)
 
@@ -7412,6 +9103,15 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 // NOTE: Cannot use a12 here because CALL8 rotates window and a12 becomes
                 // callee's a4 which may be clobbered by the callee function.
                 emit_l32i(&ctx, 11, 1, 8);  // a11 = [a1+8] = v_regs
+                if (xtensa_nospill_fastpath && no_spill_call) {
+                    for (uint8_t r = 0; r < 8; ++r) {
+                        const uint8_t bit = (uint8_t)(1u << r);
+                        if (no_spill_call->reload_lo & bit)
+                            emit_l32i(&ctx, xtensa_nospill_map.phys_lo[r], 6, (uint16_t)(r * 8u));
+                        if (no_spill_call->reload_hi & bit)
+                            emit_l32i(&ctx, xtensa_nospill_map.phys_hi[r], 6, (uint16_t)(r * 8u + 4u));
+                    }
+                }
                 break;
             }
 
@@ -8202,6 +9902,17 @@ EspbResult espb_jit_compile_function_xtensa_inline(
                 break;
         }
 
+        if (xtensa_nospill_barrier && !ctx.error) {
+            XTENSA_VCACHE_FLUSH();
+            emit_l32i(&ctx, 11, 1, 8);
+            const uint8_t reload_lo = xtensa_nospill_map.barrier_reload_lo[xtensa_nospill_barrier_index];
+            const uint8_t reload_hi = xtensa_nospill_map.barrier_reload_hi[xtensa_nospill_barrier_index];
+            for (uint8_t r = 0; r < 8; ++r) {
+                const uint8_t bit = (uint8_t)(1u << r);
+                if (reload_lo & bit) emit_l32i(&ctx, xtensa_nospill_map.phys_lo[r], 6, (uint16_t)(r * 8u));
+                if (reload_hi & bit) emit_l32i(&ctx, xtensa_nospill_map.phys_hi[r], 6, (uint16_t)(r * 8u + 4u));
+            }
+        }
         if (opcode_count[op] != UINT16_MAX) opcode_count[op]++;
         uint32_t load_delta = ctx.emitted_loads - op_loads_before;
         uint32_t store_delta = ctx.emitted_stores - op_stores_before;

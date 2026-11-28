@@ -336,14 +336,16 @@ static bool espb_try_call_jit_for_call_indirect(
 // CMP операции для I32
 #define ESPB_OP_CMP_I32(cond) \
     do { \
-        uint8_t rd = *pc++; \
-        uint8_t r1 = *pc++; \
-        uint8_t r2 = *pc++; \
+        uint8_t rd = pc[0]; \
+        uint8_t r1 = pc[1]; \
+        uint8_t r2 = pc[2]; \
+        opcode = pc[3]; \
+        pc += 4; \
+        void *next_handler = dispatch_table[opcode]; \
         V_I32(locals[rd]) = (V_I32(locals[r1]) cond V_I32(locals[r2])) ? 1 : 0; \
-        DISPATCH(); \
+        goto *next_handler; \
     } while(0)
 
-// CMP операции для I32 (unsigned)
 #define ESPB_OP_CMP_I32U(cond) \
     do { \
         uint8_t rd = *pc++; \
@@ -931,6 +933,7 @@ static void espb_cleanup_frame_allocas(EspbInstance *instance, RuntimeFrame *fra
     frame->alloca_capacity = 0;
     frame->has_custom_aligned = false;
 }
+
 
 // --- ОПТИМИЗИРОВАННАЯ ФУНКЦИЯ УПРАВЛЕНИЯ ТЕНЕВЫМ СТЕКОМ (V3) ---
 // "Медленный" путь: вызывается только когда места действительно не хватает.
@@ -1780,24 +1783,26 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
           op_0x03: { // BR_IF reg(u8), offset(i16)
               uint8_t cond_reg = *pc++;
               int16_t offset = 0;
+              opcode = pc[2];
+              void *fallthrough_handler = dispatch_table[opcode];
               if (__builtin_expect(V_I32(locals[cond_reg]) != 0, 0)) {
                   offset = (int16_t)(
                       (uint16_t)*(volatile const uint8_t *)pc |
                       ((uint16_t)*(volatile const uint8_t *)(pc + 1) << 8));
                   pc += 2;
                   pc = (pc - 4) + offset;
-              } else {
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                  offset = *(int16_t*)pc;
+                  ESP_LOGD(TAG, "BR_IF R%u (%s), offset %d", cond_reg, "true", offset);
 #endif
-                  pc += 2;
+                  DISPATCH();
               }
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-              ESP_LOGD(TAG, "BR_IF R%u (%s), offset %d", 
-                       cond_reg, V_I32(locals[cond_reg]) ? "true" : "false", offset);
+              offset = *(int16_t*)pc;
+              ESP_LOGD(TAG, "BR_IF R%u (%s), offset %d", cond_reg, "false", offset);
 #endif
-              DISPATCH();
-         }
+              pc += 3;
+              goto *fallthrough_handler;
+          }
              op_0x18: { // LDC.I32.IMM Rd(u8), imm32
                  uint8_t rd = *pc++;
                  int32_t imm = *(int32_t*)pc;
@@ -2139,14 +2144,17 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                   }
                  
            op_0x12: { // MOV.I32 / MOV (generic)
-                 uint8_t rd = *pc++;
-                 uint8_t rs = *pc++;
-                 V_RAW(locals[rd]) = V_RAW(locals[rs]);
+                uint8_t rd = pc[0];
+                uint8_t rs = pc[1];
+                opcode = pc[2];
+                pc += 3;
+                void *next_handler = dispatch_table[opcode];
+                V_RAW(locals[rd]) = V_RAW(locals[rs]);
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                 ESP_LOGD(TAG, "MOV.I32 R%d, R%d (raw=0x%016" PRIx64 ")", rd, rs, V_RAW(locals[rs]));
+                ESP_LOGD(TAG, "MOV.I32 R%d, R%d (raw=0x%016" PRIx64 ")", rd, rs, V_RAW(locals[rs]));
 #endif
-                 DISPATCH();
-                }
+                goto *next_handler;
+            }
                      op_0x90: { // TRUNC.I64.I32 Rd(u8), Rs(u8)
                    uint8_t rd = READ_U8();
                   uint8_t rs = READ_U8();
@@ -2194,14 +2202,17 @@ op_0x0D: { // CALL_INDIRECT_PTR Rdst, Rptr, type_idx
                    DISPATCH();
                 }
                 op_0x13: { // MOV.I64 / MOV (generic)
-                     uint8_t rd = *pc++;
-                     uint8_t rs = *pc++;
-                     V_RAW(locals[rd]) = V_RAW(locals[rs]);
+                    uint8_t rd = pc[0];
+                    uint8_t rs = pc[1];
+                    opcode = pc[2];
+                    pc += 3;
+                    void *next_handler = dispatch_table[opcode];
+                    V_RAW(locals[rd]) = V_RAW(locals[rs]);
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
-                     ESP_LOGD(TAG, "MOV.I64 R%u, R%u = (raw=0x%016" PRIx64 ")", rd, rs, V_RAW(locals[rs]));
+                    ESP_LOGD(TAG, "MOV.I64 R%u, R%u = (raw=0x%016" PRIx64 ")", rd, rs, V_RAW(locals[rs]));
 #endif
-                     DISPATCH();
-             }
+                    goto *next_handler;
+                }
 op_0x20: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I32(locals[rd])=V_I32(locals[r1])+V_I32(locals[r2]); ESPB_OP_LOG("ADD.I32 R%u, R%u, R%u = %" PRId32, rd, r1, r2, V_I32(locals[rd])); DISPATCH(); }
 op_0x21: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I32(locals[rd])=V_I32(locals[r1])-V_I32(locals[r2]); ESPB_OP_LOG("SUB.I32 R%u, R%u, R%u = %" PRId32, rd, r1, r2, V_I32(locals[rd])); DISPATCH(); }
 op_0x22: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I32(locals[rd])=V_I32(locals[r1])*V_I32(locals[r2]); ESPB_OP_LOG("MUL.I32 R%u, R%u, R%u = %" PRId32, rd, r1, r2, V_I32(locals[rd])); DISPATCH(); }
@@ -2224,15 +2235,18 @@ op_0x26: { // DIV.U32 (unsigned, нужен каст)
 
                 // I32 arithmetic with 8-bit immediate (per spec v1.7 0x40..0x48)
                 op_0x40: { // ADD.I32.IMM8 Rd(u8), R1(u8), imm8(i8)
-                    uint8_t rd = READ_U8();
-                    uint8_t r1 = READ_U8();
-                    int8_t imm = (int8_t)READ_U8();
+                    uint8_t rd = pc[0];
+                    uint8_t r1 = pc[1];
+                    int8_t imm = (int8_t)pc[2];
+                    opcode = pc[3];
+                    pc += 4;
+                    void *next_handler = dispatch_table[opcode];
                     SET_TYPE(locals[rd], ESPB_TYPE_I32);
                     V_I32(locals[rd]) = V_I32(locals[r1]) + (int32_t)imm;
 #if LOG_LOCAL_LEVEL >= ESP_LOG_DEBUG
                     ESP_LOGD(TAG, "ADD.I32.IMM8 R%u, R%u, %d = %" PRId32, rd, r1, (int)imm, V_I32(locals[rd]));
 #endif
-                    DISPATCH();
+                    goto *next_handler;
                 }
                 op_0x41: { // SUB.I32.IMM8 Rd(u8), R1(u8), imm8(i8)
                     uint8_t rd = READ_U8();
@@ -2594,7 +2608,15 @@ op_0x2D: { // USHR.I32 (logical shift right - нужен каст к unsigned)
 #endif
                     DISPATCH();
                  }
-op_0x30: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I64(locals[rd])=V_I64(locals[r1])+V_I64(locals[r2]); ESPB_OP_LOG("ADD.I64 R%u, R%u, R%u = %" PRId64, rd, r1, r2, V_I64(locals[rd])); DISPATCH(); }
+op_0x30: {
+    uint8_t rd = pc[0], r1 = pc[1], r2 = pc[2];
+    opcode = pc[3];
+    pc += 4;
+    void *next_handler = dispatch_table[opcode];
+    V_I64(locals[rd]) = V_I64(locals[r1]) + V_I64(locals[r2]);
+    ESPB_OP_LOG("ADD.I64 R%u, R%u, R%u = %" PRId64, rd, r1, r2, V_I64(locals[rd]));
+    goto *next_handler;
+}
 op_0x31: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I64(locals[rd])=V_I64(locals[r1])-V_I64(locals[r2]); ESPB_OP_LOG("SUB.I64 R%u, R%u, R%u = %" PRId64, rd, r1, r2, V_I64(locals[rd])); DISPATCH(); }
 op_0x32: { uint8_t rd=*pc++,r1=*pc++,r2=*pc++; V_I64(locals[rd])=V_I64(locals[r1])*V_I64(locals[r2]); ESPB_OP_LOG("MUL.I64 R%u, R%u, R%u = %" PRId64, rd, r1, r2, V_I64(locals[rd])); DISPATCH(); }
 

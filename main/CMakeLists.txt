@@ -21,6 +21,8 @@ set(ESPB_MODULE_FILES
     "10_freertos_timer.jit.espb"
     "11_fibonacci.interpreter.espb"
     "11_fibonacci.jit.espb"
+    "12_fibonacci_performance.interpreter.espb"
+    "12_fibonacci_performance.jit.espb"
 )
 
 idf_component_register(

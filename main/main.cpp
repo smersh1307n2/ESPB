@@ -9,6 +9,9 @@
 #include "espb_interpreter_runtime.h"
 #include "espb_jit_precompile.h"
 #include "esp_timer.h"
+#include "esp_task_wdt.h"
+#include "esp_cpu.h"
+#include "esp_rom_sys.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -21,6 +24,7 @@ typedef void (*host_cb2_t)(int, void *);
 
 __attribute__((noinline, optimize("O0"))) void host_invoke_cb(host_cb1_t cb, void *data) { if (cb) cb(data); }
 __attribute__((noinline, optimize("O0"))) void host_invoke_cb2(host_cb2_t cb, int value, void *data) { if (cb) cb(value, data); }
+static uint32_t host_esp_cpu_get_cycle_count(void) { return esp_cpu_get_cycle_count(); }
 void native_set_magic_number(int *out) { if (out) *out = 42; }
 static void my_custom_print(const char *message) { printf("ESPB module: %s\n", message ? message : "(null)"); }
 static portMUX_TYPE demo_atomic_mux = portMUX_INITIALIZER_UNLOCKED;
@@ -37,7 +41,7 @@ static const EspbSymbolFast app_fast_symbols[] = {
 #include "symbols/custom_fast.sym"
 };
 static const EspbSymbol app_named_symbols[] = {
-    {"printf", (const void *)&printf}, {"host_invoke_cb", (const void *)&host_invoke_cb},
+    {"printf", (const void *)&printf}, {"puts", (const void *)&puts}, {"esp_cpu_get_cycle_count", (const void *)&host_esp_cpu_get_cycle_count}, {"esp_rom_get_cpu_ticks_per_us", (const void *)&esp_rom_get_cpu_ticks_per_us}, {"host_invoke_cb", (const void *)&host_invoke_cb},
     {"host_invoke_cb2", (const void *)&host_invoke_cb2}, {"set_magic_number", (const void *)&native_set_magic_number},
     {"my_custom_print", (const void *)&my_custom_print}, {"__atomic_exchange_8", (const void *)&demo_atomic_exchange_8},
     {"vTaskDelay", (const void *)&vTaskDelay}, {"xTaskCreatePinnedToCore", (const void *)&xTaskCreatePinnedToCore},
@@ -87,6 +91,14 @@ extern const uint8_t module_10_freertos_timer_interpreter_espb_start[] asm("_bin
 extern const uint8_t module_10_freertos_timer_interpreter_espb_end[] asm("_binary_10_freertos_timer_interpreter_espb_end");
 extern const uint8_t module_10_freertos_timer_jit_espb_start[] asm("_binary_10_freertos_timer_jit_espb_start");
 extern const uint8_t module_10_freertos_timer_jit_espb_end[] asm("_binary_10_freertos_timer_jit_espb_end");
+extern const uint8_t module_11_fibonacci_interpreter_espb_start[] asm("_binary_11_fibonacci_interpreter_espb_start");
+extern const uint8_t module_11_fibonacci_interpreter_espb_end[] asm("_binary_11_fibonacci_interpreter_espb_end");
+extern const uint8_t module_11_fibonacci_jit_espb_start[] asm("_binary_11_fibonacci_jit_espb_start");
+extern const uint8_t module_11_fibonacci_jit_espb_end[] asm("_binary_11_fibonacci_jit_espb_end");
+extern const uint8_t module_12_fibonacci_performance_interpreter_espb_start[] asm("_binary_12_fibonacci_performance_interpreter_espb_start");
+extern const uint8_t module_12_fibonacci_performance_interpreter_espb_end[] asm("_binary_12_fibonacci_performance_interpreter_espb_end");
+extern const uint8_t module_12_fibonacci_performance_jit_espb_start[] asm("_binary_12_fibonacci_performance_jit_espb_start");
+extern const uint8_t module_12_fibonacci_performance_jit_espb_end[] asm("_binary_12_fibonacci_performance_jit_espb_end");
 
 static const EmbeddedModule modules[] = {
     {"01_integer32.interpreter.espb", module_01_integer32_interpreter_espb_start, (size_t)(module_01_integer32_interpreter_espb_end - module_01_integer32_interpreter_espb_start), false},
@@ -109,9 +121,33 @@ static const EmbeddedModule modules[] = {
     {"09_freertos_task.jit.espb", module_09_freertos_task_jit_espb_start, (size_t)(module_09_freertos_task_jit_espb_end - module_09_freertos_task_jit_espb_start), true},
     {"10_freertos_timer.interpreter.espb", module_10_freertos_timer_interpreter_espb_start, (size_t)(module_10_freertos_timer_interpreter_espb_end - module_10_freertos_timer_interpreter_espb_start), false},
     {"10_freertos_timer.jit.espb", module_10_freertos_timer_jit_espb_start, (size_t)(module_10_freertos_timer_jit_espb_end - module_10_freertos_timer_jit_espb_start), true},
+    {"11_fibonacci.interpreter.espb", module_11_fibonacci_interpreter_espb_start, (size_t)(module_11_fibonacci_interpreter_espb_end - module_11_fibonacci_interpreter_espb_start), false},
+    {"11_fibonacci.jit.espb", module_11_fibonacci_jit_espb_start, (size_t)(module_11_fibonacci_jit_espb_end - module_11_fibonacci_jit_espb_start), true},
+    {"12_fibonacci_performance.interpreter.espb", module_12_fibonacci_performance_interpreter_espb_start, (size_t)(module_12_fibonacci_performance_interpreter_espb_end - module_12_fibonacci_performance_interpreter_espb_start), false},
+    {"12_fibonacci_performance.jit.espb", module_12_fibonacci_performance_jit_espb_start, (size_t)(module_12_fibonacci_performance_jit_espb_end - module_12_fibonacci_performance_jit_espb_start), true},
 };
 
+#if CONFIG_ESP_TASK_WDT_EN
+static esp_err_t set_benchmark_watchdog_timeout(uint32_t timeout_ms) {
+    const esp_task_wdt_config_t config = {
+        .timeout_ms = timeout_ms,
+        .idle_core_mask = (1U << portNUM_PROCESSORS) - 1U,
+        .trigger_panic = false,
+    };
+    return esp_task_wdt_reconfigure(&config);
+}
+#endif
+
 extern "C" void app_main(void) {
+#if CONFIG_ESP_TASK_WDT_EN
+    const esp_err_t benchmark_wdt_result = set_benchmark_watchdog_timeout(300000U);
+    printf("[ESPB] benchmark_watchdog_timeout_ms=300000 result=%d\\n", (int)benchmark_wdt_result);
+    if (benchmark_wdt_result != ESP_OK) {
+        printf("[ESPB] benchmark_watchdog_reconfigure_failed\\n");
+        return;
+    }
+#endif
+
     printf("\n--- ESPB: sequential embedded module run ---\n");
     espb_register_custom_index_symbol_table(app_fast_symbols); espb_register_symbol_table(0, app_named_symbols);
     const char *message = "Hello from ESPB main";
@@ -135,4 +171,10 @@ extern "C" void app_main(void) {
         if (strstr(m.name, "09_freertos_task") || strstr(m.name, "10_freertos_timer")) vTaskDelay(pdMS_TO_TICKS(20));
     }
     printf("\n--- ESPB: all embedded modules finished ---\n");
+#if CONFIG_ESP_TASK_WDT_EN
+    const esp_err_t restore_wdt_result =
+        set_benchmark_watchdog_timeout(CONFIG_ESP_TASK_WDT_TIMEOUT_S * 1000U);
+    printf("[ESPB] watchdog_timeout_restored_ms=%u result=%d\\n",
+           (unsigned)(CONFIG_ESP_TASK_WDT_TIMEOUT_S * 1000U), (int)restore_wdt_result);
+#endif
 }
